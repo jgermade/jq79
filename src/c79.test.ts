@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { $, $$, parseComponent, createReactiveDeepData, renderComponent, Component79 } from "./c79"
+import { $, $$, parseComponent, createReactiveDeepData, renderComponent, Component79 } from "./jq79"
 
 describe("$", () => {
   beforeEach(() => {
@@ -549,82 +549,82 @@ describe("Component79", () => {
   })
 
   it("chains render().mount() and keeps the content reactive", () => {
-    const c79 = new Component79(`<div class="greet">{{ msg }}</div>`)
+    const jq79 = new Component79(`<div class="greet">{{ msg }}</div>`)
 
-    expect(c79.render({ msg: "hola" }).mount(host)).toBe(c79)
+    expect(jq79.render({ msg: "hola" }).mount(host)).toBe(jq79)
     expect($(host, ".greet")?.textContent).toBe("hola")
 
-    c79.data!.msg = "adios"
+    jq79.data!.msg = "adios"
     expect($(host, ".greet")?.textContent).toBe("adios")
 
-    c79.destroy()
+    jq79.destroy()
   })
 
   it("mounts into a selector string", () => {
-    host.id = "c79-host"
-    const c79 = new Component79(`<div class="sel">ok</div>`).render().mount("#c79-host")
+    host.id = "jq79-host"
+    const jq79 = new Component79(`<div class="sel">ok</div>`).render().mount("#jq79-host")
 
     expect($(host, ".sel")).not.toBeNull()
-    c79.destroy()
+    jq79.destroy()
   })
 
   it("injects styles into document.head on render and removes them on destroy", () => {
-    const c79 = new Component79(`<div class="styled">x</div><style>.styled { color: red; }</style>`)
+    const jq79 = new Component79(`<div class="styled">x</div><style>.styled { color: red; }</style>`)
     const stylesBefore = document.head.querySelectorAll("style").length
 
-    c79.render().mount(host)
+    jq79.render().mount(host)
     expect(document.head.querySelectorAll("style").length).toBe(stylesBefore + 1)
 
-    c79.unmount().destroy()
+    jq79.unmount().destroy()
     expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
   })
 
   it("renderShadow mounts content and styles into a shadow root instead of document.head", () => {
-    const c79 = new Component79(`<div class="s">shadowed</div><style>.s { color: blue; }</style>`)
+    const jq79 = new Component79(`<div class="s">shadowed</div><style>.s { color: blue; }</style>`)
     const stylesBefore = document.head.querySelectorAll("style").length
 
-    c79.renderShadow().mount(host)
+    jq79.renderShadow().mount(host)
 
     expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
     expect(host.shadowRoot).not.toBeNull()
     expect(host.shadowRoot!.querySelector(".s")?.textContent).toBe("shadowed")
     expect(host.shadowRoot!.querySelector("style")).not.toBeNull()
 
-    c79.destroy()
+    jq79.destroy()
   })
 
   it("unmount() detaches but keeps state, and mount() re-attaches with pending updates applied", () => {
-    const c79 = new Component79(`<div class="m">{{ n }}</div>`).render({ n: 1 }).mount(host)
+    const jq79 = new Component79(`<div class="m">{{ n }}</div>`).render({ n: 1 }).mount(host)
 
-    c79.unmount()
+    jq79.unmount()
     expect($(host, ".m")).toBeNull()
 
-    c79.data!.n = 2
-    c79.mount(host)
+    jq79.data!.n = 2
+    jq79.mount(host)
     expect($(host, ".m")?.textContent).toBe("2")
 
-    c79.destroy()
+    jq79.destroy()
   })
 
   it("unmount() also collects nodes that :if inserted after mounting", () => {
-    const c79 = new Component79(`<div :if="show" class="cond">yes</div>`).render({ show: false }).mount(host)
-    c79.data!.show = true
+    const jq79 = new Component79(`<div :if="show" class="cond">yes</div>`).render({ show: false }).mount(host)
+    jq79.data!.show = true
     expect($(host, ".cond")).not.toBeNull()
 
-    c79.unmount()
+    jq79.unmount()
     expect(host.childNodes.length).toBe(0)
 
-    c79.mount(host)
+    jq79.mount(host)
     expect($(host, ".cond")).not.toBeNull()
-    c79.destroy()
+    jq79.destroy()
   })
 
   it("destroy() disposes effects so later data changes stop touching the DOM", () => {
-    const c79 = new Component79(`<div class="d">{{ n }}</div>`).render({ n: 1 }).mount(host)
+    const jq79 = new Component79(`<div class="d">{{ n }}</div>`).render({ n: 1 }).mount(host)
     const el = $(host, ".d")!
-    const data = c79.data!
+    const data = jq79.data!
 
-    c79.destroy()
+    jq79.destroy()
     data.n = 99
 
     expect(el.textContent).toBe("1")
@@ -633,12 +633,12 @@ describe("Component79", () => {
   it("fetch() downloads and parses a component", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => `<div class="f">fetched</div>` })))
 
-    const c79 = await Component79.fetch("/component.html")
-    c79.render().mount(host)
+    const jq79 = await Component79.fetch("/component.html")
+    jq79.render().mount(host)
 
     expect(globalThis.fetch).toHaveBeenCalledWith("/component.html")
     expect($(host, ".f")?.textContent).toBe("fetched")
-    c79.destroy()
+    jq79.destroy()
   })
 
   it("fetch() rejects on a non-ok response", async () => {
@@ -649,36 +649,36 @@ describe("Component79", () => {
 
   describe(":setup scripts", () => {
     it("exposes top-level const values to the template", () => {
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<script :setup="{ fname, lname }">const fullName = fname + " " + lname</script>` +
         `<div class="full-name">{{ fullName }}</div>`
       ).render({ fname: "Ada", lname: "Lovelace" }).mount(host)
 
       expect($(host, ".full-name")?.textContent).toBe("Ada Lovelace")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("makes top-level let variables reactive scope properties", () => {
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<script :setup>let count = 0</script><div class="count">{{ count }}</div>`
       ).render().mount(host)
 
       expect($(host, ".count")?.textContent).toBe("0")
 
-      c79.data!.count = 5
+      jq79.data!.count = 5
       expect($(host, ".count")?.textContent).toBe("5")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("re-runs $: reactive declarations when their dependencies change", () => {
       const src = "<script :setup>\nlet a = 2\n$: doubled = `${ a * 2 }`\n</script><div class='dbl'>{{ doubled }}</div>"
-      const c79 = new Component79(src).render().mount(host)
+      const jq79 = new Component79(src).render().mount(host)
 
       expect($(host, ".dbl")?.textContent).toBe("4")
 
-      c79.data!.a = 10
+      jq79.data!.a = 10
       expect($(host, ".dbl")?.textContent).toBe("20")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("updates the DOM from async assignments in setup code (the fetch-user example)", async () => {
@@ -702,69 +702,69 @@ describe("Component79", () => {
         "</div>",
       ].join("\n")
 
-      const c79 = new Component79(src).render().mount(host)
+      const jq79 = new Component79(src).render().mount(host)
       expect($(host, ".user-info")).toBeNull()
 
       await Promise.resolve()
       await Promise.resolve()
 
       expect($(host, ".user-info span")?.textContent).toBe("Ada Lovelace from Ada and Lovelace")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("keeps bare assignments on the component scope instead of leaking to globalThis", () => {
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<script :setup>leakCheck = "scoped"</script><div class="leak">{{ leakCheck }}</div>`
       ).render().mount(host)
 
       expect($(host, ".leak")?.textContent).toBe("scoped")
       expect((globalThis as any).leakCheck).toBeUndefined()
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("still resolves real globals inside setup scripts", () => {
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<script :setup>const upper = String("ok").toUpperCase()</script><div class="g">{{ upper }}</div>`
       ).render().mount(host)
 
       expect($(host, ".g")?.textContent).toBe("OK")
-      c79.destroy()
+      jq79.destroy()
     })
   })
 
   describe("nested components", () => {
     it("renders a component passed via data, with shorthand and literal props", () => {
       const child = new Component79(`<span class="child">{{ title }} / {{ user.name }}</span>`)
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<div><NestedChild :user :title="'Hardcoded title'"></NestedChild></div>`
       ).render({ user: { name: "Ada" }, NestedChild: child }).mount(host)
 
       expect($(host, ".child")?.textContent).toBe("Hardcoded title / Ada")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("keeps props live: deep parent mutations update the child", () => {
       const child = new Component79(`<span class="child">{{ user.name }}</span>`)
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<div><NestedChild :user></NestedChild></div>`
       ).render({ user: { name: "Ada" }, NestedChild: child }).mount(host)
 
       expect($(host, ".child")?.textContent).toBe("Ada")
 
-      c79.data!.user.name = "Grace"
+      jq79.data!.user.name = "Grace"
       expect($(host, ".child")?.textContent).toBe("Grace")
 
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("matches kebab-case tags and props against PascalCase/camelCase names", () => {
       const child = new Component79(`<span class="child">{{ userName }}</span>`)
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<div><nested-child :user-name="'Ada'"></nested-child></div>`
       ).render({ NestedChild: child }).mount(host)
 
       expect($(host, ".child")?.textContent).toBe("Ada")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("supports await import('/x.html') in setup scripts, rendering when it resolves", async () => {
@@ -780,7 +780,7 @@ describe("Component79", () => {
         `<div><ImportedComponent :user></ImportedComponent></div>`,
       ].join("\n")
 
-      const c79 = new Component79(src).render({ user: { name: "Ada" } }).mount(host)
+      const jq79 = new Component79(src).render({ user: { name: "Ada" } }).mount(host)
       // still loading: nothing rendered yet
       expect($(host, ".imported")).toBeNull()
 
@@ -788,18 +788,18 @@ describe("Component79", () => {
 
       expect(globalThis.fetch).toHaveBeenCalledWith("/components/foobar.html")
       expect($(host, ".imported")?.textContent).toBe("User: Ada")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("destroys nested instances when the parent is destroyed", () => {
       const child = new Component79(`<span class="child">{{ label }}</span>`)
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<div><NestedChild :label="label"></NestedChild></div>`
       ).render({ label: "x", NestedChild: child }).mount(host)
 
       const childEl = $(host, ".child")!
-      const data = c79.data!
-      c79.destroy()
+      const data = jq79.data!
+      jq79.destroy()
 
       data.label = "y"
       expect(childEl.textContent).toBe("x") // child effects disposed with the parent
@@ -808,7 +808,7 @@ describe("Component79", () => {
     it("expands self-closing component tags, keeping siblings intact", () => {
       const First = new Component79(`<span class="first">{{ user.name }}</span>`)
       const Second = new Component79(`<span class="second">{{ user.name }}</span>`)
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<div>
           <First :user />
           <Second :user="user" />
@@ -817,11 +817,11 @@ describe("Component79", () => {
 
       expect($(host, ".first")?.textContent).toBe("Ada")
       expect($(host, ".second")?.textContent).toBe("Ada")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("expands self-closing regular elements too, but leaves void elements and quoted '/>' alone", () => {
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<div class="a" /><img class="void" src="x.png" /><div class="b">{{ label }}</div>`
       ).render({ label: "a/> weird" }).mount(host)
 
@@ -830,16 +830,16 @@ describe("Component79", () => {
       expect($(host, ".void")).not.toBeNull()
       expect($(host, ".b")?.textContent).toBe("a/> weird")
 
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("does not rewrite '/>' inside setup script code", () => {
-      const c79 = new Component79(
+      const jq79 = new Component79(
         `<script :setup>const arrow = "looks like /> inside a string"</script><div class="code">{{ arrow }}</div>`
       ).render().mount(host)
 
       expect($(host, ".code")?.textContent).toBe("looks like /> inside a string")
-      c79.destroy()
+      jq79.destroy()
     })
 
     it("deduplicates identical head styles across instances via refcounting", () => {

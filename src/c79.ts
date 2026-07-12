@@ -815,16 +815,16 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
     "$scope", "$__effect", "$__import",
     `return (async () => { with ($scope) { ${code} } })()`
   )(scriptScope, effect, importResource)
-  result.catch(error => console.error("c79: error in :setup script", error))
+  result.catch(error => console.error("jq79: error in :setup script", error))
 }
 
 // a parsed single-file component. Typical lifecycle:
 //
-//   const c79 = new Component79(src)   // or await Component79.fetch(url)
-//   c79.render({ user })               // build reactive DOM, run scripts, inject styles
+//   const jq79 = new Component79(src)   // or await Component79.fetch(url)
+//   jq79.render({ user })               // build reactive DOM, run scripts, inject styles
 //      .mount("#app")                  // attach (renderShadow mounts into a shadow root)
 //   ...
-//   c79.unmount()                      // detach, keeping state - mount() re-attaches
+//   jq79.unmount()                      // detach, keeping state - mount() re-attaches
 //      .destroy()                      // dispose effects and remove styles
 export class Component79 {
   template: TemplateNode[]
@@ -890,8 +890,8 @@ export class Component79 {
       runSetupScript(code, store, fx.effect)
     })
 
-    this.startMarker = document.createComment("c79")
-    this.endMarker = document.createComment("/c79")
+    this.startMarker = document.createComment("jq79")
+    this.endMarker = document.createComment("/jq79")
     const content = document.createDocumentFragment()
     content.append(this.startMarker, renderNodes(this.template, store, fx), this.endMarker)
     this.content = content

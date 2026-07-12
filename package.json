@@ -1,5 +1,5 @@
 {
-  "name": "c79",
+  "name": "jq79",
   "version": "0.1.2",
   "description": "Mini reactive component library: single-file components, Svelte-style setup scripts, fine-grained proxy reactivity. One file, zero dependencies.",
   "keywords": [
@@ -10,37 +10,37 @@
     "mini",
     "ui"
   ],
-  "homepage": "https://github.com/jgermade/c79#readme",
+  "homepage": "https://github.com/jgermade/jq79#readme",
   "bugs": {
-    "url": "https://github.com/jgermade/c79/issues"
+    "url": "https://github.com/jgermade/jq79/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jgermade/c79.git"
+    "url": "git+https://github.com/jgermade/jq79.git"
   },
   "license": "ISC",
   "author": "Jesus Germade <jesus@germade.dev>",
   "type": "module",
-  "main": "./dist/c79.cjs",
-  "module": "./dist/c79.js",
-  "types": "./dist/c79.d.ts",
+  "main": "./dist/jq79.cjs",
+  "module": "./dist/jq79.js",
+  "types": "./dist/jq79.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/c79.d.ts",
-      "import": "./dist/c79.js",
-      "require": "./dist/c79.cjs",
-      "default": "./dist/c79.js"
+      "types": "./dist/jq79.d.ts",
+      "import": "./dist/jq79.js",
+      "require": "./dist/jq79.cjs",
+      "default": "./dist/jq79.js"
     }
   },
-  "unpkg": "./dist/c79.global.js",
-  "jsdelivr": "./dist/c79.global.js",
+  "unpkg": "./dist/jq79.global.js",
+  "jsdelivr": "./dist/jq79.global.js",
   "files": [
     "dist",
-    "src/c79.ts"
+    "src/jq79.ts"
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup && tsc src/c79.ts --declaration --emitDeclarationOnly --strict --lib dom,es2020 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
+    "build": "tsup && tsc src/jq79.ts --declaration --emitDeclarationOnly --strict --lib dom,es2020 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
     "test": "vitest run",
     "prepublishOnly": "npm test && npm run build"
   },
