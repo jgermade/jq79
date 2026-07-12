@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { $, $$, parseComponent, createReactiveDeepData } from "./jk79"
+import { $, $$, parseComponent, createReactiveDeepData, renderComponent } from "./jk79"
 
 describe("$", () => {
   beforeEach(() => {
@@ -256,5 +256,106 @@ describe("createReactiveDeepData", () => {
     const scope = createReactiveDeepData({ name: "a" })
 
     expect(Object.keys(scope)).toEqual(["name"])
+  })
+})
+
+describe("renderComponent", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+
+  it("interpolates text content and updates it reactively", () => {
+    const component = parseComponent(`<div class="full-name">{{ fullName }}</div>`)
+    const data = createReactiveDeepData({ fullName: "Ada Lovelace" })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect(container.querySelector(".full-name")?.textContent).toBe("Ada Lovelace")
+
+    data.fullName = "Grace Hopper"
+
+    expect(container.querySelector(".full-name")?.textContent).toBe("Grace Hopper")
+  })
+
+  it("applies :bind attributes and keeps them in sync", () => {
+    const component = parseComponent(`<div :bind="{ title, disabled }"></div>`)
+    const data = createReactiveDeepData({ title: "hi", disabled: false })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.getAttribute("title")).toBe("hi")
+    expect(el.hasAttribute("disabled")).toBe(false)
+
+    data.title = "bye"
+    data.disabled = true
+
+    expect(el.getAttribute("title")).toBe("bye")
+    expect(el.getAttribute("disabled")).toBe("true")
+  })
+
+  it("renders the :if branch when the condition is true and removes it when false", () => {
+    const component = parseComponent(`<div :if="show" class="a">yes</div>`)
+    const data = createReactiveDeepData({ show: true })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect(container.querySelector(".a")).not.toBeNull()
+
+    data.show = false
+
+    expect(container.querySelector(".a")).toBeNull()
+  })
+
+  it("walks an :if/:elseif/:else chain and swaps branches reactively", () => {
+    const component = parseComponent(
+      `<div :if="score > 8" class="a">great</div>` +
+      `<div :elseif="score > 4" class="b">ok</div>` +
+      `<div :else class="c">bad</div>`
+    )
+    const data = createReactiveDeepData({ score: 2 })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect(container.querySelector(".c")).not.toBeNull()
+    expect(container.querySelector(".a")).toBeNull()
+    expect(container.querySelector(".b")).toBeNull()
+
+    data.score = 6
+
+    expect(container.querySelector(".b")).not.toBeNull()
+    expect(container.querySelector(".a")).toBeNull()
+    expect(container.querySelector(".c")).toBeNull()
+
+    data.score = 10
+
+    expect(container.querySelector(".a")).not.toBeNull()
+    expect(container.querySelector(".b")).toBeNull()
+    expect(container.querySelector(".c")).toBeNull()
+  })
+
+  it("renders a list with :each and re-renders it when the array changes", () => {
+    const component = parseComponent(`<li :each="name in names">{{ name }}</li>`)
+    const data = createReactiveDeepData({ names: ["a", "b"] })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b"])
+
+    data.names = ["x", "y", "z"]
+
+    expect($$(container, "li").map(el => el.textContent)).toEqual(["x", "y", "z"])
+  })
+
+  it("exposes $index inside :each", () => {
+    const component = parseComponent(`<li :each="name in names">{{ $index }}:{{ name }}</li>`)
+    const data = createReactiveDeepData({ names: ["a", "b"] })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect($$(container, "li").map(el => el.textContent)).toEqual(["0:a", "1:b"])
   })
 })
