@@ -6,18 +6,18 @@
     "njs",
     "jquery"
   ],
-  "homepage": "https://github.com/jgermade/jk79#readme",
+  "homepage": "https://github.com/jgermade/jq79#readme",
   "bugs": {
-    "url": "https://github.com/jgermade/jk79/issues"
+    "url": "https://github.com/jgermade/jq79/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jgermade/jk79.git"
+    "url": "git+https://github.com/jgermade/jq79.git"
   },
   "license": "ISC",
   "author": "Jesus Germade <jesus@germade.dev>",
   "type": "module",
-  "main": "dist/q.js",
+  "main": "dist/jq79.js",
   "scripts": {
     "test": "vitest run"
   },

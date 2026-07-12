@@ -358,4 +358,77 @@ describe("renderComponent", () => {
 
     expect($$(container, "li").map(el => el.textContent)).toEqual(["0:a", "1:b"])
   })
+
+  it("does not touch unrelated bindings when an unrelated property changes", () => {
+    const component = parseComponent(`<div>{{ title }}</div><div :bind="{ label }"></div>`)
+    const data = createReactiveDeepData({ title: "hi", label: "x", unrelated: 1 })
+
+    container.appendChild(renderComponent(component, data))
+    const [titleEl, boundEl] = container.querySelectorAll("div")
+
+    data.unrelated = 2
+
+    // still the exact same DOM nodes/content - nothing was torn down and rebuilt
+    expect(container.querySelectorAll("div")[0]).toBe(titleEl)
+    expect(container.querySelectorAll("div")[1]).toBe(boundEl)
+    expect(titleEl.textContent).toBe("hi")
+    expect(boundEl.getAttribute("label")).toBe("x")
+  })
+
+  it("does not rebuild an :if branch's DOM when an unrelated property changes", () => {
+    const component = parseComponent(`<div :if="show" class="a">yes</div>`)
+    const data = createReactiveDeepData({ show: true, unrelated: 1 })
+
+    container.appendChild(renderComponent(component, data))
+    const branchEl = container.querySelector(".a")
+
+    data.unrelated = 2
+
+    expect(container.querySelector(".a")).toBe(branchEl)
+  })
+
+  it("does not rebuild :each list DOM when an unrelated property changes", () => {
+    const component = parseComponent(`<li :each="name in names">{{ name }}</li>`)
+    const data = createReactiveDeepData({ names: ["a", "b"], unrelated: 1 })
+
+    container.appendChild(renderComponent(component, data))
+    const before = $$(container, "li")
+
+    data.unrelated = 2
+
+    const after = $$(container, "li")
+    expect(after).toEqual(before)
+  })
+
+  it("updates just one :each item's text when only that item's nested property changes, without rebuilding the list", () => {
+    const component = parseComponent(`<li :each="user in users" :key="user.id">{{ user.name }}</li>`)
+    const data = createReactiveDeepData({ users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }] })
+
+    container.appendChild(renderComponent(component, data))
+    const before = $$(container, "li")
+
+    data.users[0].name = "Ada Lovelace"
+
+    const after = $$(container, "li")
+    expect(after).toEqual(before) // same DOM node instances, just their own text updated
+    expect(after.map(el => el.textContent)).toEqual(["Ada Lovelace", "Grace"])
+  })
+
+  it("keeps unchanged keyed items' DOM/state stable when the list is reordered", () => {
+    const component = parseComponent(`<li :each="user in users" :key="user.id"><input :bind="{ value: user.name }"></li>`)
+    const data = createReactiveDeepData({
+      users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }, { id: 3, name: "Katherine" }],
+    })
+
+    container.appendChild(renderComponent(component, data))
+    const inputs = $$(container, "input") as HTMLInputElement[]
+    inputs[0].dataset.marker = "ada-input"
+
+    data.users = [data.users[2], data.users[0], data.users[1]]
+
+    const reordered = $$(container, "li input") as HTMLInputElement[]
+    expect(reordered.map(el => el.value)).toEqual(["Katherine", "Ada", "Grace"])
+    // the input for user 1 (Ada) is still the exact same DOM node, just moved
+    expect(reordered[1].dataset.marker).toBe("ada-input")
+  })
 })
