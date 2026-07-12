@@ -918,6 +918,8 @@ export class Component79 {
   private ownsSharedStyles = false
   private useShadow = false
   private mountRoot: Element | ShadowRoot | DocumentFragment | null = null
+  // settles the $mounted() promise handed to this render generation's scripts
+  private resolveMounted: (() => void) | null = null
 
   constructor(src: string | ComponentParts) {
     const { template, scripts, styles } = typeof src === "string" ? parseComponentString(src) : src
@@ -963,13 +965,24 @@ export class Component79 {
     const $emit = (eventName: string, payload?: any): boolean =>
       marker.dispatchEvent(new CustomEvent(eventName, { detail: payload, bubbles: true, composed: true }))
 
+    // `await $mounted()` suspends a setup script until mount() attaches the
+    // component, so code below it can querySelector its own DOM. Resumption
+    // is a microtask, so in the usual synchronous render().mount() flow the
+    // whole tree (nested components included) is in the document before the
+    // script continues. If this instance is never mounted, the promise stays
+    // pending and the script's tail never runs
+    let resolveMounted!: () => void
+    const mounted = new Promise<void>(resolve => { resolveMounted = resolve })
+    this.resolveMounted = resolveMounted
+    const $mounted = () => mounted
+
     // scripts run before the template renders so `$:` values are initialized
     this.scripts.forEach(script => {
       const { vars, code } = transformSetupScript(script.content)
       // pre-declare script vars on the store so `with` resolves assignments
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
-      runSetupScript(code, store, fx.effect, { $emit })
+      runSetupScript(code, store, fx.effect, { $emit, $mounted })
     })
 
     const content = document.createDocumentFragment()
@@ -1002,6 +1015,7 @@ export class Component79 {
     if (this.useShadow) this.styleEls.forEach(el => root.appendChild(el))
     root.appendChild(this.content)
     this.mountRoot = root
+    this.resolveMounted?.()
     return this
   }
 
@@ -1036,6 +1050,7 @@ export class Component79 {
     this.startMarker = null
     this.endMarker = null
     this.data = null
+    this.resolveMounted = null
     return this
   }
 }

@@ -236,6 +236,23 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 
   Events emitted before the component is mounted have no ancestors to bubble to, so nobody hears them — `$emit` is meant for handlers and async code, not synchronous top-level setup.
 
+- `await $mounted()` suspends the script until the component is attached to the DOM, so everything below it can use `querySelector` (or `$`/`$$`) directly:
+
+```html
+<script :setup>
+  let items = await fetchItems()   // runs before render
+
+  await $mounted()
+
+  let height = $(".list").offsetHeight   // real DOM access — still reactive
+</script>
+<ul class="list">
+  <li :each="item in items">{{ item }}</li>
+</ul>
+```
+
+  Reactivity is unaffected by where a declaration sits: variables declared after the `await` are pre-declared on the store before the first render (as `undefined`), so the template can bind to them from the start and updates when the assignment runs. If the component is never mounted, the code after `await $mounted()` never runs.
+
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. `let a = 1, b = 2` multi-declarators are not supported — one declaration per statement.
 
 ## Reactive data

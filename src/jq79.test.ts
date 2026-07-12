@@ -879,6 +879,79 @@ describe("Component79", () => {
       expect($(host, ".shadow")?.textContent).toBe("from scope")
       jq79.destroy()
     })
+
+    it("resumes `await $mounted()` once the component's DOM is in the document", async () => {
+      const src = [
+        "<script :setup>",
+        "let found = 'pending'",
+        "await $mounted()",
+        "found = $('.probe').tagName   // plain document querySelector",
+        "</script>",
+        `<span class="probe">{{ found }}</span>`,
+      ].join("\n")
+      const jq79 = new Component79(src).render().mount(host)
+
+      // template rendered with the pre-await value
+      expect($(host, ".probe")?.textContent).toBe("pending")
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect($(host, ".probe")?.textContent).toBe("SPAN")
+      jq79.destroy()
+    })
+
+    it("keeps let declarations after `await $mounted()` reactive", async () => {
+      const src = [
+        "<script :setup>",
+        "await $mounted()",
+        "let label = 'ready'",
+        "</script>",
+        `<div class="late">{{ label }}</div>`,
+      ].join("\n")
+      const jq79 = new Component79(src).render().mount(host)
+
+      expect($(host, ".late")?.textContent).toBe("")
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect($(host, ".late")?.textContent).toBe("ready")
+
+      jq79.data!.label = "changed"
+      expect($(host, ".late")?.textContent).toBe("changed")
+      jq79.destroy()
+    })
+
+    it("does not run the script tail until mount() is actually called", async () => {
+      const jq79 = new Component79(
+        `<script :setup>let state = "before"\nawait $mounted()\nstate = "after"</script>` +
+        `<div class="st">{{ state }}</div>`
+      ).render()
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(jq79.data!.state).toBe("before")
+
+      jq79.mount(host)
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect($(host, ".st")?.textContent).toBe("after")
+      jq79.destroy()
+    })
+
+    it("resumes `await $mounted()` in nested components after the whole tree is attached", async () => {
+      const child = new Component79(
+        `<script :setup>let tag = ""\nawait $mounted()\ntag = $(".m-outer .m-inner").tagName</script>` +
+        `<em class="m-inner">{{ tag }}</em>`
+      )
+      const jq79 = new Component79(
+        `<div class="m-outer"><NestedChild></NestedChild></div>`
+      ).render({ NestedChild: child }).mount(host)
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      // the child found itself through a document-level selector that
+      // requires its ancestors to be attached too
+      expect($(host, ".m-inner")?.textContent).toBe("EM")
+      jq79.destroy()
+    })
   })
 
   describe("nested components", () => {
