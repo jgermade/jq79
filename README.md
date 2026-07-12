@@ -161,8 +161,8 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 </script>
 
 <div>
-  <NestedComponent :user :title="'Hardcoded title'"></NestedComponent>
-  <ImportedComponent :user="user"></ImportedComponent>
+  <NestedComponent :user :title="'Hardcoded title'" />
+  <ImportedComponent :user="user" />
 </div>
 ```
 
@@ -177,7 +177,7 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - HTML lowercases everything, so matching ignores case and dashes: `<NestedComponent>` and `<nested-component>` both resolve `NestedComponent`, and `:user-name` becomes the `userName` prop.
 - `await import('/x.html')` returns a `Component79` (non-`.html` URLs fall through to native `import()`). While the promise is pending nothing renders; the child appears when it resolves.
 - Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.
-- ⚠ Self-closing tags (`<MyComponent />`) are not valid HTML — the parser treats them as unclosed and swallows the following siblings. Always close explicitly: `<MyComponent></MyComponent>`.
+- Self-closing tags work: jq79 expands `<MyComponent />` (and `<div />`) into explicit open+close pairs before HTML parsing, since the HTML parser would otherwise treat them as unclosed. Void elements (`<img />`, `<br />`) and `<script>`/`<style>` contents are left untouched.
 
 ## Setup scripts
 

@@ -553,6 +553,33 @@ type ComponentParts = {
   styles: TagBlock[]
 }
 
+const VOID_ELEMENTS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input",
+  "link", "meta", "param", "source", "track", "wbr",
+])
+
+// a self-closing tag with its attributes; quoted attribute values are matched
+// as whole chunks so a "/>" inside one doesn't end the tag early
+const SELF_CLOSING_RE = /<([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)\/>/g
+const RAW_BLOCK_RE = /(<script[\s\S]*?<\/script\s*>|<style[\s\S]*?<\/style\s*>)/gi
+
+// expands self-closing tags (<MyComponent />, <div />) into explicit
+// open+close pairs BEFORE DOM parsing. The HTML parser ignores the slash and
+// would treat them as unclosed, swallowing the following siblings. Void
+// elements keep their native behavior, and <script>/<style> contents are
+// passed through untouched so code inside them is never rewritten
+const expandSelfClosingTags = (src: string): string =>
+  src
+    .split(RAW_BLOCK_RE)
+    .map((chunk, i) =>
+      i % 2 === 1 // odd chunks are the captured script/style blocks
+        ? chunk
+        : chunk.replace(SELF_CLOSING_RE, (match, tag: string, attrs: string) =>
+            VOID_ELEMENTS.has(tag.toLowerCase()) ? match : `<${tag}${attrs}></${tag}>`
+          )
+    )
+    .join("")
+
 // converts a string of HTML into an AST representation of the component:
 // - template: the non-script/style top-level elements, as TemplateNodes
 // - scripts/styles: { attrs, content } blocks in source order
@@ -575,7 +602,7 @@ const parseComponentString = (component: string): ComponentParts => {
 
   // parsed as the content of a <template> so leading <script>/<style> tags
   // aren't reparented into <head> by the HTML parser
-  const parsedDOM = new DOMParser().parseFromString(`<template>${component}</template>`, "text/html")
+  const parsedDOM = new DOMParser().parseFromString(`<template>${expandSelfClosingTags(component)}</template>`, "text/html")
   const root = parsedDOM.querySelector("template") as HTMLTemplateElement
 
   const scripts: TagBlock[] = []

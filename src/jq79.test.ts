@@ -805,6 +805,43 @@ describe("Component79", () => {
       expect(childEl.textContent).toBe("x") // child effects disposed with the parent
     })
 
+    it("expands self-closing component tags, keeping siblings intact", () => {
+      const First = new Component79(`<span class="first">{{ user.name }}</span>`)
+      const Second = new Component79(`<span class="second">{{ user.name }}</span>`)
+      const c79 = new Component79(
+        `<div>
+          <First :user />
+          <Second :user="user" />
+        </div>`
+      ).render({ user: { name: "Ada" }, First, Second }).mount(host)
+
+      expect($(host, ".first")?.textContent).toBe("Ada")
+      expect($(host, ".second")?.textContent).toBe("Ada")
+      c79.destroy()
+    })
+
+    it("expands self-closing regular elements too, but leaves void elements and quoted '/>' alone", () => {
+      const c79 = new Component79(
+        `<div class="a" /><img class="void" src="x.png" /><div class="b">{{ label }}</div>`
+      ).render({ label: "a/> weird" }).mount(host)
+
+      // .a did not swallow its siblings
+      expect($(host, ".a")?.childNodes.length).toBe(0)
+      expect($(host, ".void")).not.toBeNull()
+      expect($(host, ".b")?.textContent).toBe("a/> weird")
+
+      c79.destroy()
+    })
+
+    it("does not rewrite '/>' inside setup script code", () => {
+      const c79 = new Component79(
+        `<script :setup>const arrow = "looks like /> inside a string"</script><div class="code">{{ arrow }}</div>`
+      ).render().mount(host)
+
+      expect($(host, ".code")?.textContent).toBe("looks like /> inside a string")
+      c79.destroy()
+    })
+
     it("deduplicates identical head styles across instances via refcounting", () => {
       const parts = new Component79(`<span class="s">x</span><style>.s { color: red; }</style>`)
       const stylesBefore = document.head.querySelectorAll("style").length
