@@ -731,4 +731,93 @@ describe("Component79", () => {
       c79.destroy()
     })
   })
+
+  describe("nested components", () => {
+    it("renders a component passed via data, with shorthand and literal props", () => {
+      const child = new Component79(`<span class="child">{{ title }} / {{ user.name }}</span>`)
+      const c79 = new Component79(
+        `<div><NestedChild :user :title="'Hardcoded title'"></NestedChild></div>`
+      ).render({ user: { name: "Ada" }, NestedChild: child }).mount(host)
+
+      expect($(host, ".child")?.textContent).toBe("Hardcoded title / Ada")
+      c79.destroy()
+    })
+
+    it("keeps props live: deep parent mutations update the child", () => {
+      const child = new Component79(`<span class="child">{{ user.name }}</span>`)
+      const c79 = new Component79(
+        `<div><NestedChild :user></NestedChild></div>`
+      ).render({ user: { name: "Ada" }, NestedChild: child }).mount(host)
+
+      expect($(host, ".child")?.textContent).toBe("Ada")
+
+      c79.data!.user.name = "Grace"
+      expect($(host, ".child")?.textContent).toBe("Grace")
+
+      c79.destroy()
+    })
+
+    it("matches kebab-case tags and props against PascalCase/camelCase names", () => {
+      const child = new Component79(`<span class="child">{{ userName }}</span>`)
+      const c79 = new Component79(
+        `<div><nested-child :user-name="'Ada'"></nested-child></div>`
+      ).render({ NestedChild: child }).mount(host)
+
+      expect($(host, ".child")?.textContent).toBe("Ada")
+      c79.destroy()
+    })
+
+    it("supports await import('/x.html') in setup scripts, rendering when it resolves", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({
+        ok: true,
+        text: async () => `<span class="imported">User: {{ user.name }}</span>`,
+      })))
+
+      const src = [
+        "<script :setup>",
+        "const ImportedComponent = await import('/components/foobar.html')",
+        "</script>",
+        `<div><ImportedComponent :user></ImportedComponent></div>`,
+      ].join("\n")
+
+      const c79 = new Component79(src).render({ user: { name: "Ada" } }).mount(host)
+      // still loading: nothing rendered yet
+      expect($(host, ".imported")).toBeNull()
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect(globalThis.fetch).toHaveBeenCalledWith("/components/foobar.html")
+      expect($(host, ".imported")?.textContent).toBe("User: Ada")
+      c79.destroy()
+    })
+
+    it("destroys nested instances when the parent is destroyed", () => {
+      const child = new Component79(`<span class="child">{{ label }}</span>`)
+      const c79 = new Component79(
+        `<div><NestedChild :label="label"></NestedChild></div>`
+      ).render({ label: "x", NestedChild: child }).mount(host)
+
+      const childEl = $(host, ".child")!
+      const data = c79.data!
+      c79.destroy()
+
+      data.label = "y"
+      expect(childEl.textContent).toBe("x") // child effects disposed with the parent
+    })
+
+    it("deduplicates identical head styles across instances via refcounting", () => {
+      const parts = new Component79(`<span class="s">x</span><style>.s { color: red; }</style>`)
+      const stylesBefore = document.head.querySelectorAll("style").length
+
+      const a = new Component79(parts).render().mount(host)
+      const b = new Component79(parts).render().mount(host)
+      expect(document.head.querySelectorAll("style").length).toBe(stylesBefore + 1)
+
+      a.destroy()
+      expect(document.head.querySelectorAll("style").length).toBe(stylesBefore + 1)
+
+      b.destroy()
+      expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+    })
+  })
 })

@@ -75,10 +75,19 @@ type ReactiveDeepData<T> = T & {
 const getByPath = (obj: Record<string, any>, dotKey: string): any =>
   dotKey.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj)
 
+// only plain objects and arrays get deep-wrapped by the reactive store;
+// class instances (Component79, Date, DOM nodes, ...) pass through untouched
+// so their identity, prototypes and internals stay intact
+const isPlainData = (value: object): boolean => {
+  if (Array.isArray(value)) return true
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
 const walkLeaves = (obj: Record<string, any>, path: string, visit: (dotKey: string, value: any) => void) => {
   Object.entries(obj).forEach(([key, value]) => {
     const dotKey = path ? `${path}.${key}` : key
-    if (value && typeof value === "object") walkLeaves(value, dotKey, visit)
+    if (value && typeof value === "object" && isPlainData(value)) walkLeaves(value, dotKey, visit)
     else visit(dotKey, value)
   })
 }
@@ -93,6 +102,17 @@ const pathsOverlap = (a: string, b: string): boolean =>
 // one per store) so nested effects across stores still nest correctly; reads
 // during makeReactive's `get` trap are attributed to whichever run is on top
 const trackerStack: Set<string>[] = []
+
+// runs fn with dependency tracking suspended - reads inside it are attributed
+// to a throwaway set instead of the currently running effect
+const untracked = <T>(fn: () => T): T => {
+  trackerStack.push(new Set())
+  try {
+    return fn()
+  } finally {
+    trackerStack.pop()
+  }
+}
 
 type Effect = { deps: Set<string>; run: () => void }
 
@@ -119,7 +139,7 @@ export const createReactiveDeepData = <T extends Record<string, any>>(data: T): 
     if (reactiveProxies.has(obj)) return obj
 
     Object.entries(obj).forEach(([key, value]) => {
-      if (value && typeof value === "object") {
+      if (value && typeof value === "object" && isPlainData(value)) {
         obj[key] = makeReactive(value, path ? `${path}.${key}` : key)
       }
     })
@@ -144,7 +164,7 @@ export const createReactiveDeepData = <T extends Record<string, any>>(data: T): 
         }
 
         const dotKey = path ? `${path}.${key}` : key
-        if (value && typeof value === "object") {
+        if (value && typeof value === "object" && isPlainData(value)) {
           value = makeReactive(value, dotKey)
         }
         target[key] = value
@@ -208,13 +228,20 @@ type ConditionalBranch = { expr?: string; node: TemplateNode }
 // torn down in one call when that subtree is replaced/removed. `scope.$effect`
 // resolves through the prototype chain up to the root store no matter how
 // many nested :each scopes sit in between (see renderEach's itemScope)
-type EffectScope = { effect: (run: () => void) => void; dispose: () => void }
+type EffectScope = {
+  effect: (run: () => void) => void
+  // registers an arbitrary cleanup (e.g. destroying a nested component) to
+  // run when this subtree is torn down
+  onDispose: (fn: Unsubscribe) => void
+  dispose: () => void
+}
 
 const createEffectScope = (scope: Record<string, any>): EffectScope => {
-  const unsubscribes: Unsubscribe[] = []
+  const disposers: Unsubscribe[] = []
   return {
-    effect: run => { unsubscribes.push(scope.$effect(run)) },
-    dispose: () => { unsubscribes.splice(0).forEach(unsubscribe => unsubscribe()) },
+    effect: run => { disposers.push(scope.$effect(run)) },
+    onDispose: fn => { disposers.push(fn) },
+    dispose: () => { disposers.splice(0).forEach(dispose => dispose()) },
   }
 }
 
@@ -238,11 +265,99 @@ const bindEvent = (el: Element, attr: string, expr: string, scope: Record<string
   }, { once: mods.has("once"), capture: mods.has("capture") })
 }
 
+const kebabToCamel = (name: string) => name.replace(/-(\w)/g, (_, c: string) => c.toUpperCase())
+
+// finds the scope variable a template tag refers to. HTML parsing lowercases
+// tag names, so <NestedComponent> arrives as "nestedcomponent" and matching is
+// case-insensitive with dashes stripped (<nested-component> works too). Only
+// PascalCase scope keys participate, so ordinary variables named like real
+// elements (title, code, ...) never hijack them
+const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
+  const normalized = tag.replace(/-/g, "").toLowerCase()
+  for (let obj: any = scope; obj && obj !== Object.prototype; obj = Object.getPrototypeOf(obj)) {
+    for (const key of Object.keys(obj)) {
+      if (/^[A-Z]/.test(key) && key.replace(/-/g, "").toLowerCase() === normalized) return key
+    }
+  }
+  return null
+}
+
+// <MyComponent :user :title="'str'"></MyComponent> - renders a child
+// component instance at this position. Props: `:name="expr"` evaluates expr
+// in the parent scope (`:name` alone is shorthand for `:name="name"`), plain
+// attributes pass through as literal strings, and kebab-case prop names
+// become camelCase. Props stay live: a parent effect re-evaluates each
+// expression and writes it into the child's store. The component variable is
+// reactive too - while it's undefined (e.g. an `await import(...)` still in
+// flight) nothing renders, and the child appears when it resolves
+const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<string, any>, fx: EffectScope): Node => {
+  const anchor = document.createComment(key)
+  const wrapper = document.createDocumentFragment()
+  wrapper.appendChild(anchor)
+
+  const props: Record<string, string> = {} // prop name -> expression in parent scope
+  Object.entries(node.attrs).forEach(([attr, value]) => {
+    if (CONTROL_ATTRS.has(attr) || attr.startsWith("@")) return
+    if (attr.startsWith(":")) {
+      const name = kebabToCamel(attr.slice(1))
+      props[name] = value || name
+    } else {
+      props[kebabToCamel(attr)] = JSON.stringify(value)
+    }
+  })
+
+  let current: Component79 | null = null
+  let currentDef: Component79 | null = null
+  let childFx: EffectScope | null = null
+
+  fx.effect(() => {
+    const value = evalExpr(key, scope)
+    const nextDef = value instanceof Component79 ? value : null
+    if (nextDef === currentDef) return
+
+    childFx?.dispose()
+    childFx = null
+    current?.destroy() // unmounts its marker range, removing the child's DOM
+    current = null
+    currentDef = nextDef
+    if (!nextDef) return
+
+    // a fresh instance per usage site: the definition's parsed parts are
+    // shared, but store/effects/DOM are per instance
+    const instance = new Component79({ template: nextDef.template, scripts: nextDef.scripts, styles: nextDef.styles })
+    const seed = untracked(() =>
+      Object.fromEntries(Object.entries(props).map(([name, expr]) => [name, evalExpr(expr, scope)]))
+    )
+    const holder = document.createDocumentFragment()
+    instance.render(seed).mount(holder)
+    anchor.parentNode!.insertBefore(holder, anchor.nextSibling)
+
+    const syncFx = createEffectScope(scope)
+    Object.entries(props).forEach(([name, expr]) => {
+      syncFx.effect(() => { (instance.data as Record<string, any>)[name] = evalExpr(expr, scope) })
+    })
+
+    childFx = syncFx
+    current = instance
+  })
+
+  fx.onDispose(() => {
+    childFx?.dispose()
+    current?.destroy()
+  })
+
+  return wrapper
+}
+
 // renders a single element node: static attrs, @event listeners, a reactive
 // :bind object, and its (reactive) children. :if/:elseif/:else/:each are
 // handled by renderNodes, which decides *whether*/*how many times* a node is
-// rendered before calling this
+// rendered before calling this. Tags matching a PascalCase scope variable
+// render as nested components instead
 const renderNode = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope): Node => {
+  const componentKey = findComponentKey(scope, node.tag)
+  if (componentKey) return renderNestedComponent(componentKey, node, scope, fx)
+
   const el = document.createElement(node.tag)
 
   Object.entries(node.attrs).forEach(([key, value]) => {
@@ -504,6 +619,7 @@ type SetupTransform = { vars: string[]; code: string }
 
 const DECLARATION_RE = /(?:let|var|const)\s+([A-Za-z_$][\w$]*)/y
 const REACTIVE_LABEL_RE = /\$:\s*/y
+const IMPORT_CALL_RE = /import(?=\s*\()/y
 const REACTIVE_ASSIGN_RE = /\$:\s*([A-Za-z_$][\w$]*)\s*=(?!=)/y
 
 const skipString = (src: string, start: number): number => {
@@ -571,6 +687,20 @@ const transformSetupScript = (src: string): SetupTransform => {
       continue
     }
 
+    // `import(...)` is a keyword form, so it can't be intercepted through the
+    // scope - rewrite the identifier to the injected $__import (which loads
+    // .html URLs as components via Component79.fetch and delegates the rest to
+    // native import). The `(` is left for the scanner so depth stays balanced
+    if (ch === "i" && (i === 0 || !/[\w$.]/.test(src[i - 1]))) {
+      IMPORT_CALL_RE.lastIndex = i
+      if (IMPORT_CALL_RE.test(src)) {
+        out += "$__import"
+        i += "import".length
+        atStatementStart = false
+        continue
+      }
+    }
+
     if (depth === 0 && atStatementStart) {
       DECLARATION_RE.lastIndex = i
       const decl = DECLARATION_RE.exec(src)
@@ -609,18 +739,56 @@ const transformSetupScript = (src: string): SetupTransform => {
   return { vars, code: out }
 }
 
+// loads .html URLs as components, delegating anything else to native import()
+const importResource = (url: string): Promise<any> =>
+  /\.html?([?#]|$)/.test(url) ? Component79.fetch(url) : import(url)
+
+// document.head styles are shared by content and refcounted, so N instances
+// of the same component (e.g. one per :each item) inject a single <style> tag
+// that goes away when the last instance is destroyed
+const styleRegistry = new Map<string, { el: HTMLStyleElement; count: number }>()
+
+const acquireStyle = (content: string) => {
+  let entry = styleRegistry.get(content)
+  if (!entry) {
+    const el = document.createElement("style")
+    el.textContent = content
+    document.head.appendChild(el)
+    entry = { el, count: 0 }
+    styleRegistry.set(content, entry)
+  }
+  entry.count++
+}
+
+const releaseStyle = (content: string) => {
+  const entry = styleRegistry.get(content)
+  if (entry && --entry.count <= 0) {
+    entry.el.remove()
+    styleRegistry.delete(content)
+  }
+}
+
 // scripts run inside `with (scriptScope)`, where scriptScope's `has` trap
-// claims ownership of every name that is neither a real global nor $__effect.
-// This makes `with` route ALL other reads/writes through the reactive store -
-// even bare assignments to names never declared with let/const, which would
-// otherwise leak onto globalThis - while `console`, `Promise`, `fetch`, etc.
-// still resolve normally. get/set are deliberately not trapped: they default-
-// forward to `scope` (the reactive proxy), preserving tracking and notify
+// claims ownership of every name that is neither a real global nor one of the
+// injected helpers. This makes `with` route ALL other reads/writes through the
+// reactive store - even bare assignments to names never declared with
+// let/const, which would otherwise leak onto globalThis - while `console`,
+// `Promise`, `fetch`, etc. still resolve normally. get/set are deliberately
+// not trapped: they default-forward to `scope` (the reactive proxy),
+// preserving tracking and notify.
+// The body is wrapped in an async IIFE so top-level `await` works: everything
+// up to the first await runs synchronously (before the template renders), and
+// later assignments update the DOM reactively when they happen
 const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void) => {
   const scriptScope = new Proxy(scope, {
-    has: (target, key) => key !== "$__effect" && (Reflect.has(target, key) || !(key in globalThis)),
+    has: (target, key) =>
+      key !== "$__effect" && key !== "$__import" && (Reflect.has(target, key) || !(key in globalThis)),
   })
-  new Function("$scope", "$__effect", `with ($scope) { ${code} }`)(scriptScope, effect)
+  const result: Promise<void> = new Function(
+    "$scope", "$__effect", "$__import",
+    `return (async () => { with ($scope) { ${code} } })()`
+  )(scriptScope, effect, importResource)
+  result.catch(error => console.error("jq79: error in :setup script", error))
 }
 
 // a parsed single-file component. Typical lifecycle:
@@ -647,9 +815,12 @@ export class Component79 {
   // that :if/:each inserted next to the anchors after mounting
   private startMarker: Comment | null = null
   private endMarker: Comment | null = null
+  // shadow rendering keeps per-instance <style> elements; head rendering goes
+  // through the shared refcounted styleRegistry instead
   private styleEls: HTMLStyleElement[] = []
+  private ownsSharedStyles = false
   private useShadow = false
-  private mountRoot: Element | ShadowRoot | null = null
+  private mountRoot: Element | ShadowRoot | DocumentFragment | null = null
 
   constructor(src: string | ComponentParts) {
     const { template, scripts, styles } = typeof src === "string" ? parseComponentString(src) : src
@@ -698,25 +869,29 @@ export class Component79 {
     content.append(this.startMarker, renderNodes(this.template, store, fx), this.endMarker)
     this.content = content
 
-    this.styleEls = this.styles.map(style => {
-      const el = document.createElement("style")
-      el.textContent = style.content
-      return el
-    })
-    if (!shadow) this.styleEls.forEach(el => document.head.appendChild(el))
+    if (shadow) {
+      this.styleEls = this.styles.map(style => {
+        const el = document.createElement("style")
+        el.textContent = style.content
+        return el
+      })
+    } else {
+      this.styles.forEach(style => acquireStyle(style.content))
+      this.ownsSharedStyles = true
+    }
 
     return this
   }
 
-  mount(parent: Element | string): this {
-    const parentEl = typeof parent === "string" ? $(parent) : parent
-    if (!parentEl) throw new Error(`mount target not found: ${parent}`)
+  mount(parent: Element | ShadowRoot | DocumentFragment | string): this {
+    const target = typeof parent === "string" ? $(parent) : parent
+    if (!target) throw new Error(`mount target not found: ${parent}`)
     if (!this.content) throw new Error("render() must be called before mount()")
     if (this.mountRoot) this.unmount()
 
-    const root = this.useShadow
-      ? parentEl.shadowRoot ?? parentEl.attachShadow({ mode: "open" })
-      : parentEl
+    const root = this.useShadow && target instanceof Element
+      ? target.shadowRoot ?? target.attachShadow({ mode: "open" })
+      : target
     if (this.useShadow) this.styleEls.forEach(el => root.appendChild(el))
     root.appendChild(this.content)
     this.mountRoot = root
@@ -746,6 +921,10 @@ export class Component79 {
     this.fx = null
     this.styleEls.forEach(el => el.parentNode?.removeChild(el))
     this.styleEls = []
+    if (this.ownsSharedStyles) {
+      this.styles.forEach(style => releaseStyle(style.content))
+      this.ownsSharedStyles = false
+    }
     this.content = null
     this.startMarker = null
     this.endMarker = null

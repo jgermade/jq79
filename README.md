@@ -4,6 +4,8 @@ A mini reactive component library in a single file. Single-file components (temp
 
 ## Installation
 
+### npm
+
 ```sh
 npm install jq79
 ```
@@ -11,6 +13,27 @@ npm install jq79
 ```js
 import { Component79, $, $$ } from "jq79"
 ```
+
+### CDN
+
+Once published to npm, the package is automatically served by every major CDN — no separate publishing step:
+
+```html
+<!-- as an ES module -->
+<script type="module">
+  import { Component79 } from "https://esm.sh/jq79"
+  // or: https://cdn.jsdelivr.net/npm/jq79/+esm
+  // or: https://unpkg.com/jq79?module
+</script>
+
+<!-- or as a classic script exposing window.jq79 -->
+<script src="https://cdn.jsdelivr.net/npm/jq79/dist/jq79.global.js"></script>
+<script>
+  const { Component79 } = jq79
+</script>
+```
+
+Pin a version in production: `https://cdn.jsdelivr.net/npm/jq79@0.1.0/...`.
 
 Or grab [`src/jq79.ts`](src/jq79.ts) directly — the whole library is one file.
 
@@ -128,6 +151,34 @@ Modifiers (chainable, e.g. `@click.stop.once`):
 | `.once`    | listener runs at most once               |
 | `.capture` | listen in the capture phase              |
 
+### Nested components
+
+A tag matching a **PascalCase scope variable** renders as a child component. Components reach the scope through render data, `:setup` props, or an `await import(...)` in the setup script:
+
+```html
+<script :setup="{ user, NestedComponent }">
+  const ImportedComponent = await import('/components/foobar.html')
+</script>
+
+<div>
+  <NestedComponent :user :title="'Hardcoded title'"></NestedComponent>
+  <ImportedComponent :user="user"></ImportedComponent>
+</div>
+```
+
+```html
+<!-- /components/foobar.html -->
+<script :setup="{ user }"></script>
+<div>User: {{ user.firstName }}</div>
+```
+
+- Props: `:name="expr"` evaluates in the parent scope; `:name` alone is shorthand for `:name="name"`; plain attributes pass as literal strings.
+- Props are **live**: when a parent expression's dependencies change (deeply), the new value is written into the child's store.
+- HTML lowercases everything, so matching ignores case and dashes: `<NestedComponent>` and `<nested-component>` both resolve `NestedComponent`, and `:user-name` becomes the `userName` prop.
+- `await import('/x.html')` returns a `Component79` (non-`.html` URLs fall through to native `import()`). While the promise is pending nothing renders; the child appears when it resolves.
+- Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.
+- ⚠ Self-closing tags (`<MyComponent />`) are not valid HTML — the parser treats them as unclosed and swallows the following siblings. Always close explicitly: `<MyComponent></MyComponent>`.
+
 ## Setup scripts
 
 `<script :setup>` blocks run against the component's reactive scope, Svelte-style:
@@ -185,8 +236,13 @@ $$(el, ".card")       // scoped
 
 ```sh
 npm install
-npm test        # vitest + jsdom
+npm test         # vitest + jsdom
+npm run build    # tsup → dist/ (ESM + CJS + IIFE + .d.ts)
 ```
+
+## Publishing
+
+`npm publish` runs tests and the build automatically (`prepublishOnly`). Bump with `npm version patch|minor|major`, then publish — unpkg, jsDelivr and esm.sh pick the new version up from npm automatically.
 
 ## License
 
