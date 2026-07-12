@@ -831,16 +831,19 @@ const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive }
 // The body is wrapped in an async IIFE so top-level `await` works: everything
 // up to the first await runs synchronously (before the template renders), and
 // later assignments update the DOM reactively when they happen
-const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void) => {
+const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}) => {
+  // instanceHelpers are per-component-instance additions (e.g. $emit, which
+  // is bound to this instance's DOM position)
+  const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
   const scriptScope = new Proxy(scope, {
     has: (target, key) =>
       key !== "$__effect" && key !== "$__import" &&
-      (Reflect.has(target, key) || !(key in globalThis) && !(key in SETUP_HELPERS)),
+      (Reflect.has(target, key) || !(key in globalThis) && !(key in helpers)),
   })
   const result: Promise<void> = new Function(
-    "$scope", "$__effect", "$__import", ...Object.keys(SETUP_HELPERS),
+    "$scope", "$__effect", "$__import", ...Object.keys(helpers),
     `return (async () => { with ($scope) { ${code} } })()`
-  )(scriptScope, effect, importResource, ...Object.values(SETUP_HELPERS))
+  )(scriptScope, effect, importResource, ...Object.values(helpers))
   result.catch(error => console.error("jq79: error in :setup script", error))
 }
 
@@ -907,17 +910,27 @@ export class Component79 {
     this.fx = fx
     this.useShadow = shadow
 
+    this.startMarker = document.createComment("jq79")
+    this.endMarker = document.createComment("/jq79")
+
+    // $emit dispatches a bubbling CustomEvent from this instance's start
+    // marker, so once mounted it travels up the real DOM and parents can
+    // listen on any ancestor (or with @event-name on a wrapping element).
+    // Captures the marker rather than `this` so a later re-render's scripts
+    // can't dispatch from the wrong generation
+    const marker = this.startMarker
+    const $emit = (eventName: string, payload?: any): boolean =>
+      marker.dispatchEvent(new CustomEvent(eventName, { detail: payload, bubbles: true, composed: true }))
+
     // scripts run before the template renders so `$:` values are initialized
     this.scripts.forEach(script => {
       const { vars, code } = transformSetupScript(script.content)
       // pre-declare script vars on the store so `with` resolves assignments
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
-      runSetupScript(code, store, fx.effect)
+      runSetupScript(code, store, fx.effect, { $emit })
     })
 
-    this.startMarker = document.createComment("jq79")
-    this.endMarker = document.createComment("/jq79")
     const content = document.createDocumentFragment()
     content.append(this.startMarker, renderNodes(this.template, store, fx), this.endMarker)
     this.content = content

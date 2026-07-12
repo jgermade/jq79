@@ -199,6 +199,22 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.
 - The [DOM helpers](#dom-helpers) `$`, `$$` and `$create`, plus [`$reactive`](#reactive-data), are available without importing anything — `<script :setup="{ $, $$, $create, $reactive }">`. Like globals, they are shadowed by same-named scope properties.
+- `$emit(eventName, payload)` dispatches a native bubbling `CustomEvent` (with `payload` as `event.detail`) from the component's position in the DOM. Listen from a parent component with `@event-name` on any wrapping element, or with plain `addEventListener` on the mount target:
+
+```html
+<!-- child -->
+<script :setup>
+  const save = () => $emit("saved", { id: 42 })
+</script>
+<button @click="save">Save</button>
+
+<!-- parent -->
+<div @saved="lastSaved = $event.detail.id">
+  <ChildForm />
+</div>
+```
+
+  Events emitted before the component is mounted have no ancestors to bubble to, so nobody hears them — `$emit` is meant for handlers and async code, not synchronous top-level setup.
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. `let a = 1, b = 2` multi-declarators are not supported — one declaration per statement.
 

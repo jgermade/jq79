@@ -764,6 +764,37 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("exposes $emit, dispatching a bubbling CustomEvent with the payload as detail", () => {
+      const src =
+        `<script :setup>const fire = payload => $emit("child-event", payload)</script>` +
+        `<button class="btn" @click="fire('hello')">go</button>`
+      const jq79 = new Component79(src).render().mount(host)
+
+      const seen: any[] = []
+      host.addEventListener("child-event", event => seen.push((event as CustomEvent).detail))
+
+      $(host, ".btn")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect(seen).toEqual(["hello"])
+      jq79.destroy()
+    })
+
+    it("lets a parent component catch a child's $emit via @event on a wrapping element", () => {
+      const child = new Component79(
+        `<script :setup>const notify = () => $emit("child-saved", 42)</script>` +
+        `<button class="child-btn" @click="notify">save</button>`
+      )
+      const jq79 = new Component79(
+        `<div class="wrap" @child-saved="got = $event.detail"><ChildComp></ChildComp></div>` +
+        `<span class="got">{{ got }}</span>`
+      ).render({ got: "", ChildComp: child }).mount(host)
+
+      $(host, ".child-btn")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect($(host, ".got")?.textContent).toBe("42")
+      jq79.destroy()
+    })
+
     it("lets scope properties shadow same-named DOM helpers", () => {
       const jq79 = new Component79(
         `<script :setup="{ $ }">const picked = $("ignored")</script><div class="shadow">{{ picked }}</div>`
