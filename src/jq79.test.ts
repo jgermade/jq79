@@ -432,6 +432,82 @@ describe("renderComponent", () => {
     expect(reordered[1].dataset.marker).toBe("ada-input")
   })
 
+  describe(":with", () => {
+    it("resolves names against the object first, falling back to the outer scope", () => {
+      const component = parseComponent(
+        `<div :each="item in items">` +
+        `<b class="direct">{{ item.name }}</b>` +
+        `<i class="via" :with="item">{{ name }} of {{ items.length }}</i>` +
+        `</div>`
+      )
+      const data = $reactive({ items: [{ name: "Ada" }, { name: "Grace" }] })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, ".direct").map(el => el.textContent)).toEqual(["Ada", "Grace"])
+      expect($$(container, ".via").map(el => el.textContent)).toEqual(["Ada of 2", "Grace of 2"])
+    })
+
+    it("shadows same-named outer scope properties", () => {
+      const component = parseComponent(`<div :with="user"><span class="n">{{ name }}</span></div>`)
+      const data = $reactive({ name: "outer", user: { name: "inner" } })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($(container, ".n")?.textContent).toBe("inner")
+    })
+
+    it("stays reactive to property mutations and to replacing the object itself", () => {
+      const component = parseComponent(`<div :with="user"><span class="n">{{ name }}</span></div>`)
+      const data = $reactive({ user: { name: "Ada" } })
+
+      container.appendChild(renderComponent(component, data))
+      expect($(container, ".n")?.textContent).toBe("Ada")
+
+      data.user.name = "Grace"
+      expect($(container, ".n")?.textContent).toBe("Grace")
+
+      data.user = { name: "Katherine" }
+      expect($(container, ".n")?.textContent).toBe("Katherine")
+    })
+
+    it("applies to the element's own bindings, and assignments write through to the object", () => {
+      const component = parseComponent(
+        `<button :with="user" :bind="{ title: name }" @click="name = 'Grace'">go</button>` +
+        `<span class="outside">{{ user.name }}</span>`
+      )
+      const data = $reactive({ user: { name: "Ada" } })
+
+      container.appendChild(renderComponent(component, data))
+      const button = $(container, "button")!
+      expect(button.getAttribute("title")).toBe("Ada")
+
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect(data.user.name).toBe("Grace")
+      expect(button.getAttribute("title")).toBe("Grace")
+      expect($(container, ".outside")?.textContent).toBe("Grace")
+    })
+
+    it("falls back entirely to the outer scope when the expression is not an object", () => {
+      const component = parseComponent(`<div :with="missing"><span class="n">{{ name }}</span></div>`)
+      const data = $reactive({ name: "outer", missing: null as any })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($(container, ".n")?.textContent).toBe("outer")
+    })
+
+    it("does not render :with as an attribute", () => {
+      const component = parseComponent(`<div class="w" :with="user"></div>`)
+      const data = $reactive({ user: { name: "Ada" } })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($(container, ".w")?.hasAttribute(":with")).toBe(false)
+    })
+  })
+
   describe("@event attributes", () => {
     it("calls a handler referenced by name with the event", () => {
       const onClick = vi.fn()

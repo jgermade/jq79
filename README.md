@@ -131,6 +131,26 @@ Consecutive siblings form one chain; only the active branch is in the DOM.
 
 The list is diffed by key: unchanged items keep their DOM (and state) when the array is reordered, filtered or extended. Without `:key`, position is used — fine for append-only lists, wasteful for reordering. `$index` is available inside each item.
 
+### `:with` — narrowed scope
+
+Evaluates to an object whose properties become directly addressable inside the element; anything else still resolves from the outer scope:
+
+```html
+<div :each="item in items">
+  <div>{{ item.name }}</div>
+  <div :with="item">
+    Another way to get: {{ name }}
+    Items total: {{ items.length }}
+  </div>
+</div>
+```
+
+- Applies to the element's own bindings (`:bind`, `@events`) and its whole subtree; object properties shadow same-named outer scope names.
+- Fully reactive: mutating a property of the object, or replacing the object itself (`user = other`), updates exactly what depends on it — the subtree is not rebuilt.
+- Assignments to names the object owns write through to it (`@click="name = 'x'"` inside `:with="user"` sets `user.name`, reactively).
+- If the expression isn't an object (`null`, still loading, …), names simply resolve from the outer scope.
+- Combines with `:each`/`:if` on the same element: those evaluate in the outer scope first, then `:with` wraps the subtree — so `:with="item"` on the `:each` element itself works.
+
 ### `@event` — listeners
 
 ```html

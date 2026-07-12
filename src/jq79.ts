@@ -238,7 +238,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   return reactive
 }
 
-const CONTROL_ATTRS = new Set([":bind", ":if", ":elseif", ":else", ":each", ":key"])
+const CONTROL_ATTRS = new Set([":bind", ":if", ":elseif", ":else", ":each", ":key", ":with"])
 const EACH_PATTERN = /^\s*(\w+)\s+in\s+(.+)$/
 
 type ConditionalBranch = { expr?: string; node: TemplateNode }
@@ -369,12 +369,53 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   return wrapper
 }
 
+// :with="expr" narrows the scope for an element and its subtree: names
+// resolve against the expression's value first, then fall back to the outer
+// scope. The value is re-evaluated lazily on every name lookup (never
+// snapshotted), so an effect reading through this proxy tracks both the
+// expression's own dependencies and the property it reads - replacing the
+// object or mutating one of its properties re-renders exactly the dependents,
+// without rebuilding the subtree. Assignments to names the object owns write
+// through to it (reactively, if it came from a store); everything else
+// behaves as if the :with weren't there
+const createWithScope = (expr: string, scope: Record<string, any>): Record<string, any> => {
+  const source = (): Record<string, any> | null => {
+    const value = evalExpr(expr, scope)
+    return value !== null && typeof value === "object" ? value : null
+  }
+  return new Proxy(scope, {
+    has(target, key) {
+      const obj = source()
+      return (obj !== null && Reflect.has(obj, key)) || Reflect.has(target, key)
+    },
+    get(target, key) {
+      const obj = source()
+      if (obj !== null && Reflect.has(obj, key)) return obj[key as string]
+      return Reflect.get(target, key)
+    },
+    set(target, key, value) {
+      const obj = source()
+      if (obj !== null && Reflect.has(obj, key)) {
+        obj[key as string] = value
+        return true
+      }
+      return Reflect.set(target, key, value)
+    },
+  })
+}
+
 // renders a single element node: static attrs, @event listeners, a reactive
 // :bind object, and its (reactive) children. :if/:elseif/:else/:each are
 // handled by renderNodes, which decides *whether*/*how many times* a node is
 // rendered before calling this. Tags matching a PascalCase scope variable
 // render as nested components instead
-const renderNode = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope): Node => {
+const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope): Node => {
+  // :with applies to the element's own bindings (@events, :bind) and its
+  // whole subtree. On a :each element the item scope is already in place, so
+  // :with="item" works
+  const withExpr = node.attrs[":with"]
+  const scope = withExpr !== undefined ? createWithScope(withExpr, outerScope) : outerScope
+
   const componentKey = findComponentKey(scope, node.tag)
   if (componentKey) return renderNestedComponent(componentKey, node, scope, fx)
 
