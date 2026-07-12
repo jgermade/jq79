@@ -218,7 +218,7 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.
-- The [DOM helpers](#dom-helpers) `$`, `$$` and `$create`, plus [`$reactive`](#reactive-data), are available without importing anything — `<script :setup="{ $, $$, $create, $reactive }">`. Like globals, they are shadowed by same-named scope properties.
+- The [DOM helpers](#dom-helpers) `$`, `$$` and `$create`, plus [`$reactive`](#reactive-data), are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
 - `$emit(eventName, payload)` dispatches a native bubbling `CustomEvent` (with `payload` as `event.detail`) from the component's position in the DOM. Listen from a parent component with `@event-name` on any wrapping element, or with plain `addEventListener` on the mount target:
 
 ```html
@@ -252,6 +252,16 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 ```
 
   Reactivity is unaffected by where a declaration sits: variables declared after the `await` are pre-declared on the store before the first render (as `undefined`), so the template can bind to them from the start and updates when the assignment runs. If the component is never mounted, the code after `await $mounted()` never runs.
+
+  To defer a whole script until mount, add `:mounted` to the tag — it behaves as if `await $mounted()` were its first line:
+
+```html
+<script :setup :mounted>
+  $self(".list").focus()   // the component is already in the DOM
+</script>
+```
+
+- `$self(selector)` and `$$self(selector)` are component-scoped versions of [`$` / `$$`](#dom-helpers): they only search this component instance's own rendered nodes, so they can't accidentally match another component (or anything else in the page). They work even while the component is rendered but not yet mounted — but remember the template renders *after* the synchronous part of the script, so call them from post-`await $mounted()` code or from handlers/callbacks.
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. `let a = 1, b = 2` multi-declarators are not supported — one declaration per statement.
 

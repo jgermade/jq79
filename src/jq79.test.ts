@@ -807,11 +807,11 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("exposes the $, $$ and $create DOM helpers to setup scripts", () => {
+    it("exposes the $, $$ and $create DOM helpers to setup scripts without declaring them", () => {
       document.body.insertAdjacentHTML("beforeend", `<div class="probe">one</div><div class="probe">two</div>`)
 
       const jq79 = new Component79(
-        `<script :setup="{ $, $$, $create }">` +
+        `<script :setup>` +
         `const first = $(".probe").textContent\n` +
         `const total = $$(".probe").length\n` +
         `const made = $create("span", { className: "made" }).className\n` +
@@ -873,7 +873,7 @@ describe("Component79", () => {
 
     it("lets scope properties shadow same-named DOM helpers", () => {
       const jq79 = new Component79(
-        `<script :setup="{ $ }">const picked = $("ignored")</script><div class="shadow">{{ picked }}</div>`
+        `<script :setup>const picked = $("ignored")</script><div class="shadow">{{ picked }}</div>`
       ).render({ $: () => "from scope" }).mount(host)
 
       expect($(host, ".shadow")?.textContent).toBe("from scope")
@@ -933,6 +933,57 @@ describe("Component79", () => {
       await new Promise(resolve => setTimeout(resolve, 0))
 
       expect($(host, ".st")?.textContent).toBe("after")
+      jq79.destroy()
+    })
+
+    it("scopes $self/$$self to the component's own nodes, ignoring outside DOM", async () => {
+      document.body.insertAdjacentHTML("beforeend", `<div class="scoped-probe">decoy</div>`)
+
+      const src = [
+        "<script :setup>",
+        "await $mounted()",
+        "let first = $self('.scoped-probe').textContent",
+        "let count = $$self('.scoped-probe').length",
+        "let missing = $self('.nope')",
+        "</script>",
+        `<div class="scoped-probe">mine</div>`,
+        `<section><span class="scoped-probe">deep</span></section>`,
+        `<div class="scoped-out">{{ first }} {{ count }}</div>`,
+      ].join("\n")
+      const jq79 = new Component79(src).render().mount(host)
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      // top-level match first, nested match counted, decoy outside ignored
+      expect($(host, ".scoped-out")?.textContent).toBe("mine 2")
+      expect(jq79.data!.missing).toBeNull()
+
+      $$(".scoped-probe").forEach(el => { if (!host.contains(el)) el.remove() })
+      jq79.destroy()
+    })
+
+    it("$self works while the component is rendered but not yet mounted", () => {
+      const jq79 = new Component79(
+        `<script :setup>const probe = () => $self(".detached-probe")</script>` +
+        `<i class="detached-probe">x</i>`
+      ).render()
+
+      expect((jq79.data as any).probe()?.textContent).toBe("x")
+      jq79.destroy()
+    })
+
+    it("defers a <script :setup :mounted> block entirely until mount", async () => {
+      const jq79 = new Component79(
+        `<script :setup :mounted>let tag = $self(".target").tagName</script>` +
+        `<b class="target">{{ tag }}</b>`
+      ).render().mount(host)
+
+      // rendered before the deferred script ran
+      expect($(host, ".target")?.textContent).toBe("")
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect($(host, ".target")?.textContent).toBe("B")
       jq79.destroy()
     })
 

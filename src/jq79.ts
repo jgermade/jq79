@@ -976,13 +976,33 @@ export class Component79 {
     this.resolveMounted = resolveMounted
     const $mounted = () => mounted
 
-    // scripts run before the template renders so `$:` values are initialized
+    // $self / $$self mirror $ / $$ but only search this instance's own
+    // output: the sibling nodes between its markers. They work detached too
+    // (the holding fragment keeps markers and rendered nodes as siblings),
+    // though the template renders after the scripts run, so they only find
+    // something from post-await code or callbacks
+    const endMarker = this.endMarker
+    const $$self = (selector: string): Element[] => {
+      const found: Element[] = []
+      for (let node: Node | null = marker.nextSibling; node && node !== endMarker; node = node.nextSibling) {
+        if (node instanceof Element) {
+          if (node.matches(selector)) found.push(node)
+          found.push(...Array.from(node.querySelectorAll(selector)))
+        }
+      }
+      return found
+    }
+    const $self = (selector: string): Element | null => $$self(selector)[0] ?? null
+
+    // scripts run before the template renders so `$:` values are initialized;
+    // a `:mounted` script defers entirely until mount() instead
     this.scripts.forEach(script => {
       const { vars, code } = transformSetupScript(script.content)
       // pre-declare script vars on the store so `with` resolves assignments
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
-      runSetupScript(code, store, fx.effect, { $emit, $mounted })
+      const body = ":mounted" in script.attrs ? `await $mounted();\n${code}` : code
+      runSetupScript(body, store, fx.effect, { $emit, $mounted, $self, $$self })
     })
 
     const content = document.createDocumentFragment()
