@@ -42,10 +42,15 @@ const elementToAST = (el: Element): TemplateNode => ({
 // evaluated with `with` (rather than passing scope keys as positional params)
 // so only the identifiers an expression actually references are read from
 // `scope` - which is what makes dependency tracking in createReactiveDeepData
-// precise instead of "read everything up front"
-const evalExpr = (expr: string, scope: Record<string, any>): any => {
+// precise instead of "read everything up front". `extras` are passed as
+// function parameters (outside the `with`), so scope keys still win but names
+// like $event resolve when the scope doesn't shadow them
+const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
   try {
-    return new Function("$scope", `with ($scope) { return (${expr}); }`)(scope)
+    return new Function("$scope", ...Object.keys(extras ?? {}), `with ($scope) { return (${expr}); }`)(
+      scope,
+      ...Object.values(extras ?? {})
+    )
   } catch {
     return undefined
   }
@@ -127,17 +132,24 @@ export const createReactiveDeepData = <T extends Record<string, any>>(data: T): 
         return Reflect.get(target, key, receiver)
       },
       set(target, key: string, value, receiver) {
+        // an assignment delegated up the prototype chain from a derived scope
+        // (Object.create(store) child, or a wrapping proxy): if the key isn't
+        // a real property of this store, honor the receiver so the new binding
+        // lands on the derived scope - a scope-local variable, not a store
+        // mutation, so no notify. If the key IS a store property, fall through
+        // and mutate the store itself regardless of receiver, so assignments
+        // like @click="count = count + 1" work from any nested scope
+        if (receiver !== proxy && !Object.prototype.hasOwnProperty.call(target, key)) {
+          return Reflect.set(target, key, value, receiver)
+        }
+
         const dotKey = path ? `${path}.${key}` : key
         if (value && typeof value === "object") {
           value = makeReactive(value, dotKey)
         }
-        // Reflect.set (not target[key] = value) so that writes delegated up
-        // the prototype chain from an unrelated object - e.g. Object.assign on
-        // an :each item scope created via Object.create(rootScope) - land on
-        // that object (the receiver) instead of clobbering this store
-        const result = Reflect.set(target, key, value, receiver)
+        target[key] = value
         notify(dotKey, value)
-        return result
+        return true
       }
     })
 
@@ -206,14 +218,36 @@ const createEffectScope = (scope: Record<string, any>): EffectScope => {
   }
 }
 
-// renders a single element node: static attrs, a reactive :bind object, and its
-// (reactive) children. :if/:elseif/:else/:each are handled by renderNodes, which
-// decides *whether*/*how many times* a node is rendered before calling this
+// @event attributes: @click="onClick", @submit.prevent="$event => onSubmit($event)",
+// or an inline statement like @click="count = count + 1". The expression is
+// evaluated (with `$event` in scope) on every event; if it yields a function,
+// that function is then invoked with the event - so both a handler reference
+// and an inline arrow/statement work. Modifiers after dots: .prevent .stop
+// .self (runtime guards) and .once .capture (addEventListener options)
+const bindEvent = (el: Element, attr: string, expr: string, scope: Record<string, any>) => {
+  const [name, ...modifiers] = attr.slice(1).split(".")
+  const mods = new Set(modifiers)
+
+  el.addEventListener(name, event => {
+    if (mods.has("self") && event.target !== el) return
+    if (mods.has("prevent")) event.preventDefault()
+    if (mods.has("stop")) event.stopPropagation()
+
+    const handler = evalExpr(expr, scope, { $event: event })
+    if (typeof handler === "function") handler.call(el, event)
+  }, { once: mods.has("once"), capture: mods.has("capture") })
+}
+
+// renders a single element node: static attrs, @event listeners, a reactive
+// :bind object, and its (reactive) children. :if/:elseif/:else/:each are
+// handled by renderNodes, which decides *whether*/*how many times* a node is
+// rendered before calling this
 const renderNode = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope): Node => {
   const el = document.createElement(node.tag)
 
   Object.entries(node.attrs).forEach(([key, value]) => {
-    if (!CONTROL_ATTRS.has(key)) el.setAttribute(key, value)
+    if (key.startsWith("@")) bindEvent(el, key, value, scope)
+    else if (!CONTROL_ATTRS.has(key)) el.setAttribute(key, value)
   })
 
   const bindExpr = node.attrs[":bind"]
@@ -398,32 +432,22 @@ const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any
 export const renderComponent = (component: Component79, data: ReactiveDeepData<Record<string, any>>): Node =>
   renderNodes(component.template, data, createEffectScope(data))
 
-class Component79 {
-    constructor(public template: TemplateNode[], public scripts: TagBlock[], public styles: TagBlock[]) {
-        this.template = template
-        this.scripts = scripts
-        this.styles = styles
-    }
+type ComponentParts = {
+  template: TemplateNode[]
+  scripts: TagBlock[]
+  styles: TagBlock[]
 }
 
-// converts a string of HTML into a AST (Abstract Syntax Tree) representation of the component
-// Returns an object with the following properties:
-// - template: the template of the component in a AST representation
-// - scripts: {
-//   attrs: the attributes of the script tag
-//   content: the content of the script tag
-// }[]
-// - styles: {
-//   attrs: the attributes of the style tag
-//   content: the content of the style tag
-// }[]
-export const parseComponent = (component: string) => {
+// converts a string of HTML into an AST representation of the component:
+// - template: the non-script/style top-level elements, as TemplateNodes
+// - scripts/styles: { attrs, content } blocks in source order
+const parseComponentString = (component: string): ComponentParts => {
   // example
   // <script :setup="{ fname, lname }">
   //   const fullName = `${fname} ${lname}`
   // </script>
   //
-  // <div :bind="{ fullName }" />
+  // <div :bind="{ fullName }"></div>
   // <div class="full-name">
   //  {{ fullName }}
   // </div>
@@ -451,6 +475,284 @@ export const parseComponent = (component: string) => {
     else template.push(elementToAST(el))
   })
 
-  return new Component79(template, scripts, styles)
+  return { template, scripts, styles }
 }
+
+// ---------------------------------------------------------------------------
+// :setup script transform
+//
+// setup scripts are written like Svelte components:
+//
+//   let firstName = null
+//   $: fullName = `${firstName} ${lastName}`
+//   fetchUser().then(user => { firstName = user.firstName })
+//
+// and are executed inside `with ($scope)` against the component's reactive
+// store, so plain assignments (even from async callbacks) go through the
+// proxy's set trap and re-render whatever depends on them. To make that work
+// the source is lightly rewritten - no full JS parser, just a scanner that is
+// string/comment-aware and only touches code at brace/paren depth 0:
+// - `let/var/const x = ...` at the top level loses its keyword, becoming a
+//   scope assignment (the name is pre-declared on the store so the `with`
+//   lookup resolves it)
+// - `$: x = expr` becomes `$__effect(() => { x = expr })`, re-running when a
+//   dependency read inside expr changes ($__effect is deliberately NOT a
+//   property of the scope, so `with` falls through to the function parameter)
+// ---------------------------------------------------------------------------
+
+type SetupTransform = { vars: string[]; code: string }
+
+const DECLARATION_RE = /(?:let|var|const)\s+([A-Za-z_$][\w$]*)/y
+const REACTIVE_LABEL_RE = /\$:\s*/y
+const REACTIVE_ASSIGN_RE = /\$:\s*([A-Za-z_$][\w$]*)\s*=(?!=)/y
+
+const skipString = (src: string, start: number): number => {
+  const quote = src[start]
+  let i = start + 1
+  while (i < src.length) {
+    if (src[i] === "\\") { i += 2; continue }
+    if (src[i] === quote) return i + 1
+    i++
+  }
+  return src.length
+}
+
+const skipLineComment = (src: string, start: number): number => {
+  const end = src.indexOf("\n", start)
+  return end === -1 ? src.length : end
+}
+
+const skipBlockComment = (src: string, start: number): number => {
+  const end = src.indexOf("*/", start + 2)
+  return end === -1 ? src.length : end + 2
+}
+
+// end of a statement starting at `start`: the first newline or `;` that isn't
+// inside a string/comment or unbalanced brackets, so multi-line RHS like a
+// wrapped function call or template literal stays in one piece
+const findStatementEnd = (src: string, start: number): number => {
+  let depth = 0
+  let i = start
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); continue }
+    if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
+    if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch)) depth--
+    else if (depth <= 0 && (ch === "\n" || ch === ";")) return i
+    i++
+  }
+  return src.length
+}
+
+const transformSetupScript = (src: string): SetupTransform => {
+  const vars: string[] = []
+  let out = ""
+  let i = 0
+  let depth = 0
+  let atStatementStart = true
+
+  while (i < src.length) {
+    const ch = src[i]
+    const next = src[i + 1]
+
+    if (ch === "'" || ch === '"' || ch === "`") {
+      const end = skipString(src, i)
+      out += src.slice(i, end)
+      i = end
+      atStatementStart = false
+      continue
+    }
+    if (ch === "/" && (next === "/" || next === "*")) {
+      const end = next === "/" ? skipLineComment(src, i) : skipBlockComment(src, i)
+      out += src.slice(i, end)
+      i = end
+      continue
+    }
+
+    if (depth === 0 && atStatementStart) {
+      DECLARATION_RE.lastIndex = i
+      const decl = DECLARATION_RE.exec(src)
+      if (decl) {
+        vars.push(decl[1])
+        out += decl[1]
+        i += decl[0].length
+        atStatementStart = false
+        continue
+      }
+
+      REACTIVE_LABEL_RE.lastIndex = i
+      const label = REACTIVE_LABEL_RE.exec(src)
+      if (label) {
+        REACTIVE_ASSIGN_RE.lastIndex = i
+        const assign = REACTIVE_ASSIGN_RE.exec(src)
+        if (assign) vars.push(assign[1])
+        const start = i + label[0].length
+        const end = findStatementEnd(src, start)
+        out += `$__effect(() => { ${src.slice(start, end)} });`
+        i = end
+        continue
+      }
+    }
+
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch)) depth = Math.max(0, depth - 1)
+
+    if (ch === "\n" || ch === ";" || ch === "}") atStatementStart = true
+    else if (!/\s/.test(ch)) atStatementStart = false
+
+    out += ch
+    i++
+  }
+
+  return { vars, code: out }
+}
+
+// scripts run inside `with (scriptScope)`, where scriptScope's `has` trap
+// claims ownership of every name that is neither a real global nor $__effect.
+// This makes `with` route ALL other reads/writes through the reactive store -
+// even bare assignments to names never declared with let/const, which would
+// otherwise leak onto globalThis - while `console`, `Promise`, `fetch`, etc.
+// still resolve normally. get/set are deliberately not trapped: they default-
+// forward to `scope` (the reactive proxy), preserving tracking and notify
+const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void) => {
+  const scriptScope = new Proxy(scope, {
+    has: (target, key) => key !== "$__effect" && (Reflect.has(target, key) || !(key in globalThis)),
+  })
+  new Function("$scope", "$__effect", `with ($scope) { ${code} }`)(scriptScope, effect)
+}
+
+// a parsed single-file component. Typical lifecycle:
+//
+//   const c79 = new Component79(src)   // or await Component79.fetch(url)
+//   c79.render({ user })               // build reactive DOM, run scripts, inject styles
+//      .mount("#app")                  // attach (renderShadow mounts into a shadow root)
+//   ...
+//   c79.unmount()                      // detach, keeping state - mount() re-attaches
+//      .destroy()                      // dispose effects and remove styles
+export class Component79 {
+  template: TemplateNode[]
+  scripts: TagBlock[]
+  styles: TagBlock[]
+
+  data: ReactiveDeepData<Record<string, any>> | null = null
+
+  private fx: EffectScope | null = null
+  // holds the rendered nodes while unmounted; anchors keep this fragment as
+  // their parentNode, so effects keep the (detached) DOM up to date and a
+  // later mount() shows current state
+  private content: DocumentFragment | null = null
+  // markers bracketing the component's output so unmount() can collect nodes
+  // that :if/:each inserted next to the anchors after mounting
+  private startMarker: Comment | null = null
+  private endMarker: Comment | null = null
+  private styleEls: HTMLStyleElement[] = []
+  private useShadow = false
+  private mountRoot: Element | ShadowRoot | null = null
+
+  constructor(src: string | ComponentParts) {
+    const { template, scripts, styles } = typeof src === "string" ? parseComponentString(src) : src
+    this.template = template
+    this.scripts = scripts
+    this.styles = styles
+  }
+
+  static async fetch(url: string): Promise<Component79> {
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
+    return new Component79(await response.text())
+  }
+
+  render(data: Record<string, any> = {}): this {
+    return this.renderWith(data, false)
+  }
+
+  // like render(), but styles are injected into a shadow root attached to the
+  // mount target instead of document.head, so they don't leak globally
+  renderShadow(data: Record<string, any> = {}): this {
+    return this.renderWith(data, true)
+  }
+
+  private renderWith(data: Record<string, any>, shadow: boolean): this {
+    this.destroy()
+
+    const store = createReactiveDeepData({ ...data })
+    const fx = createEffectScope(store)
+    this.data = store
+    this.fx = fx
+    this.useShadow = shadow
+
+    // scripts run before the template renders so `$:` values are initialized
+    this.scripts.forEach(script => {
+      const { vars, code } = transformSetupScript(script.content)
+      // pre-declare script vars on the store so `with` resolves assignments
+      // to them (and reads of them) through the reactive proxy
+      vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
+      runSetupScript(code, store, fx.effect)
+    })
+
+    this.startMarker = document.createComment("c79")
+    this.endMarker = document.createComment("/c79")
+    const content = document.createDocumentFragment()
+    content.append(this.startMarker, renderNodes(this.template, store, fx), this.endMarker)
+    this.content = content
+
+    this.styleEls = this.styles.map(style => {
+      const el = document.createElement("style")
+      el.textContent = style.content
+      return el
+    })
+    if (!shadow) this.styleEls.forEach(el => document.head.appendChild(el))
+
+    return this
+  }
+
+  mount(parent: Element | string): this {
+    const parentEl = typeof parent === "string" ? $(parent) : parent
+    if (!parentEl) throw new Error(`mount target not found: ${parent}`)
+    if (!this.content) throw new Error("render() must be called before mount()")
+    if (this.mountRoot) this.unmount()
+
+    const root = this.useShadow
+      ? parentEl.shadowRoot ?? parentEl.attachShadow({ mode: "open" })
+      : parentEl
+    if (this.useShadow) this.styleEls.forEach(el => root.appendChild(el))
+    root.appendChild(this.content)
+    this.mountRoot = root
+    return this
+  }
+
+  unmount(): this {
+    if (!this.mountRoot || !this.content || !this.startMarker || !this.endMarker) return this
+
+    // move everything between the markers (inclusive) back into the holding
+    // fragment - including nodes :if/:each inserted after mounting
+    let node: Node | null = this.startMarker
+    while (node) {
+      const nextNode: Node | null = node.nextSibling
+      this.content.appendChild(node)
+      if (node === this.endMarker) break
+      node = nextNode
+    }
+
+    this.mountRoot = null
+    return this
+  }
+
+  destroy(): this {
+    this.unmount()
+    this.fx?.dispose()
+    this.fx = null
+    this.styleEls.forEach(el => el.parentNode?.removeChild(el))
+    this.styleEls = []
+    this.content = null
+    this.startMarker = null
+    this.endMarker = null
+    this.data = null
+    return this
+  }
+}
+
+export const parseComponent = (component: string): Component79 => new Component79(component)
 

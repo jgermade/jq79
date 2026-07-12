@@ -1,6 +1,6 @@
 
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { $, $$, parseComponent, createReactiveDeepData, renderComponent } from "./jk79"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { $, $$, parseComponent, createReactiveDeepData, renderComponent, Component79 } from "./jq79"
 
 describe("$", () => {
   beforeEach(() => {
@@ -430,5 +430,305 @@ describe("renderComponent", () => {
     expect(reordered.map(el => el.value)).toEqual(["Katherine", "Ada", "Grace"])
     // the input for user 1 (Ada) is still the exact same DOM node, just moved
     expect(reordered[1].dataset.marker).toBe("ada-input")
+  })
+
+  describe("@event attributes", () => {
+    it("calls a handler referenced by name with the event", () => {
+      const onClick = vi.fn()
+      const component = parseComponent(`<button @click="onClick">go</button>`)
+      const data = createReactiveDeepData({ onClick })
+
+      container.appendChild(renderComponent(component, data))
+      const button = $(container, "button")!
+      button.dispatchEvent(new MouseEvent("click"))
+
+      expect(onClick).toHaveBeenCalledTimes(1)
+      expect(onClick.mock.calls[0][0]).toBeInstanceOf(Event)
+    })
+
+    it("supports inline arrow handlers using $event", () => {
+      const onSubmit = vi.fn()
+      const component = parseComponent(`<form @submit.prevent="$event => onSubmit($event)"><button>ok</button></form>`)
+      const data = createReactiveDeepData({ onSubmit })
+
+      container.appendChild(renderComponent(component, data))
+      const form = $(container, "form")!
+      const event = new Event("submit", { cancelable: true })
+      form.dispatchEvent(event)
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+      expect(onSubmit).toHaveBeenCalledWith(event)
+      // .prevent modifier
+      expect(event.defaultPrevented).toBe(true)
+    })
+
+    it("supports inline statements that mutate reactive data", () => {
+      const component = parseComponent(`<button @click="count = count + 1">{{ count }}</button>`)
+      const data = createReactiveDeepData({ count: 0 })
+
+      container.appendChild(renderComponent(component, data))
+      const button = $(container, "button")!
+
+      button.dispatchEvent(new MouseEvent("click"))
+      button.dispatchEvent(new MouseEvent("click"))
+
+      expect(data.count).toBe(2)
+      expect(button.textContent).toBe("2")
+    })
+
+    it("applies the .stop modifier", () => {
+      const onOuter = vi.fn()
+      const component = parseComponent(
+        `<div @click="onOuter"><button class="inner" @click.stop="() => {}">x</button></div>`
+      )
+      const data = createReactiveDeepData({ onOuter })
+
+      container.appendChild(renderComponent(component, data))
+      $(container, ".inner")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect(onOuter).not.toHaveBeenCalled()
+    })
+
+    it("applies the .once modifier", () => {
+      const onClick = vi.fn()
+      const component = parseComponent(`<button @click.once="onClick">go</button>`)
+      const data = createReactiveDeepData({ onClick })
+
+      container.appendChild(renderComponent(component, data))
+      const button = $(container, "button")!
+      button.dispatchEvent(new MouseEvent("click"))
+      button.dispatchEvent(new MouseEvent("click"))
+
+      expect(onClick).toHaveBeenCalledTimes(1)
+    })
+
+    it("applies the .self modifier", () => {
+      const onClick = vi.fn()
+      const component = parseComponent(`<div class="outer" @click.self="onClick"><button class="inner">x</button></div>`)
+      const data = createReactiveDeepData({ onClick })
+
+      container.appendChild(renderComponent(component, data))
+
+      $(container, ".inner")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      expect(onClick).not.toHaveBeenCalled()
+
+      $(container, ".outer")!.dispatchEvent(new MouseEvent("click"))
+      expect(onClick).toHaveBeenCalledTimes(1)
+    })
+
+    it("does not render @event attributes into the DOM", () => {
+      const component = parseComponent(`<button @click="onClick">go</button>`)
+      const data = createReactiveDeepData({ onClick: () => {} })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($(container, "button")!.hasAttribute("@click")).toBe(false)
+    })
+  })
+})
+
+describe("Component79", () => {
+  let host: HTMLDivElement
+
+  beforeEach(() => {
+    host = document.createElement("div")
+    document.body.appendChild(host)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    host.remove()
+  })
+
+  it("constructs from a source string or from a parts object", () => {
+    const fromString = new Component79(`<div class="a">hi</div>`)
+    expect(fromString.template).toHaveLength(1)
+
+    const fromParts = new Component79({ template: fromString.template, scripts: [], styles: [] })
+    expect(fromParts.template).toBe(fromString.template)
+  })
+
+  it("chains render().mount() and keeps the content reactive", () => {
+    const c79 = new Component79(`<div class="greet">{{ msg }}</div>`)
+
+    expect(c79.render({ msg: "hola" }).mount(host)).toBe(c79)
+    expect($(host, ".greet")?.textContent).toBe("hola")
+
+    c79.data!.msg = "adios"
+    expect($(host, ".greet")?.textContent).toBe("adios")
+
+    c79.destroy()
+  })
+
+  it("mounts into a selector string", () => {
+    host.id = "c79-host"
+    const c79 = new Component79(`<div class="sel">ok</div>`).render().mount("#c79-host")
+
+    expect($(host, ".sel")).not.toBeNull()
+    c79.destroy()
+  })
+
+  it("injects styles into document.head on render and removes them on destroy", () => {
+    const c79 = new Component79(`<div class="styled">x</div><style>.styled { color: red; }</style>`)
+    const stylesBefore = document.head.querySelectorAll("style").length
+
+    c79.render().mount(host)
+    expect(document.head.querySelectorAll("style").length).toBe(stylesBefore + 1)
+
+    c79.unmount().destroy()
+    expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+  })
+
+  it("renderShadow mounts content and styles into a shadow root instead of document.head", () => {
+    const c79 = new Component79(`<div class="s">shadowed</div><style>.s { color: blue; }</style>`)
+    const stylesBefore = document.head.querySelectorAll("style").length
+
+    c79.renderShadow().mount(host)
+
+    expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+    expect(host.shadowRoot).not.toBeNull()
+    expect(host.shadowRoot!.querySelector(".s")?.textContent).toBe("shadowed")
+    expect(host.shadowRoot!.querySelector("style")).not.toBeNull()
+
+    c79.destroy()
+  })
+
+  it("unmount() detaches but keeps state, and mount() re-attaches with pending updates applied", () => {
+    const c79 = new Component79(`<div class="m">{{ n }}</div>`).render({ n: 1 }).mount(host)
+
+    c79.unmount()
+    expect($(host, ".m")).toBeNull()
+
+    c79.data!.n = 2
+    c79.mount(host)
+    expect($(host, ".m")?.textContent).toBe("2")
+
+    c79.destroy()
+  })
+
+  it("unmount() also collects nodes that :if inserted after mounting", () => {
+    const c79 = new Component79(`<div :if="show" class="cond">yes</div>`).render({ show: false }).mount(host)
+    c79.data!.show = true
+    expect($(host, ".cond")).not.toBeNull()
+
+    c79.unmount()
+    expect(host.childNodes.length).toBe(0)
+
+    c79.mount(host)
+    expect($(host, ".cond")).not.toBeNull()
+    c79.destroy()
+  })
+
+  it("destroy() disposes effects so later data changes stop touching the DOM", () => {
+    const c79 = new Component79(`<div class="d">{{ n }}</div>`).render({ n: 1 }).mount(host)
+    const el = $(host, ".d")!
+    const data = c79.data!
+
+    c79.destroy()
+    data.n = 99
+
+    expect(el.textContent).toBe("1")
+  })
+
+  it("fetch() downloads and parses a component", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => `<div class="f">fetched</div>` })))
+
+    const c79 = await Component79.fetch("/component.html")
+    c79.render().mount(host)
+
+    expect(globalThis.fetch).toHaveBeenCalledWith("/component.html")
+    expect($(host, ".f")?.textContent).toBe("fetched")
+    c79.destroy()
+  })
+
+  it("fetch() rejects on a non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, text: async () => "" })))
+
+    await expect(Component79.fetch("/missing.html")).rejects.toThrow("404")
+  })
+
+  describe(":setup scripts", () => {
+    it("exposes top-level const values to the template", () => {
+      const c79 = new Component79(
+        `<script :setup="{ fname, lname }">const fullName = fname + " " + lname</script>` +
+        `<div class="full-name">{{ fullName }}</div>`
+      ).render({ fname: "Ada", lname: "Lovelace" }).mount(host)
+
+      expect($(host, ".full-name")?.textContent).toBe("Ada Lovelace")
+      c79.destroy()
+    })
+
+    it("makes top-level let variables reactive scope properties", () => {
+      const c79 = new Component79(
+        `<script :setup>let count = 0</script><div class="count">{{ count }}</div>`
+      ).render().mount(host)
+
+      expect($(host, ".count")?.textContent).toBe("0")
+
+      c79.data!.count = 5
+      expect($(host, ".count")?.textContent).toBe("5")
+      c79.destroy()
+    })
+
+    it("re-runs $: reactive declarations when their dependencies change", () => {
+      const src = "<script :setup>\nlet a = 2\n$: doubled = `${ a * 2 }`\n</script><div class='dbl'>{{ doubled }}</div>"
+      const c79 = new Component79(src).render().mount(host)
+
+      expect($(host, ".dbl")?.textContent).toBe("4")
+
+      c79.data!.a = 10
+      expect($(host, ".dbl")?.textContent).toBe("20")
+      c79.destroy()
+    })
+
+    it("updates the DOM from async assignments in setup code (the fetch-user example)", async () => {
+      vi.stubGlobal("loadUser", () => Promise.resolve({ firstName: "Ada", lastName: "Lovelace" }))
+
+      const src = [
+        "<script :setup>",
+        "let firstName = null",
+        "let lastName = null",
+        "$: fullName = firstName && lastName ? `${ firstName } ${ lastName }` : ''",
+        "",
+        "loadUser()",
+        "  .then(user => {",
+        "    firstName = user.firstName",
+        "    lastName = user.lastName",
+        "  })",
+        "</script>",
+        "",
+        "<div :if='fullName' class='user-info'>",
+        "  <span>{{ fullName }} from {{ firstName }} and {{ lastName }}</span>",
+        "</div>",
+      ].join("\n")
+
+      const c79 = new Component79(src).render().mount(host)
+      expect($(host, ".user-info")).toBeNull()
+
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect($(host, ".user-info span")?.textContent).toBe("Ada Lovelace from Ada and Lovelace")
+      c79.destroy()
+    })
+
+    it("keeps bare assignments on the component scope instead of leaking to globalThis", () => {
+      const c79 = new Component79(
+        `<script :setup>leakCheck = "scoped"</script><div class="leak">{{ leakCheck }}</div>`
+      ).render().mount(host)
+
+      expect($(host, ".leak")?.textContent).toBe("scoped")
+      expect((globalThis as any).leakCheck).toBeUndefined()
+      c79.destroy()
+    })
+
+    it("still resolves real globals inside setup scripts", () => {
+      const c79 = new Component79(
+        `<script :setup>const upper = String("ok").toUpperCase()</script><div class="g">{{ upper }}</div>`
+      ).render().mount(host)
+
+      expect($(host, ".g")?.textContent).toBe("OK")
+      c79.destroy()
+    })
   })
 })
