@@ -1,6 +1,6 @@
 {
   "name": "c79",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Mini reactive component library: single-file components, Svelte-style setup scripts, fine-grained proxy reactivity. One file, zero dependencies.",
   "keywords": [
     "reactive",
