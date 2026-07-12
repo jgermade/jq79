@@ -61,7 +61,7 @@ const elementToAST = (el: Element): TemplateNode => ({
 
 // evaluated with `with` (rather than passing scope keys as positional params)
 // so only the identifiers an expression actually references are read from
-// `scope` - which is what makes dependency tracking in createReactiveDeepData
+// `scope` - which is what makes dependency tracking in $reactive
 // precise instead of "read everything up front". `extras` are passed as
 // function parameters (outside the `with`), so scope keys still win but names
 // like $event resolve when the scope doesn't shadow them
@@ -136,7 +136,7 @@ const untracked = <T>(fn: () => T): T => {
 
 type Effect = { deps: Set<string>; run: () => void }
 
-export const createReactiveDeepData = <T extends Record<string, any>>(data: T): ReactiveDeepData<T> => {
+export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepData<T> => {
   const exactListeners = new Map<string, Set<ChangeListener>>()
   const anyListeners = new Set<AnyChangeListener>()
   const effects = new Set<Effect>()
@@ -815,26 +815,32 @@ const releaseStyle = (content: string) => {
   }
 }
 
+// library helpers injected into setup scripts. They behave like extra
+// globals: a same-named scope property (render data or a top-level
+// declaration) shadows them
+const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive }
+
 // scripts run inside `with (scriptScope)`, where scriptScope's `has` trap
-// claims ownership of every name that is neither a real global nor one of the
-// injected helpers. This makes `with` route ALL other reads/writes through the
-// reactive store - even bare assignments to names never declared with
-// let/const, which would otherwise leak onto globalThis - while `console`,
-// `Promise`, `fetch`, etc. still resolve normally. get/set are deliberately
-// not trapped: they default-forward to `scope` (the reactive proxy),
-// preserving tracking and notify.
+// claims ownership of every name that is neither a real global, an injected
+// library helper, nor one of the internal helpers. This makes `with` route ALL
+// other reads/writes through the reactive store - even bare assignments to
+// names never declared with let/const, which would otherwise leak onto
+// globalThis - while `console`, `Promise`, `fetch`, etc. still resolve
+// normally. get/set are deliberately not trapped: they default-forward to
+// `scope` (the reactive proxy), preserving tracking and notify.
 // The body is wrapped in an async IIFE so top-level `await` works: everything
 // up to the first await runs synchronously (before the template renders), and
 // later assignments update the DOM reactively when they happen
 const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void) => {
   const scriptScope = new Proxy(scope, {
     has: (target, key) =>
-      key !== "$__effect" && key !== "$__import" && (Reflect.has(target, key) || !(key in globalThis)),
+      key !== "$__effect" && key !== "$__import" &&
+      (Reflect.has(target, key) || !(key in globalThis) && !(key in SETUP_HELPERS)),
   })
   const result: Promise<void> = new Function(
-    "$scope", "$__effect", "$__import",
+    "$scope", "$__effect", "$__import", ...Object.keys(SETUP_HELPERS),
     `return (async () => { with ($scope) { ${code} } })()`
-  )(scriptScope, effect, importResource)
+  )(scriptScope, effect, importResource, ...Object.values(SETUP_HELPERS))
   result.catch(error => console.error("jq79: error in :setup script", error))
 }
 
@@ -895,7 +901,7 @@ export class Component79 {
   private renderWith(data: Record<string, any>, shadow: boolean): this {
     this.destroy()
 
-    const store = createReactiveDeepData({ ...data })
+    const store = $reactive({ ...data })
     const fx = createEffectScope(store)
     this.data = store
     this.fx = fx

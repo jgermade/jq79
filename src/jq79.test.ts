@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { $, $$, parseComponent, createReactiveDeepData, renderComponent, Component79 } from "./jq79"
+import { $, $$, parseComponent, $reactive, renderComponent, Component79 } from "./jq79"
 
 describe("$", () => {
   beforeEach(() => {
@@ -135,9 +135,9 @@ describe("parseComponent", () => {
   })
 })
 
-describe("createReactiveDeepData", () => {
+describe("$reactive", () => {
   it("keeps deep sets on the raw properties working like plain objects", () => {
-    const scope = createReactiveDeepData({ user: { address: { city: "NYC" } } })
+    const scope = $reactive({ user: { address: { city: "NYC" } } })
 
     scope.user.address.city = "LA"
 
@@ -147,7 +147,7 @@ describe("createReactiveDeepData", () => {
   describe("$on", () => {
     it("fires with (value, dotKey) on a shallow set", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ name: "a" })
+      const scope = $reactive({ name: "a" })
       scope.$on("name", listener)
 
       scope.name = "b"
@@ -157,7 +157,7 @@ describe("createReactiveDeepData", () => {
 
     it("fires with the full dot path for a nested property present at creation", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ user: { address: { city: "NYC" } } })
+      const scope = $reactive({ user: { address: { city: "NYC" } } })
       scope.$on("user.address.city", listener)
 
       scope.user.address.city = "LA"
@@ -167,7 +167,7 @@ describe("createReactiveDeepData", () => {
 
     it("fires with the full dot path for a property on an object assigned after creation", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ user: null as any })
+      const scope = $reactive({ user: null as any })
       scope.$on("user.address.city", listener)
 
       scope.user = { address: { city: "NYC" } }
@@ -178,7 +178,7 @@ describe("createReactiveDeepData", () => {
 
     it("keeps deeper paths reactive after a whole subtree is replaced", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ user: { address: { city: "NYC" } } })
+      const scope = $reactive({ user: { address: { city: "NYC" } } })
       scope.$on("user.address.city", listener)
 
       scope.user.address = { city: "LA" }
@@ -189,7 +189,7 @@ describe("createReactiveDeepData", () => {
 
     it("does not fire for unrelated keys", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ name: "a", other: "x" })
+      const scope = $reactive({ name: "a", other: "x" })
       scope.$on("name", listener)
 
       scope.other = "y"
@@ -199,7 +199,7 @@ describe("createReactiveDeepData", () => {
 
     it("calls the listener immediately with the current value when immediate: true", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ user: { address: { city: "NYC" } } })
+      const scope = $reactive({ user: { address: { city: "NYC" } } })
 
       scope.$on("user.address.city", listener, { immediate: true })
 
@@ -208,7 +208,7 @@ describe("createReactiveDeepData", () => {
 
     it("stops firing after unsubscribing", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ name: "a" })
+      const scope = $reactive({ name: "a" })
       const unsubscribe = scope.$on("name", listener)
 
       unsubscribe()
@@ -221,7 +221,7 @@ describe("createReactiveDeepData", () => {
   describe("$onAny", () => {
     it("fires with (dotKey, value) for any change anywhere in the tree", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ user: { address: { city: "NYC" } } })
+      const scope = $reactive({ user: { address: { city: "NYC" } } })
       scope.$onAny(listener)
 
       scope.user.address.city = "LA"
@@ -231,7 +231,7 @@ describe("createReactiveDeepData", () => {
 
     it("calls the listener immediately for every current leaf value when immediate: true", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ name: "a", user: { city: "NYC" } })
+      const scope = $reactive({ name: "a", user: { city: "NYC" } })
 
       scope.$onAny(listener, { immediate: true })
 
@@ -242,7 +242,7 @@ describe("createReactiveDeepData", () => {
 
     it("stops firing after unsubscribing", () => {
       const listener = vi.fn()
-      const scope = createReactiveDeepData({ name: "a" })
+      const scope = $reactive({ name: "a" })
       const unsubscribe = scope.$onAny(listener)
 
       unsubscribe()
@@ -253,7 +253,7 @@ describe("createReactiveDeepData", () => {
   })
 
   it("does not expose $on/$onAny as enumerable data properties", () => {
-    const scope = createReactiveDeepData({ name: "a" })
+    const scope = $reactive({ name: "a" })
 
     expect(Object.keys(scope)).toEqual(["name"])
   })
@@ -269,7 +269,7 @@ describe("renderComponent", () => {
 
   it("interpolates text content and updates it reactively", () => {
     const component = parseComponent(`<div class="full-name">{{ fullName }}</div>`)
-    const data = createReactiveDeepData({ fullName: "Ada Lovelace" })
+    const data = $reactive({ fullName: "Ada Lovelace" })
 
     container.appendChild(renderComponent(component, data))
 
@@ -282,7 +282,7 @@ describe("renderComponent", () => {
 
   it("applies :bind attributes and keeps them in sync", () => {
     const component = parseComponent(`<div :bind="{ title, disabled }"></div>`)
-    const data = createReactiveDeepData({ title: "hi", disabled: false })
+    const data = $reactive({ title: "hi", disabled: false })
 
     container.appendChild(renderComponent(component, data))
     const el = container.querySelector("div")!
@@ -299,7 +299,7 @@ describe("renderComponent", () => {
 
   it("renders the :if branch when the condition is true and removes it when false", () => {
     const component = parseComponent(`<div :if="show" class="a">yes</div>`)
-    const data = createReactiveDeepData({ show: true })
+    const data = $reactive({ show: true })
 
     container.appendChild(renderComponent(component, data))
 
@@ -316,7 +316,7 @@ describe("renderComponent", () => {
       `<div :elseif="score > 4" class="b">ok</div>` +
       `<div :else class="c">bad</div>`
     )
-    const data = createReactiveDeepData({ score: 2 })
+    const data = $reactive({ score: 2 })
 
     container.appendChild(renderComponent(component, data))
 
@@ -339,7 +339,7 @@ describe("renderComponent", () => {
 
   it("renders a list with :each and re-renders it when the array changes", () => {
     const component = parseComponent(`<li :each="name in names">{{ name }}</li>`)
-    const data = createReactiveDeepData({ names: ["a", "b"] })
+    const data = $reactive({ names: ["a", "b"] })
 
     container.appendChild(renderComponent(component, data))
 
@@ -352,7 +352,7 @@ describe("renderComponent", () => {
 
   it("exposes $index inside :each", () => {
     const component = parseComponent(`<li :each="name in names">{{ $index }}:{{ name }}</li>`)
-    const data = createReactiveDeepData({ names: ["a", "b"] })
+    const data = $reactive({ names: ["a", "b"] })
 
     container.appendChild(renderComponent(component, data))
 
@@ -361,7 +361,7 @@ describe("renderComponent", () => {
 
   it("does not touch unrelated bindings when an unrelated property changes", () => {
     const component = parseComponent(`<div>{{ title }}</div><div :bind="{ label }"></div>`)
-    const data = createReactiveDeepData({ title: "hi", label: "x", unrelated: 1 })
+    const data = $reactive({ title: "hi", label: "x", unrelated: 1 })
 
     container.appendChild(renderComponent(component, data))
     const [titleEl, boundEl] = container.querySelectorAll("div")
@@ -377,7 +377,7 @@ describe("renderComponent", () => {
 
   it("does not rebuild an :if branch's DOM when an unrelated property changes", () => {
     const component = parseComponent(`<div :if="show" class="a">yes</div>`)
-    const data = createReactiveDeepData({ show: true, unrelated: 1 })
+    const data = $reactive({ show: true, unrelated: 1 })
 
     container.appendChild(renderComponent(component, data))
     const branchEl = container.querySelector(".a")
@@ -389,7 +389,7 @@ describe("renderComponent", () => {
 
   it("does not rebuild :each list DOM when an unrelated property changes", () => {
     const component = parseComponent(`<li :each="name in names">{{ name }}</li>`)
-    const data = createReactiveDeepData({ names: ["a", "b"], unrelated: 1 })
+    const data = $reactive({ names: ["a", "b"], unrelated: 1 })
 
     container.appendChild(renderComponent(component, data))
     const before = $$(container, "li")
@@ -402,7 +402,7 @@ describe("renderComponent", () => {
 
   it("updates just one :each item's text when only that item's nested property changes, without rebuilding the list", () => {
     const component = parseComponent(`<li :each="user in users" :key="user.id">{{ user.name }}</li>`)
-    const data = createReactiveDeepData({ users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }] })
+    const data = $reactive({ users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }] })
 
     container.appendChild(renderComponent(component, data))
     const before = $$(container, "li")
@@ -416,7 +416,7 @@ describe("renderComponent", () => {
 
   it("keeps unchanged keyed items' DOM/state stable when the list is reordered", () => {
     const component = parseComponent(`<li :each="user in users" :key="user.id"><input :bind="{ value: user.name }"></li>`)
-    const data = createReactiveDeepData({
+    const data = $reactive({
       users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }, { id: 3, name: "Katherine" }],
     })
 
@@ -436,7 +436,7 @@ describe("renderComponent", () => {
     it("calls a handler referenced by name with the event", () => {
       const onClick = vi.fn()
       const component = parseComponent(`<button @click="onClick">go</button>`)
-      const data = createReactiveDeepData({ onClick })
+      const data = $reactive({ onClick })
 
       container.appendChild(renderComponent(component, data))
       const button = $(container, "button")!
@@ -449,7 +449,7 @@ describe("renderComponent", () => {
     it("supports inline arrow handlers using $event", () => {
       const onSubmit = vi.fn()
       const component = parseComponent(`<form @submit.prevent="$event => onSubmit($event)"><button>ok</button></form>`)
-      const data = createReactiveDeepData({ onSubmit })
+      const data = $reactive({ onSubmit })
 
       container.appendChild(renderComponent(component, data))
       const form = $(container, "form")!
@@ -464,7 +464,7 @@ describe("renderComponent", () => {
 
     it("supports inline statements that mutate reactive data", () => {
       const component = parseComponent(`<button @click="count = count + 1">{{ count }}</button>`)
-      const data = createReactiveDeepData({ count: 0 })
+      const data = $reactive({ count: 0 })
 
       container.appendChild(renderComponent(component, data))
       const button = $(container, "button")!
@@ -481,7 +481,7 @@ describe("renderComponent", () => {
       const component = parseComponent(
         `<div @click="onOuter"><button class="inner" @click.stop="() => {}">x</button></div>`
       )
-      const data = createReactiveDeepData({ onOuter })
+      const data = $reactive({ onOuter })
 
       container.appendChild(renderComponent(component, data))
       $(container, ".inner")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
@@ -492,7 +492,7 @@ describe("renderComponent", () => {
     it("applies the .once modifier", () => {
       const onClick = vi.fn()
       const component = parseComponent(`<button @click.once="onClick">go</button>`)
-      const data = createReactiveDeepData({ onClick })
+      const data = $reactive({ onClick })
 
       container.appendChild(renderComponent(component, data))
       const button = $(container, "button")!
@@ -505,7 +505,7 @@ describe("renderComponent", () => {
     it("applies the .self modifier", () => {
       const onClick = vi.fn()
       const component = parseComponent(`<div class="outer" @click.self="onClick"><button class="inner">x</button></div>`)
-      const data = createReactiveDeepData({ onClick })
+      const data = $reactive({ onClick })
 
       container.appendChild(renderComponent(component, data))
 
@@ -518,7 +518,7 @@ describe("renderComponent", () => {
 
     it("does not render @event attributes into the DOM", () => {
       const component = parseComponent(`<button @click="onClick">go</button>`)
-      const data = createReactiveDeepData({ onClick: () => {} })
+      const data = $reactive({ onClick: () => {} })
 
       container.appendChild(renderComponent(component, data))
 
@@ -728,6 +728,48 @@ describe("Component79", () => {
       ).render().mount(host)
 
       expect($(host, ".g")?.textContent).toBe("OK")
+      jq79.destroy()
+    })
+
+    it("exposes the $, $$ and $create DOM helpers to setup scripts", () => {
+      document.body.insertAdjacentHTML("beforeend", `<div class="probe">one</div><div class="probe">two</div>`)
+
+      const jq79 = new Component79(
+        `<script :setup="{ $, $$, $create }">` +
+        `const first = $(".probe").textContent\n` +
+        `const total = $$(".probe").length\n` +
+        `const made = $create("span", { className: "made" }).className\n` +
+        `</script>` +
+        `<div class="helpers">{{ first }} {{ total }} {{ made }}</div>`
+      ).render().mount(host)
+
+      expect($(host, ".helpers")?.textContent).toBe("one 2 made")
+
+      $$(".probe").forEach(el => el.remove())
+      jq79.destroy()
+    })
+
+    it("exposes $reactive to setup scripts", () => {
+      const jq79 = new Component79(
+        `<script :setup>` +
+        `const local = $reactive({ n: 1 })\n` +
+        `let seen = local.n\n` +
+        `local.$on("n", value => { seen = value })\n` +
+        `local.n = 7\n` +
+        `</script>` +
+        `<div class="rx">{{ seen }}</div>`
+      ).render().mount(host)
+
+      expect($(host, ".rx")?.textContent).toBe("7")
+      jq79.destroy()
+    })
+
+    it("lets scope properties shadow same-named DOM helpers", () => {
+      const jq79 = new Component79(
+        `<script :setup="{ $ }">const picked = $("ignored")</script><div class="shadow">{{ picked }}</div>`
+      ).render({ $: () => "from scope" }).mount(host)
+
+      expect($(host, ".shadow")?.textContent).toBe("from scope")
       jq79.destroy()
     })
   })

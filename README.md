@@ -198,6 +198,7 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.
+- The [DOM helpers](#dom-helpers) `$`, `$$` and `$create`, plus [`$reactive`](#reactive-data), are available without importing anything — `<script :setup="{ $, $$, $create, $reactive }">`. Like globals, they are shadowed by same-named scope properties.
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. `let a = 1, b = 2` multi-declarators are not supported — one declaration per statement.
 
@@ -206,9 +207,9 @@ Only top-level code is rewritten; declarations inside callbacks/blocks behave as
 The store used by components is available standalone:
 
 ```js
-import { createReactiveDeepData } from "jq79"
+import { $reactive } from "jq79"   // also injected into setup scripts
 
-const data = createReactiveDeepData({ user: { address: { city: "NYC" } } })
+const data = $reactive({ user: { address: { city: "NYC" } } })
 
 data.$on("user.address.city", (value, dotKey) => { … }, { immediate: true })
 data.$onAny((dotKey, value) => { … })
@@ -224,12 +225,19 @@ stop()                          // effects/listeners return an unsubscribe fn
 ## DOM helpers
 
 ```js
-import { $, $$ } from "jq79"
+import { $, $$, $create } from "jq79"
 
 $(".card")            // document.querySelector
 $(el, ".card")        // scoped querySelector
 $$(".card")           // querySelectorAll, as a real Array
 $$(el, ".card")       // scoped
+
+$create("div", {      // document.createElement + attrs
+  className: ["card", "active"],   // string or array
+  textContent: "hi",
+  children: [$create("span")],
+  "data-id": "42",                 // anything else via setAttribute
+})
 ```
 
 ## Development
