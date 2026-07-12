@@ -1,0 +1,30 @@
+{
+  "name": "jq79",
+  "version": "0.1.0",
+  "description": "Mini JS library",
+  "keywords": [
+    "njs",
+    "jquery"
+  ],
+  "homepage": "https://github.com/jgermade/jk79#readme",
+  "bugs": {
+    "url": "https://github.com/jgermade/jk79/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jgermade/jk79.git"
+  },
+  "license": "ISC",
+  "author": "Jesus Germade <jesus@germade.dev>",
+  "type": "module",
+  "main": "dist/q.js",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "jsdom": "^29.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
