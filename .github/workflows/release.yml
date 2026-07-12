@@ -1,10 +1,16 @@
 name: Release
 
-# fires when a version tag is pushed, e.g.:
-#   npm version patch && git push --follow-tags
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write # create the GitHub release
@@ -24,24 +30,36 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
-      - name: Check tag matches package.json version
-        run: |
-          version="v$(node -p "require('./package.json').version")"
-          if [ "$version" != "$GITHUB_REF_NAME" ]; then
-            echo "package.json version ($version) does not match tag ($GITHUB_REF_NAME)" >&2
-            exit 1
-          fi
-
-      - run: npm install
+      - run: npm install --no-save
 
       - run: npm test
 
       - run: npm run build
 
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+      - name: Configure Git
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+
+      - name: Bump version, commit, and tag
+        id: bump_version
+        run: |
+          NEW_TAG=$(npm version "${{ inputs.bump }}" -m "chore(release): %s")
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: npm publish preflight
+        run: |
+          npm config get registry
+          npm pack --dry-run
 
       - name: Publish to npm
         run: npm publish --provenance --access public
+
+      - name: Push commit and tag
+        run: git push origin HEAD --follow-tags
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ steps.bump_version.outputs.new_tag }}
+        run: gh release create "$NEW_TAG" dist/* --title "$NEW_TAG" --generate-notes
