@@ -1,4 +1,4 @@
-# jq79
+# c79
 
 A mini reactive component library in a single file. Single-file components (template + `<script :setup>` + `<style>`), Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking — no compiler, no virtual DOM, no dependencies.
 
@@ -7,11 +7,11 @@ A mini reactive component library in a single file. Single-file components (temp
 ### npm
 
 ```sh
-npm install jq79
+npm install c79
 ```
 
 ```js
-import { Component79, $, $$ } from "jq79"
+import { Component79, $, $$ } from "c79"
 ```
 
 ### CDN
@@ -21,26 +21,26 @@ Once published to npm, the package is automatically served by every major CDN �
 ```html
 <!-- as an ES module -->
 <script type="module">
-  import { Component79 } from "https://esm.sh/jq79"
-  // or: https://cdn.jsdelivr.net/npm/jq79/+esm
-  // or: https://unpkg.com/jq79?module
+  import { Component79 } from "https://esm.sh/c79"
+  // or: https://cdn.jsdelivr.net/npm/c79/+esm
+  // or: https://unpkg.com/c79?module
 </script>
 
-<!-- or as a classic script exposing window.jq79 -->
-<script src="https://cdn.jsdelivr.net/npm/jq79/dist/jq79.global.js"></script>
+<!-- or as a classic script exposing window.c79 -->
+<script src="https://cdn.jsdelivr.net/npm/c79/dist/c79.global.js"></script>
 <script>
-  const { Component79 } = jq79
+  const { Component79 } = c79
 </script>
 ```
 
-Pin a version in production: `https://cdn.jsdelivr.net/npm/jq79@0.1.0/...`.
+Pin a version in production: `https://cdn.jsdelivr.net/npm/c79@0.1.0/...`.
 
-Or grab [`src/jq79.ts`](src/jq79.ts) directly — the whole library is one file.
+Or grab [`src/c79.ts`](src/c79.ts) directly — the whole library is one file.
 
 ## Quick start
 
 ```js
-import { Component79 } from "jq79"
+import { Component79 } from "c79"
 
 const c79 = new Component79(`
   <script :setup>
@@ -177,7 +177,7 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - HTML lowercases everything, so matching ignores case and dashes: `<NestedComponent>` and `<nested-component>` both resolve `NestedComponent`, and `:user-name` becomes the `userName` prop.
 - `await import('/x.html')` returns a `Component79` (non-`.html` URLs fall through to native `import()`). While the promise is pending nothing renders; the child appears when it resolves.
 - Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.
-- Self-closing tags work: jq79 expands `<MyComponent />` (and `<div />`) into explicit open+close pairs before HTML parsing, since the HTML parser would otherwise treat them as unclosed. Void elements (`<img />`, `<br />`) and `<script>`/`<style>` contents are left untouched.
+- Self-closing tags work: c79 expands `<MyComponent />` (and `<div />`) into explicit open+close pairs before HTML parsing, since the HTML parser would otherwise treat them as unclosed. Void elements (`<img />`, `<br />`) and `<script>`/`<style>` contents are left untouched.
 
 ## Setup scripts
 
@@ -206,7 +206,7 @@ Only top-level code is rewritten; declarations inside callbacks/blocks behave as
 The store used by components is available standalone:
 
 ```js
-import { createReactiveDeepData } from "jq79"
+import { createReactiveDeepData } from "c79"
 
 const data = createReactiveDeepData({ user: { address: { city: "NYC" } } })
 
@@ -224,7 +224,7 @@ stop()                          // effects/listeners return an unsubscribe fn
 ## DOM helpers
 
 ```js
-import { $, $$ } from "jq79"
+import { $, $$ } from "c79"
 
 $(".card")            // document.querySelector
 $(el, ".card")        // scoped querySelector

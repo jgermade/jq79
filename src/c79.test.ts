@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { $, $$, parseComponent, createReactiveDeepData, renderComponent, Component79 } from "./jq79"
+import { $, $$, parseComponent, createReactiveDeepData, renderComponent, Component79 } from "./c79"
 
 describe("$", () => {
   beforeEach(() => {

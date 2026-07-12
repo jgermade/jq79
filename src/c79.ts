@@ -815,7 +815,7 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
     "$scope", "$__effect", "$__import",
     `return (async () => { with ($scope) { ${code} } })()`
   )(scriptScope, effect, importResource)
-  result.catch(error => console.error("jq79: error in :setup script", error))
+  result.catch(error => console.error("c79: error in :setup script", error))
 }
 
 // a parsed single-file component. Typical lifecycle:
