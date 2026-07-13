@@ -23,8 +23,8 @@ describe("renderComponent", () => {
     expect(container.querySelector(".full-name")?.textContent).toBe("Grace Hopper")
   })
 
-  it("applies :bind attributes and keeps them in sync", () => {
-    const component = parseComponent(`<div :bind="{ title, disabled }"></div>`)
+  it("applies :attrs attributes and keeps them in sync", () => {
+    const component = parseComponent(`<div :attrs="{ title, disabled }"></div>`)
     const data = $reactive({ title: "hi", disabled: false })
 
     container.appendChild(renderComponent(component, data))
@@ -103,7 +103,7 @@ describe("renderComponent", () => {
   })
 
   it("does not touch unrelated bindings when an unrelated property changes", () => {
-    const component = parseComponent(`<div>{{ title }}</div><div :bind="{ label }"></div>`)
+    const component = parseComponent(`<div>{{ title }}</div><div :attrs="{ label }"></div>`)
     const data = $reactive({ title: "hi", label: "x", unrelated: 1 })
 
     container.appendChild(renderComponent(component, data))
@@ -158,7 +158,7 @@ describe("renderComponent", () => {
   })
 
   it("keeps unchanged keyed items' DOM/state stable when the list is reordered", () => {
-    const component = parseComponent(`<li :each="user in users" :key="user.id"><input :bind="{ value: user.name }"></li>`)
+    const component = parseComponent(`<li :each="user in users" :key="user.id"><input :attrs="{ value: user.name }"></li>`)
     const data = $reactive({
       users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }, { id: 3, name: "Katherine" }],
     })
@@ -216,7 +216,7 @@ describe("renderComponent", () => {
 
     it("applies to the element's own bindings, and assignments write through to the object", () => {
       const component = parseComponent(
-        `<button :with="user" :bind="{ title: name }" @click="name = 'Grace'">go</button>` +
+        `<button :with="user" :attrs="{ title: name }" @click="name = 'Grace'">go</button>` +
         `<span class="outside">{{ user.name }}</span>`
       )
       const data = $reactive({ user: { name: "Ada" } })

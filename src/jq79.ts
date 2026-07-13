@@ -56,7 +56,7 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
   template.replace(/{{\s*(.+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
 
 
-const CONTROL_ATTRS = new Set([":bind", ":if", ":elseif", ":else", ":each", ":key", ":with"])
+const CONTROL_ATTRS = new Set([":attrs", ":if", ":elseif", ":else", ":each", ":key", ":with"])
 const EACH_PATTERN = /^\s*(\w+)\s+in\s+(.+)$/
 
 type ConditionalBranch = { expr?: string; node: TemplateNode }
@@ -202,12 +202,12 @@ const createWithScope = (expr: string, scope: Record<string, any>): Record<strin
 }
 
 // renders a single element node: static attrs, @event listeners, a reactive
-// :bind object, and its (reactive) children. :if/:elseif/:else/:each are
+// :attrs object, and its (reactive) children. :if/:elseif/:else/:each are
 // handled by renderNodes, which decides *whether*/*how many times* a node is
 // rendered before calling this. Tags matching a PascalCase scope variable
 // render as nested components instead
 const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope): Node => {
-  // :with applies to the element's own bindings (@events, :bind) and its
+  // :with applies to the element's own bindings (@events, :attrs) and its
   // whole subtree. On a :each element the item scope is already in place, so
   // :with="item" works
   const withExpr = node.attrs[":with"]
@@ -239,7 +239,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     else if (!CONTROL_ATTRS.has(key)) el.setAttribute(key, value)
   })
 
-  const bindExpr = node.attrs[":bind"]
+  const bindExpr = node.attrs[":attrs"]
   if (bindExpr !== undefined) {
     let boundKeys: string[] = []
 
@@ -467,7 +467,7 @@ const parseComponentString = (component: string): ComponentParts => {
   //   const fullName = `${fname} ${lname}`
   // </script>
   //
-  // <div :bind="{ fullName }"></div>
+  // <div :attrs="{ fullName }"></div>
   // <div class="full-name">
   //  {{ fullName }}
   // </div>

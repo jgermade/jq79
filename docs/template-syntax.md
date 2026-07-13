@@ -9,12 +9,12 @@ Any JS expression between `{{ }}`:
 <span>{{ price * quantity }} €</span>
 ```
 
-## `:bind` — dynamic attributes
+## `:attrs` — dynamic attributes
 
 Evaluates to an object; each entry becomes an attribute. `null`, `undefined` and `false` values remove the attribute.
 
 ```html
-<button :bind="{ disabled: isSaving, title: tooltip }">Save</button>
+<button :attrs="{ disabled: isSaving, title: tooltip }">Save</button>
 ```
 
 ## `:if` / `:elseif` / `:else` — conditionals
@@ -49,7 +49,7 @@ Evaluates to an object whose properties become directly addressable inside the e
 </div>
 ```
 
-- Applies to the element's own bindings (`:bind`, `@events`) and its whole subtree; object properties shadow same-named outer scope names.
+- Applies to the element's own bindings (`:attrs`, `@events`) and its whole subtree; object properties shadow same-named outer scope names.
 - Fully reactive: mutating a property of the object, or replacing the object itself (`user = other`), updates exactly what depends on it — the subtree is not rebuilt.
 - Assignments to names the object owns write through to it (`@click="name = 'x'"` inside `:with="user"` sets `user.name`, reactively).
 - If the expression isn't an object (`null`, still loading, …), names simply resolve from the outer scope.
