@@ -122,12 +122,12 @@ const page = (title, body, root) => `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
-<link rel="icon" type="image/png" href="/assets/favicon-96x96.png" sizes="96x96" />
-<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
-<link rel="shortcut icon" href="/assets/favicon.ico" />
-<link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="./assets/favicon-96x96.png" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
+<link rel="shortcut icon" href="./assets/favicon.ico" />
+<link rel="apple-touch-icon" sizes="180x180" href="./assets/apple-touch-icon.png" />
 <meta name="apple-mobile-web-app-title" content="jq79" />
-<link rel="manifest" href="/assets/site.webmanifest" />
+<link rel="manifest" href="./assets/site.webmanifest" />
 <style>${PAGE_CSS}</style>
 </head>
 <body>
@@ -186,7 +186,6 @@ for (const file of await readdir("docs")) {
 const summary = JSON.parse(await readFile("coverage/coverage-summary.json", "utf8"))
 const pct = summary.total.lines.pct
 await cp("coverage", posix.join(SITE, "coverage"), { recursive: true })
-await cp("assets", posix.join(SITE, "assets"), { recursive: true })
 await rm(posix.join(SITE, "coverage/coverage-summary.json"), { force: true })
 await writeFile(posix.join(SITE, "badges/npm.svg"), badge("npm", `v${pkg.version}`, "#cb3837"))
 await writeFile(posix.join(SITE, "badges/coverage.svg"), badge("coverage", `${pct.toFixed(1)}%`, "#2e8b57"))
