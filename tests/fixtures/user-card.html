@@ -1,0 +1,10 @@
+<script :setup>
+  let name = "Ada"
+  $: greeting = `Hello, ${name}!`
+</script>
+
+<p class="greeting">{{ greeting }}</p>
+
+<style>
+  .greeting { color: rebeccapurple; }
+</style>

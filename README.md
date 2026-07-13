@@ -19,6 +19,26 @@ npm install jq79
 import { Component79, $, $$ } from "jq79"
 ```
 
+### Vite
+
+With the bundled plugin, `.html` component files import as modules — no
+runtime fetch, with HMR in dev:
+
+```js
+// vite.config.js
+import { jq79 } from "jq79/vite"
+export default { plugins: [jq79()] }
+```
+
+```js
+import UserCard from "./UserCard.html"
+UserCard.mount("#app")
+```
+
+The plugin is a pure loader (nothing inside the component is transformed), so
+the same file keeps working from `public/` via `Component79.fetch` — see
+[the Vite plugin docs](docs/vite-plugin.md).
+
 ### CDN
 
 Once published to npm, the package is automatically served by every major CDN — no separate publishing step:
@@ -80,6 +100,7 @@ When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$
 - [Setup scripts](docs/setup-scripts.md) — `<script :setup>` reactive scripts, `$:` declarations, `$emit`, `await $mounted()`, `$self`/`$$self`.
 - [Reactive data](docs/reactive-data.md) — the standalone `$reactive` store: `$on`, `$onAny`, `$effect`.
 - [DOM helpers](docs/dom-helpers.md) — `$`, `$$` and `$create`.
+- [Vite plugin](docs/vite-plugin.md) — importing `.html` components as bundled modules, HMR, options.
 - [Development](docs/development.md) — running tests, building, publishing releases.
 
 ## License

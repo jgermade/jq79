@@ -342,9 +342,9 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     currentDef = nextDef
     if (!nextDef) return
 
-    // a fresh instance per usage site: the definition's parsed parts are
-    // shared, but store/effects/DOM are per instance
-    const instance = new Component79({ template: nextDef.template, scripts: nextDef.scripts, styles: nextDef.styles })
+    // a fresh instance per usage site: the definition's parsed parts (and
+    // pre-resolved modules) are shared, but store/effects/DOM are per instance
+    const instance = new Component79({ template: nextDef.template, scripts: nextDef.scripts, styles: nextDef.styles, modules: nextDef.modules })
     const seed = untracked(() =>
       Object.fromEntries(Object.entries(props).map(([name, expr]) => [name, evalExpr(expr, scope)]))
     )
@@ -612,6 +612,10 @@ type ComponentParts = {
   template: TemplateNode[]
   scripts: TagBlock[]
   styles: TagBlock[]
+  // pre-resolved modules for `import(...)` calls in setup scripts, keyed by
+  // the literal specifier. Bundlers (the jq79/vite plugin) fill this so
+  // imports resolve from the bundle instead of being fetched at runtime
+  modules?: Record<string, any>
 }
 
 const VOID_ELEMENTS = new Set([
@@ -872,7 +876,7 @@ const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive }
 // The body is wrapped in an async IIFE so top-level `await` works: everything
 // up to the first await runs synchronously (before the template renders), and
 // later assignments update the DOM reactively when they happen
-const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}) => {
+const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource) => {
   // instanceHelpers are per-component-instance additions (e.g. $emit, which
   // is bound to this instance's DOM position)
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
@@ -884,7 +888,7 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
   const result: Promise<void> = new Function(
     "$scope", "$__effect", "$__import", ...Object.keys(helpers),
     `return (async () => { with ($scope) { ${code} } })()`
-  )(scriptScope, effect, importResource, ...Object.values(helpers))
+  )(scriptScope, effect, importer, ...Object.values(helpers))
   result.catch(error => console.error("jq79: error in :setup script", error))
 }
 
@@ -902,6 +906,9 @@ export class Component79 {
   template: TemplateNode[]
   scripts: TagBlock[]
   styles: TagBlock[]
+  // pre-resolved modules for setup-script `import(...)` calls (see
+  // ComponentParts.modules); checked before falling back to fetch/import
+  modules?: Record<string, any>
 
   data: ReactiveDeepData<Record<string, any>> | null = null
 
@@ -926,11 +933,12 @@ export class Component79 {
   // outside the render generation so they survive re-render and destroy()
   private emitListeners = new Map<string, Set<EmitListener>>()
 
-  constructor(src: string | ComponentParts) {
-    const { template, scripts, styles } = typeof src === "string" ? parseComponentString(src) : src
-    this.template = template
-    this.scripts = scripts
-    this.styles = styles
+  constructor(src: string | ComponentParts, options: { modules?: Record<string, any> } = {}) {
+    const parts = typeof src === "string" ? parseComponentString(src) : src
+    this.template = parts.template
+    this.scripts = parts.scripts
+    this.styles = parts.styles
+    this.modules = options.modules ?? (typeof src === "string" ? undefined : src.modules)
   }
 
   static async fetch(url: string): Promise<Component79> {
@@ -1021,6 +1029,13 @@ export class Component79 {
     }
     const $self = (selector: string): Element | null => $$self(selector)[0] ?? null
 
+    // import() calls whose specifier was pre-resolved by a bundler (the
+    // modules map) get the bundled module; everything else falls back to the
+    // runtime importResource (fetch for .html, native import otherwise)
+    const modules = this.modules
+    const $import = (url: string): Promise<any> =>
+      modules && url in modules ? Promise.resolve(modules[url]) : importResource(url)
+
     // scripts run before the template renders so `$:` values are initialized;
     // a `:mounted` script defers entirely until mount() instead
     this.scripts.forEach(script => {
@@ -1029,7 +1044,7 @@ export class Component79 {
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
       const body = ":mounted" in script.attrs ? `await $mounted();\n${code}` : code
-      runSetupScript(body, store, fx.effect, { $emit, $mounted, $self, $$self })
+      runSetupScript(body, store, fx.effect, { $emit, $mounted, $self, $$self }, $import)
     })
 
     const content = document.createDocumentFragment()

@@ -30,6 +30,12 @@
       "import": "./dist/jq79.js",
       "require": "./dist/jq79.cjs",
       "default": "./dist/jq79.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js",
+      "require": "./dist/vite.cjs",
+      "default": "./dist/vite.js"
     }
   },
   "unpkg": "./dist/jq79.global.js",
@@ -37,19 +43,29 @@
   "files": [
     "dist",
     "src/jq79.ts",
+    "src/vite.ts",
     "assets"
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup && tsc src/jq79.ts --declaration --emitDeclarationOnly --strict --lib dom,es2020 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
+    "build": "tsup && tsc src/jq79.ts src/vite.ts --declaration --emitDeclarationOnly --strict --skipLibCheck --lib dom,es2020 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
     "test": "vitest run",
     "prepublishOnly": "npm test && npm run build"
+  },
+  "peerDependencies": {
+    "vite": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "jsdom": "^29.1.1",
     "tsup": "^8.5.1",
     "typescript": "^7.0.2",
+    "vite": "^8.1.4",
     "vitest": "^4.1.10"
   }
 }

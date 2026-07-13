@@ -3,7 +3,7 @@
 ```sh
 npm install
 npm test         # vitest + jsdom
-npm run build    # tsup → dist/ (ESM + CJS + IIFE + .d.ts)
+npm run build    # tsup → dist/ (runtime: ESM + CJS + IIFE, vite plugin: ESM + CJS, + .d.ts)
 ```
 
 ## Publishing
