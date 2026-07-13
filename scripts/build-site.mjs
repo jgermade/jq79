@@ -50,12 +50,14 @@ const PAGE_CSS = `
 :root { color-scheme: light dark; --fg: #1f2328; --bg: #fff; --muted: #59636e; --line: #d1d9e0; --accent: #0969da; --code-bg: #f6f8fa; }
 @media (prefers-color-scheme: dark) { :root { --fg: #f0f6fc; --bg: #0d1117; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --code-bg: #151b23; } }
 * { box-sizing: border-box; }
-body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--fg); background: var(--bg); }
-header { border-bottom: 1px solid var(--line); }
+body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: royalblue; }
+main { color: var(--fg); background: var(--bg); }
+main :first-child { margin-top: 0; }
+main :last-child { margin-bottom: 0; }
 header nav { max-width: 860px; margin: 0 auto; padding: 0.7rem 1.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
-header nav strong { margin-right: auto; }
-header a { color: var(--fg); text-decoration: none; }
-header a:hover { color: var(--accent); }
+header nav .github { margin-right: auto; }
+header a { color: white; text-decoration: none; }
+header a:hover { text-decoration: underline; }
 main { max-width: 860px; margin: 0 auto; padding: 1.5rem; }
 main a { color: var(--accent); }
 h1, h2, h3 { line-height: 1.25; }
@@ -68,7 +70,7 @@ table { border-collapse: collapse; display: block; overflow-x: auto; }
 th, td { border: 1px solid var(--line); padding: 0.4em 0.8em; }
 img { max-width: 100%; }
 blockquote { margin: 0; padding: 0 1em; color: var(--muted); border-left: 0.25em solid var(--line); }
-footer { max-width: 860px; margin: 0 auto; padding: 1rem 1.5rem 2rem; color: var(--muted); border-top: 1px solid var(--line); font-size: 0.85rem; }
+footer { max-width: 860px; margin: 0 auto; padding: 1rem 1.5rem 2rem; color: white; border-top: 1px solid var(--line); font-size: 0.85rem; }
 `
 
 const page = (title, body, root) => `<!doctype html>
@@ -81,10 +83,9 @@ const page = (title, body, root) => `<!doctype html>
 </head>
 <body>
 <header><nav>
-  <strong><a href="${root}index.html">jq79</a></strong>
-  <a href="${root}coverage/index.html">Coverage</a>
+  <a href="${REPO_URL}" class="github">GitHub</a>
+  <a href="${root}coverage/">Coverage</a>
   <a href="${NPM_URL}">npm</a>
-  <a href="${REPO_URL}">GitHub</a>
 </nav></header>
 <main>
 ${body}
