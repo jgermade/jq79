@@ -10,7 +10,7 @@
 
 A mini reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
 
-> no compiler, no virtual DOM, no dependencies.
+> no compiler required, no virtual DOM, no dependencies.
 
 ## Installation
 
