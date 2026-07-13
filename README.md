@@ -1,7 +1,9 @@
 
 # jq79
 
-<img src="assets/Component79.svg" alt="jq79 logo" width="100" align="right">
+<a href="https://jgermade.github.io/jq79/">
+  <img src="assets/Component79.svg" alt="jq79 logo" width="100" align="right">
+</a>
 
 [![npm](https://jgermade.github.io/jq79/badges/npm.svg)](https://www.npmjs.com/package/jq79)
 [![coverage](https://jgermade.github.io/jq79/badges/coverage.svg)](https://jgermade.github.io/jq79/coverage/)
