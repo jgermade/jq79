@@ -62,14 +62,15 @@ const coverageColor = pct =>
 
 // --- markdown pages ----------------------------------------------------------
 
-const PAGE_CSS = `
+const ROOT_CSS = `
 :root { color-scheme: light dark; --fg: #1f2328; --body-bg: #333a3e; --bg: #fff; --muted: #59636e; --line: #d1d9e0; --accent: #0969da; --code-bg: #ecf1f5; }
 @media (prefers-color-scheme: dark) { :root { --fg: #f0f6fc; --body-bg: #222; --bg: #333a3e; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --code-bg: #2d2a2e; } }
-* { box-sizing: border-box; }
-body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--body-bg); }
-main { color: var(--fg); background: var(--bg); }
-main :first-child { margin-top: 0; }
-main :last-child { margin-bottom: 0; }
+`
+
+// shared by the markdown pages and the (istanbul-generated) coverage report, so
+// the background/font are set on the header itself rather than inherited
+const HEADER_CSS = `
+header { background: var(--body-bg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
 header nav { max-width: 860px; margin: 0 auto; padding: 0.7rem 1.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
 header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; }
 header nav .github { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
@@ -83,6 +84,24 @@ header nav .npm:hover { opacity: 1; }
 header nav .npm img { height: 100%; display: block; }
 header a { color: white; text-decoration: none; }
 header a:hover { text-decoration: underline; }
+`
+
+// the istanbul report only ships light styles, so pin the page to the light
+// palette (the dark media query in ROOT_CSS would otherwise recolor the header)
+const COVERAGE_CSS = `
+:root { color-scheme: light; --body-bg: #333a3e; --line: #d1d9e0; }
+body { background: #fff; }
+body > .wrapper { max-width: 860px; margin: 0 auto; }
+`
+
+const PAGE_CSS = `
+${ROOT_CSS}
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--body-bg); }
+main { color: var(--fg); background: var(--bg); }
+main :first-child { margin-top: 0; }
+main :last-child { margin-bottom: 0; }
+${HEADER_CSS}
 main { max-width: 860px; margin: 0 auto; padding: 1.5rem; }
 main a { color: var(--accent); }
 h1, h2, h3 { line-height: 1.25; }
@@ -133,6 +152,16 @@ const homeLink = root =>
     </a>`
     : `<a href="${root}index.html" class="start">jq79</a>`
 
+const siteHeader = root => `<header><nav>
+  ${homeLink(root)}
+  <a href="${root}coverage/" class="coverage">
+    <img src="${root}assets/code-coverage.svg" alt="coverage" />
+  </a>
+  <a href="${NPM_URL}" class="npm">
+    <img src="${root}assets/npm-logo.svg" alt="npm logo" />
+  </a>
+</nav></header>`
+
 const page = (title, body, root) => `<!doctype html>
 <html lang="en">
 <head>
@@ -148,15 +177,7 @@ const page = (title, body, root) => `<!doctype html>
 <style>${PAGE_CSS}</style>
 </head>
 <body>
-<header><nav>
-  ${homeLink(root)}
-  <a href="${root}coverage/" class="coverage">
-    <img src="${root}assets/code-coverage.svg" alt="coverage" />
-  </a>
-  <a href="${NPM_URL}" class="npm">
-    <img src="${root}assets/npm-logo.svg" alt="npm logo" />
-  </a>
-</nav></header>
+${siteHeader(root)}
 <main>
 ${body}
 </main>
@@ -208,6 +229,20 @@ const summary = JSON.parse(await readFile("coverage/coverage-summary.json", "utf
 const pct = summary.total.lines.pct
 await cp("coverage", posix.join(SITE, "coverage"), { recursive: true })
 await rm(posix.join(SITE, "coverage/coverage-summary.json"), { force: true })
+
+// the istanbul report is generated HTML, so the site header goes in as a
+// post-process: our styles after base.css, the nav as the first thing in body
+for (const file of await readdir(posix.join(SITE, "coverage"))) {
+  if (!file.endsWith(".html")) continue
+  const path = posix.join(SITE, "coverage", file)
+  const html = await readFile(path, "utf8")
+  await writeFile(
+    path,
+    html
+      .replace("</head>", `<style>${ROOT_CSS}${HEADER_CSS}${COVERAGE_CSS}</style>\n</head>`)
+      .replace(/<body([^>]*)>/, `<body$1>\n${siteHeader("../")}`)
+  )
+}
 await writeFile(posix.join(SITE, "badges/npm.svg"), badge("npm", `v${pkg.version}`, "#cb3837"))
 await writeFile(posix.join(SITE, "badges/coverage.svg"), badge("coverage", `${pct.toFixed(1)}%`, "#2e8b57"))
 
