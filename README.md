@@ -3,7 +3,7 @@
 
 <img src="assets/Component79.svg" alt="jq79 logo" width="100" align="right">
 
-A mini reactive component library in a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
+A mini reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
 
 > no compiler, no virtual DOM, no dependencies.
 
@@ -60,7 +60,7 @@ Once published to npm, the package is automatically served by every major CDN �
 
 Pin a version in production: `https://cdn.jsdelivr.net/npm/jq79@0.1.0/...`.
 
-Or grab [`src/jq79.ts`](src/jq79.ts) directly — the whole library is one file.
+The source is small enough to read in a sitting: the core (parsing, rendering, components) lives in [`src/jq79.ts`](src/jq79.ts), with three leaf helpers — [`dom.ts`](src/dom.ts), [`reactive.ts`](src/reactive.ts) and [`transform.ts`](src/transform.ts). The published build is a single dependency-free file.
 
 ## Quick start
 

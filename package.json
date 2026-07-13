@@ -1,7 +1,7 @@
 {
   "name": "jq79",
   "version": "0.2.0",
-  "description": "Mini reactive component library: single-file components, Svelte-style setup scripts, fine-grained proxy reactivity. One file, zero dependencies.",
+  "description": "Mini reactive component library: single-file components, Svelte-style setup scripts, fine-grained proxy reactivity. Single-file build, zero dependencies.",
   "keywords": [
     "reactive",
     "components",
@@ -42,8 +42,7 @@
   "jsdelivr": "./dist/jq79.global.js",
   "files": [
     "dist",
-    "src/jq79.ts",
-    "src/vite.ts",
+    "src",
     "assets"
   ],
   "sideEffects": false,
