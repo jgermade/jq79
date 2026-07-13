@@ -2,10 +2,18 @@
 
 ```sh
 npm install
-npm test                 # vitest + jsdom
-npm run test:coverage    # + coverage report (text, html in coverage/, json-summary)
-npm run build            # tsup → dist/ (runtime: ESM + CJS + IIFE, vite plugin: ESM + CJS, + .d.ts)
-npm run site             # builds the GitHub Pages site into site/ (needs build + coverage first)
+
+# vitest + jsdom
+npm test
+
+# + coverage report (text, html in coverage/, json-summary)
+npm run test:coverage
+
+# tsup → dist/ (runtime: ESM + CJS + IIFE, vite plugin: ESM + CJS, + .d.ts)
+npm run build
+
+# builds the GitHub Pages site into site/ (needs build + coverage first)
+npm run site
 ```
 
 ## Publishing

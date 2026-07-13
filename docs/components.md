@@ -3,17 +3,21 @@
 ## Lifecycle
 
 ```js
-const jq79 = new Component79(src)      // src: string, or { template, scripts, styles }
+// src: string, or { template, scripts, styles }
+const jq79 = new Component79(src)
 
-jq79.on("submit", (e, payload) => {})  // subscribe to the component's $emit events
-   .off("submit", listener)           // unsubscribe
+// subscribe to the component's $emit events
+jq79.on("submit", (e, payload) => {})  
+    .off("submit", listener) // unsubscribe
 
-jq79.mount(el, data)                   // render (reactive DOM, setup scripts, styles) + attach
-                                      // el: Element or selector string; data is optional
+// render (reactive DOM, setup scripts, styles) + attach
+// el: Element or selector string; data is optional
+jq79.mount(el, data)
 
-jq79.detach()                          // detach, keeping state — mount(el) re-attaches, with
-                                      // any updates that happened while detached applied
-   .destroy()                         // dispose all effects and remove injected styles
+// detach, keeping state — mount(el) re-attaches, with
+// any updates that happened while detached applied
+jq79.detach()                          
+   .destroy() // dispose all effects and remove injected styles
 ```
 
 - `mount(el, data?)` renders on the first mount, and re-renders fresh whenever `data` is passed. `mount(el)` on an already-rendered component just re-attaches, keeping its state — the `detach()`/`mount()` round trip. Styles go into `document.head`.

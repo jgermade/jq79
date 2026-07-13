@@ -3,7 +3,8 @@
 The store used by components is available standalone:
 
 ```js
-import { $reactive } from "jq79"   // also injected into setup scripts
+// also injected into setup scripts
+import { $reactive } from "jq79"
 
 const data = $reactive({ user: { address: { city: "NYC" } } })
 
@@ -14,6 +15,9 @@ const stop = data.$effect(() => {
   console.log(data.user.address.city)
 })
 
-data.user.address.city = "LA"   // deep mutations notify with the full dot path
-stop()                          // effects/listeners return an unsubscribe fn
+// deep mutations notify with the full dot path
+data.user.address.city = "LA"
+
+// effects/listeners return an unsubscribe fn
+stop()
 ```
