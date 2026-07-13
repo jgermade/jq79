@@ -178,8 +178,8 @@ const summary = JSON.parse(await readFile("coverage/coverage-summary.json", "utf
 const pct = summary.total.lines.pct
 await cp("coverage", posix.join(SITE, "coverage"), { recursive: true })
 await rm(posix.join(SITE, "coverage/coverage-summary.json"), { force: true })
-await writeFile(posix.join(SITE, "badges/npm.svg"), badge("npm", `v${pkg.version}`, "#007ec6"))
-await writeFile(posix.join(SITE, "badges/coverage.svg"), badge("coverage", `${pct.toFixed(1)}%`, coverageColor(pct)))
+await writeFile(posix.join(SITE, "badges/npm.svg"), badge("npm", `v${pkg.version}`, "#cb3837"))
+await writeFile(posix.join(SITE, "badges/coverage.svg"), badge("coverage", `${pct.toFixed(1)}%`, "#2e8b57"))
 
 // size badges: esm (dist/jq79.js) and cdn (dist/jq79.global.js), normal + gzip
 const fmtSize = bytes => {
@@ -187,14 +187,14 @@ const fmtSize = bytes => {
   return `${(bytes / 1024).toFixed(1)}kb`
 }
 
-// a 4-segment badge: label | size | zip | gzip — alternating dark/orange/dark/purple
-const badge4 = (s1, s2, s3, s4) => {
+// a 4-segment badge: label | size | zip | gzip — colors passed per-badge
+const badge4 = (s1, s2, s3, s4, c1, c2, c3, c4) => {
   const width = text => Math.round(text.length * 6.5 + 12)
   const segs = [
-    { text: s1, color: "#555" },
-    { text: s2, color: "#fe7d37" },
-    { text: s3, color: "#555" },
-    { text: s4, color: "#9742d4" },
+    { text: s1, color: c1 },
+    { text: s2, color: c2 },
+    { text: s3, color: c3 },
+    { text: s4, color: c4 },
   ]
   const widths = segs.map(s => width(s.text))
   const total = widths.reduce((a, b) => a + b, 0)
@@ -227,16 +227,16 @@ const badge4 = (s1, s2, s3, s4) => {
 </svg>`
 }
 
-const sizeBadge = async (label, file) => {
+const sizeBadge = async (label, file, c2, c4) => {
   const raw = await stat(file)
   const buf = await readFile(file)
   const gz = await gzipSize(buf)
   await writeFile(
     posix.join(SITE, "badges", `${label}-size.svg`),
-    badge4(label, fmtSize(raw.size), "zip", fmtSize(gz.length))
+    badge4(label, fmtSize(raw.size), "zip", fmtSize(gz.length), "#555", c2, "#555", c4)
   )
 }
-await sizeBadge("esm", "dist/jq79.js")
-await sizeBadge("cdn", "dist/jq79.global.js")
+await sizeBadge("esm", "dist/jq79.js", "goldenrod", "#778899")
+await sizeBadge("cdn", "dist/jq79.global.js", "#f08080", "#778899")
 
 console.log(`site/ built: v${pkg.version}, coverage ${pct.toFixed(1)}%`)
