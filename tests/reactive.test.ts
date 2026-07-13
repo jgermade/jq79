@@ -43,6 +43,24 @@ describe("$reactive", () => {
       expect(listener).toHaveBeenCalledWith("LA", "user.address.city")
     })
 
+    it("fires immediate with undefined when a path runs through a missing object", () => {
+      const listener = vi.fn()
+      const scope = $reactive({ user: null as any })
+
+      scope.$on("user.address.city", listener, { immediate: true })
+
+      expect(listener).toHaveBeenCalledWith(undefined, "user.address.city")
+    })
+
+    it("fires immediate with the current value of an existing path", () => {
+      const listener = vi.fn()
+      const scope = $reactive({ user: { address: { city: "NYC" } } })
+
+      scope.$on("user.address.city", listener, { immediate: true })
+
+      expect(listener).toHaveBeenCalledWith("NYC", "user.address.city")
+    })
+
     it("keeps deeper paths reactive after a whole subtree is replaced", () => {
       const listener = vi.fn()
       const scope = $reactive({ user: { address: { city: "NYC" } } })

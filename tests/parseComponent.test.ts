@@ -80,4 +80,12 @@ describe("parseComponent", () => {
     expect(scripts).toEqual([])
     expect(styles).toEqual([])
   })
+
+  it("drops comment nodes from the template AST", () => {
+    const { template } = parseComponent(`<div><!-- a note --><span>text</span></div>`)
+
+    expect(template).toEqual([
+      { tag: "div", attrs: {}, children: [{ tag: "span", attrs: {}, children: ["text"] }] },
+    ])
+  })
 })

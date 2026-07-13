@@ -514,6 +514,17 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("passes a plain (non-`:`) attribute to the child as a literal string prop", () => {
+      const child = new Component79(`<span class="child">{{ title }}</span>`)
+      const jq79 = new Component79(
+        `<div><NestedChild title="Hardcoded title"></NestedChild></div>`
+      ).render({ title: "outer", NestedChild: child }).mount(host)
+
+      // the literal wins over the same-named property in the parent scope
+      expect($(host, ".child")?.textContent).toBe("Hardcoded title")
+      jq79.destroy()
+    })
+
     it("keeps props live: deep parent mutations update the child", () => {
       const child = new Component79(`<span class="child">{{ user.name }}</span>`)
       const jq79 = new Component79(

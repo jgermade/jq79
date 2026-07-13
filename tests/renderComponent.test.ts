@@ -258,6 +258,26 @@ describe("renderComponent", () => {
     expect(reordered[1].dataset.marker).toBe("ada-input")
   })
 
+  it("removes a dropped keyed item's node and disposes its effect", () => {
+    const component = parseComponent(`<li :each="user in users" :key="user.id">{{ user.name }}</li>`)
+    const data = $reactive({
+      users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }, { id: 3, name: "Katherine" }],
+    })
+
+    container.appendChild(renderComponent(component, data))
+    const grace = data.users[1] // the reactive item, kept alive after it leaves the list
+    const removedNode = $$(container, "li")[1]
+
+    data.users = [data.users[0], data.users[2]]
+
+    expect($$(container, "li").map(el => el.textContent)).toEqual(["Ada", "Katherine"])
+    expect(container.contains(removedNode)).toBe(false)
+
+    // the dropped item's effect is disposed: its detached node stops re-rendering
+    grace.name = "Grace Hopper"
+    expect(removedNode.textContent).toBe("Grace")
+  })
+
   describe(":with", () => {
     it("resolves names against the object first, falling back to the outer scope", () => {
       const component = parseComponent(
@@ -313,6 +333,21 @@ describe("renderComponent", () => {
       expect(data.user.name).toBe("Grace")
       expect(button.getAttribute("title")).toBe("Grace")
       expect($(container, ".outside")?.textContent).toBe("Grace")
+    })
+
+    it("writes assignments to names the object does not own through to the outer scope", () => {
+      const component = parseComponent(
+        `<button :with="user" @click="status = 'saved'">go</button>` +
+        `<span class="s">{{ status }}</span>`
+      )
+      const data = $reactive({ status: "idle", user: { name: "Ada" } })
+
+      container.appendChild(renderComponent(component, data))
+      $(container, "button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect(data.status).toBe("saved")
+      expect((data.user as any).status).toBeUndefined()
+      expect($(container, ".s")?.textContent).toBe("saved")
     })
 
     it("falls back entirely to the outer scope when the expression is not an object", () => {
