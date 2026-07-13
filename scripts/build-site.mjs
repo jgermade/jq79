@@ -72,7 +72,9 @@ const ROOT_CSS = `
 const HEADER_CSS = `
 header { background: var(--body-bg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
 header nav { max-width: 860px; margin: 0 auto; padding: 0.7rem 1.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
-header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; }
+/* 1.5rem is the tallest nav item (the logos), so the wordmark matches it: the
+   header keeps its height whether .start is text or the GitHub image */
+header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; line-height: 1.5rem; }
 header nav .github { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
 header nav .github:hover { opacity: 1; }
 header nav .github img { height: 100%; display: block; }
