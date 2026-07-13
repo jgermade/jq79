@@ -40,6 +40,89 @@ describe("renderComponent", () => {
     expect(el.getAttribute("disabled")).toBe("true")
   })
 
+  describe(":text / :html", () => {
+    it("sets textContent from :text and updates it reactively", () => {
+      const component = parseComponent(`<div class="n" :text="user.name"></div>`)
+      const data = $reactive({ user: { name: "Ada" } })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector(".n")!
+
+      expect(el.textContent).toBe("Ada")
+
+      data.user.name = "Grace"
+
+      expect(el.textContent).toBe("Grace")
+    })
+
+    it(":text does not parse markup - it's inserted as literal text", () => {
+      const component = parseComponent(`<div class="n" :text="markup"></div>`)
+      const data = $reactive({ markup: "<b>bold</b>" })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector(".n")!
+
+      expect(el.textContent).toBe("<b>bold</b>")
+      expect(el.querySelector("b")).toBeNull()
+    })
+
+    it(":text overrides the element's own template children", () => {
+      const component = parseComponent(`<div class="n" :text="label">ignored</div>`)
+      const data = $reactive({ label: "shown" })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect(container.querySelector(".n")?.textContent).toBe("shown")
+    })
+
+    it("falls back to an empty string when :text evaluates to null/undefined", () => {
+      const component = parseComponent(`<div class="n" :text="missing"></div>`)
+      const data = $reactive({ missing: undefined as any })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect(container.querySelector(".n")?.textContent).toBe("")
+    })
+
+    it("sets innerHTML from :html and updates it reactively", () => {
+      const component = parseComponent(`<div class="n" :html="body"></div>`)
+      const data = $reactive({ body: "<p>hello <b>world</b></p>" })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector(".n")!
+
+      expect(el.innerHTML).toBe("<p>hello <b>world</b></p>")
+
+      data.body = "<p>bye</p>"
+
+      expect(el.innerHTML).toBe("<p>bye</p>")
+    })
+
+    it("sanitizes :html, stripping disallowed tags/attributes and unsafe URLs", () => {
+      const component = parseComponent(`<div class="n" :html="body"></div>`)
+      const data = $reactive({
+        body: `<p onclick="evil()">hi</p><script>evil()</script><a href="javascript:evil()">link</a>`,
+      })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector(".n")!
+
+      expect(el.querySelector("script")).toBeNull()
+      expect(el.querySelector("p")?.hasAttribute("onclick")).toBe(false)
+      expect(el.querySelector("a")?.hasAttribute("href")).toBe(false)
+      expect(el.textContent).toContain("hi")
+    })
+
+    it(":html overrides the element's own template children", () => {
+      const component = parseComponent(`<div class="n" :html="body">ignored</div>`)
+      const data = $reactive({ body: "<em>shown</em>" })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect(container.querySelector(".n")?.innerHTML).toBe("<em>shown</em>")
+    })
+  })
+
   it("renders the :if branch when the condition is true and removes it when false", () => {
     const component = parseComponent(`<div :if="show" class="a">yes</div>`)
     const data = $reactive({ show: true })

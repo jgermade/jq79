@@ -1,6 +1,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest"
-import { $, $$ } from "../src/jq79"
+import { $, $$, $create } from "../src/jq79"
+import { isSafeUrl, sanitizeHTML } from "../src/dom"
 
 describe("$", () => {
   beforeEach(() => {
@@ -52,5 +53,116 @@ describe("$$", () => {
     const items = $$(root, ".item")
     expect(items).toHaveLength(2)
     expect(items.map(el => el.textContent)).toEqual(["a", "b"])
+  })
+})
+
+describe("$create", () => {
+  it("creates an element with plain attributes", () => {
+    const el = $create("a", { href: "/x", title: "go" })
+    expect(el.tagName).toBe("A")
+    expect(el.getAttribute("href")).toBe("/x")
+    expect(el.getAttribute("title")).toBe("go")
+  })
+
+  it("accepts className as a string", () => {
+    const el = $create("div", { className: "a" })
+    expect(el.className).toBe("a")
+  })
+
+  it("accepts className as an array of class names", () => {
+    const el = $create("div", { className: ["a", "b"] })
+    expect(el.className).toBe("a b")
+  })
+
+  it("sets textContent", () => {
+    const el = $create("span", { textContent: "hi" })
+    expect(el.textContent).toBe("hi")
+  })
+
+  it("appends children", () => {
+    const child1 = $create("span", { textContent: "1" })
+    const child2 = $create("span", { textContent: "2" })
+    const el = $create("div", { children: [child1, child2] })
+    expect(Array.from(el.children)).toEqual([child1, child2])
+  })
+
+  it("creates an element with no attrs", () => {
+    const el = $create("div")
+    expect(el.tagName).toBe("DIV")
+    expect(el.attributes).toHaveLength(0)
+  })
+})
+
+describe("isSafeUrl", () => {
+  it("allows http, https and mailto URLs", () => {
+    expect(isSafeUrl("http://example.com")).toBe(true)
+    expect(isSafeUrl("https://example.com/path")).toBe(true)
+    expect(isSafeUrl("mailto:a@example.com")).toBe(true)
+  })
+
+  it("allows protocol-relative and relative URLs (resolved as http/https)", () => {
+    expect(isSafeUrl("/relative/path")).toBe(true)
+    expect(isSafeUrl("//example.com/x")).toBe(true)
+  })
+
+  it("rejects javascript: and other unsafe protocols", () => {
+    expect(isSafeUrl("javascript:alert(1)")).toBe(false)
+    expect(isSafeUrl("data:text/html,<script>alert(1)</script>")).toBe(false)
+    expect(isSafeUrl("vbscript:msgbox(1)")).toBe(false)
+  })
+
+  it("rejects unparseable URLs", () => {
+    expect(isSafeUrl("http://[")).toBe(false)
+  })
+})
+
+describe("sanitizeHTML", () => {
+  it("keeps allowed tags and text content", () => {
+    expect(sanitizeHTML("<p>hello <b>world</b></p>")).toBe("<p>hello <b>world</b></p>")
+  })
+
+  it("keeps top-level text nodes alongside elements", () => {
+    expect(sanitizeHTML("before <b>bold</b> after")).toBe("before <b>bold</b> after")
+  })
+
+  it("strips disallowed tags entirely, including their content markup", () => {
+    expect(sanitizeHTML('<p>safe</p><script>evil()</script>')).toBe("<p>safe</p>")
+  })
+
+  it("drops disallowed attributes but keeps the element", () => {
+    expect(sanitizeHTML('<p onclick="evil()">hi</p>')).toBe("<p>hi</p>")
+  })
+
+  it("keeps class as a global attribute on any allowed tag", () => {
+    expect(sanitizeHTML('<p class="note">hi</p>')).toBe('<p class="note">hi</p>')
+  })
+
+  it("keeps safe href/src and drops unsafe ones", () => {
+    expect(sanitizeHTML('<a href="https://example.com">link</a>')).toBe(
+      '<a href="https://example.com" rel="noopener noreferrer">link</a>'
+    )
+    expect(sanitizeHTML('<a href="javascript:evil()">link</a>')).toBe(
+      '<a rel="noopener noreferrer">link</a>'
+    )
+    expect(sanitizeHTML('<img src="https://example.com/x.png">')).toBe(
+      '<img src="https://example.com/x.png">'
+    )
+    expect(sanitizeHTML('<img src="javascript:evil()">')).toBe("<img>")
+  })
+
+  it("forces a safe rel on links and strips target", () => {
+    expect(sanitizeHTML('<a href="https://example.com" target="_blank">link</a>')).toBe(
+      '<a href="https://example.com" rel="noopener noreferrer">link</a>'
+    )
+  })
+
+  it("recursively sanitizes nested children", () => {
+    expect(sanitizeHTML('<div><script>evil()</script><p onclick="evil()">ok</p></div>')).toBe(
+      "<div><p>ok</p></div>"
+    )
+  })
+
+  it("discards HTML comments", () => {
+    expect(sanitizeHTML("<p>hi<!-- comment --></p>")).toBe("<p>hi</p>")
   })
 })

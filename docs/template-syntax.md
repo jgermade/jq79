@@ -17,6 +17,21 @@ Evaluates to an object; each entry becomes an attribute. `null`, `undefined` and
 <button :attrs="{ disabled: isSaving, title: tooltip }">Save</button>
 ```
 
+## `:text` / `:html` — content
+
+Set an element's content directly from an expression, instead of interpolating inside its children.
+
+```html
+<span :text="user.name"></span>
+<div :html="markdownToHtml(post.body)"></div>
+```
+
+- `:text` sets `textContent` — safe for any string, no markup is parsed.
+- `:html` sets `innerHTML` after passing the value through `sanitizeHTML` (stripping anything not in a small allowlist of tags/attributes, and unsafe `href`/`src` protocols) — use it for untrusted or user-authored HTML.
+- Either one replaces the element's own children entirely; they don't combine with nested template content.
+- If both are present on the same element, `:text` wins and `:html` is ignored.
+- They apply to plain elements only; on a nested-component tag they're ignored.
+
 ## `:if` / `:elseif` / `:else` — conditionals
 
 Consecutive siblings form one chain; only the active branch is in the DOM.

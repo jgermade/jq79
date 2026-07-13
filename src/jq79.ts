@@ -1,5 +1,5 @@
 
-import { $, $$, $create } from "./dom"
+import { $, $$, $create, sanitizeHTML } from "./dom"
 import { $reactive, untracked, createEffectScope } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript } from "./transform"
@@ -56,7 +56,7 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
   template.replace(/{{\s*(.+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
 
 
-const CONTROL_ATTRS = new Set([":attrs", ":if", ":elseif", ":else", ":each", ":key", ":with"])
+const CONTROL_ATTRS = new Set([":attrs", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
 const EACH_PATTERN = /^\s*(\w+)\s+in\s+(.+)$/
 
 type ConditionalBranch = { expr?: string; node: TemplateNode }
@@ -202,10 +202,11 @@ const createWithScope = (expr: string, scope: Record<string, any>): Record<strin
 }
 
 // renders a single element node: static attrs, @event listeners, a reactive
-// :attrs object, and its (reactive) children. :if/:elseif/:else/:each are
-// handled by renderNodes, which decides *whether*/*how many times* a node is
-// rendered before calling this. Tags matching a PascalCase scope variable
-// render as nested components instead
+// :attrs object, and its content - :text/:html override the element's own
+// children with a reactive textContent/innerHTML, otherwise children render
+// normally. :if/:elseif/:else/:each are handled by renderNodes, which decides
+// *whether*/*how many times* a node is rendered before calling this. Tags
+// matching a PascalCase scope variable render as nested components instead
 const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope): Node => {
   // :with applies to the element's own bindings (@events, :attrs) and its
   // whole subtree. On a :each element the item scope is already in place, so
@@ -254,7 +255,19 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     })
   }
 
-  el.appendChild(renderNodes(node.children, scope, fx))
+  // :text="expr" sets textContent reactively, replacing any children.
+  // :html="expr" sets innerHTML reactively, sanitizing the value first so
+  // untrusted content can't inject scripts/attributes (see sanitizeHTML in
+  // ./dom). Both skip rendering the element's own children/interpolation
+  const textExpr = node.attrs[":text"]
+  const htmlExpr = node.attrs[":html"]
+  if (textExpr !== undefined) {
+    fx.effect(() => { el.textContent = evalExpr(textExpr, scope) ?? "" })
+  } else if (htmlExpr !== undefined) {
+    fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(htmlExpr, scope) ?? "")) })
+  } else {
+    el.appendChild(renderNodes(node.children, scope, fx))
+  }
 
   return el
 }
