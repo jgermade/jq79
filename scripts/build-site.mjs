@@ -71,7 +71,16 @@ main { color: var(--fg); background: var(--bg); }
 main :first-child { margin-top: 0; }
 main :last-child { margin-bottom: 0; }
 header nav { max-width: 860px; margin: 0 auto; padding: 0.7rem 1.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
-header nav .github { margin-right: auto; }
+header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; }
+header nav .github { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
+header nav .github:hover { opacity: 1; }
+header nav .github img { height: 100%; display: block; }
+header nav .coverage { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
+header nav .coverage:hover { opacity: 1; }
+header nav .coverage img { height: 100%; display: block; }
+header nav .npm { display: inline-block; height: 1.2rem; opacity: 0.8; transition: opacity 0.1s; }
+header nav .npm:hover { opacity: 1; }
+header nav .npm img { height: 100%; display: block; }
 header a { color: white; text-decoration: none; }
 header a:hover { text-decoration: underline; }
 main { max-width: 860px; margin: 0 auto; padding: 1.5rem; }
@@ -116,25 +125,37 @@ blockquote { margin: 0; padding: 0 1em; color: var(--muted); border-left: 0.25em
 footer { max-width: 860px; margin: 0 auto; padding: 1rem 1.5rem 2rem; color: white; border-top: 1px solid var(--line); font-size: 0.85rem; }
 `
 
+// the landing page links out to GitHub; nested pages link back to it instead
+const homeLink = root =>
+  root === "./"
+    ? `<a href="${REPO_URL}" class="start github">
+      <img src="${root}assets/github-light.svg" alt="GitHub" />
+    </a>`
+    : `<a href="${root}index.html" class="start">jq79</a>`
+
 const page = (title, body, root) => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
-<link rel="icon" type="image/png" href="./assets/favicon-96x96.png" sizes="96x96" />
-<link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
-<link rel="shortcut icon" href="./assets/favicon.ico" />
-<link rel="apple-touch-icon" sizes="180x180" href="./assets/apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="${root}assets/favicon-96x96.png" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="${root}assets/favicon.svg" />
+<link rel="shortcut icon" href="${root}assets/favicon.ico" />
+<link rel="apple-touch-icon" sizes="180x180" href="${root}assets/apple-touch-icon.png" />
 <meta name="apple-mobile-web-app-title" content="jq79" />
-<link rel="manifest" href="./assets/site.webmanifest" />
+<!--<link rel="manifest" href="${root}assets/site.webmanifest" />-->
 <style>${PAGE_CSS}</style>
 </head>
 <body>
 <header><nav>
-  <a href="${REPO_URL}" class="github">GitHub</a>
-  <a href="${root}coverage/">Coverage</a>
-  <a href="${NPM_URL}">npm</a>
+  ${homeLink(root)}
+  <a href="${root}coverage/" class="coverage">
+    <img src="${root}assets/code-coverage.svg" alt="coverage" />
+  </a>
+  <a href="${NPM_URL}" class="npm">
+    <img src="${root}assets/npm-logo.svg" alt="npm logo" />
+  </a>
 </nav></header>
 <main>
 ${body}
