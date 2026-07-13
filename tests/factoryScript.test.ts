@@ -110,6 +110,57 @@ describe("factory scripts (<script> with export default)", () => {
     component.destroy()
   })
 
+  it("ignores an export default that is not a function", () => {
+    const component = new Component79(`
+      <script>
+        export default { label: "not a factory" }
+      </script>
+      <p class="t">{{ label }}</p>
+    `)
+    const container = document.createElement("div")
+    component.mount(container)
+
+    // the object is not called and nothing is merged into the store
+    expect(container.querySelector(".t")?.textContent).toBe("")
+    expect(component.data!.label).toBeUndefined()
+    component.destroy()
+  })
+
+  it("logs the error when the factory throws, without breaking the render", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    const component = new Component79(`
+      <script>
+        export default () => { throw new Error("boom") }
+      </script>
+      <p class="t">rendered</p>
+    `)
+    const container = document.createElement("div")
+    component.mount(container)
+
+    await tick()
+    expect(container.querySelector(".t")?.textContent).toBe("rendered")
+    expect(spy).toHaveBeenCalledWith("jq79: error in factory script", expect.any(Error))
+    component.destroy()
+    spy.mockRestore()
+  })
+
+  it("logs the error when an async factory rejects", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    const component = new Component79(`
+      <script>
+        export default async () => { throw new Error("async boom") }
+      </script>
+      <p class="t">rendered</p>
+    `)
+    const container = document.createElement("div")
+    component.mount(container)
+
+    await tick()
+    expect(spy).toHaveBeenCalledWith("jq79: error in factory script", expect.any(Error))
+    component.destroy()
+    spy.mockRestore()
+  })
+
   describe("static imports", () => {
     it("default import of a component, exposed to the template via the return value", async () => {
       const child = new Component79(`<span class="child">child</span>`)

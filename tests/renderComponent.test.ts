@@ -258,6 +258,17 @@ describe("renderComponent", () => {
     expect(reordered[1].dataset.marker).toBe("ada-input")
   })
 
+  it("renders a comment placeholder for an unparseable :each expression", () => {
+    const component = parseComponent(`<li :each="not an each expression">{{ name }}</li>`)
+    const data = $reactive({})
+
+    container.appendChild(renderComponent(component, data))
+
+    expect($$(container, "li")).toEqual([])
+    expect(container.firstChild?.nodeType).toBe(Node.COMMENT_NODE)
+    expect(container.firstChild?.textContent).toContain("invalid :each expression")
+  })
+
   it("removes a dropped keyed item's node and disposes its effect", () => {
     const component = parseComponent(`<li :each="user in users" :key="user.id">{{ user.name }}</li>`)
     const data = $reactive({

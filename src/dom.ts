@@ -1,16 +1,25 @@
 // DOM helpers: tiny query/create utilities, also injected into component
 // scripts as $, $$ and $create
 
-export const $ = (selectorOrEl: string | Element, selector?: string) => 
-  typeof selectorOrEl === "string"
+// $(selector) queries the document; $(el, selector) queries within el. The
+// selector is required in the element form - an empty one is a SyntaxError
+export function $(selector: string): Element | null
+export function $(el: Element, selector: string): Element | null
+export function $(selectorOrEl: string | Element, selector?: string): Element | null {
+  return typeof selectorOrEl === "string"
     ? document.querySelector(selectorOrEl)
-    : selectorOrEl.querySelector(selector || "")
+    : selectorOrEl.querySelector(selector!)
+}
 
-export const $$ = (selectorOrEl: string | Element, selector?: string) => Array.from(
-  typeof selectorOrEl === "string"
-    ? document.querySelectorAll(selectorOrEl)
-    : selectorOrEl.querySelectorAll(selector || "")
-)
+export function $$(selector: string): Element[]
+export function $$(el: Element, selector: string): Element[]
+export function $$(selectorOrEl: string | Element, selector?: string): Element[] {
+  return Array.from(
+    typeof selectorOrEl === "string"
+      ? document.querySelectorAll(selectorOrEl)
+      : selectorOrEl.querySelectorAll(selector!)
+  )
+}
 
 // $create(tag, attrs): attrs are set as attributes, except className, which
 // may be a string or an array of class names.
@@ -87,11 +96,8 @@ function sanitizeNode(node: HTMLElement): HTMLElement | null {
     clean.setAttribute(name, attr.value);
   }
 
-  // fuerza rel seguro en enlaces
-  if (tag === 'a') {
-    clean.setAttribute('rel', 'noopener noreferrer');
-    if (clean.hasAttribute('target')) clean.removeAttribute('target');
-  }
+  // fuerza rel seguro en enlaces (target nunca se copia: no está permitido)
+  if (tag === 'a') clean.setAttribute('rel', 'noopener noreferrer');
 
   appendSanitizedChildren(node, clean);
 

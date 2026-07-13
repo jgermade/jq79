@@ -37,7 +37,6 @@ const IMPORT_LITERAL_RE = /(?<![\w$.])import\s*\(\s*(["'])([^"'\n]+?)\1\s*\)/g
 const STATIC_IMPORT_LITERAL_RE = /(?<![\w$.])import\s*(?:[\w$\s,{}*]+?\s*from\s*)?(["'])([^"'\n]+)\1/g
 
 const isHtmlUrl = (spec: string) => /\.html?([?#]|$)/.test(spec)
-const isRelative = (spec: string) => spec.startsWith("./") || spec.startsWith("../")
 const isExternalUrl = (spec: string) => /^[a-z][a-z0-9+.-]*:/i.test(spec) || spec.startsWith("/")
 
 // literal import specifiers in the component's script blocks - dynamic

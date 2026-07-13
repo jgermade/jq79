@@ -86,6 +86,34 @@ describe("Component79", () => {
     jq79.destroy()
   })
 
+  it("mount() on a second target detaches from the first one", () => {
+    const other = document.createElement("div")
+    document.body.appendChild(other)
+    const jq79 = new Component79(`<div class="moved">{{ n }}</div>`).mount(host, { n: 1 })
+
+    jq79.mount(other)
+
+    expect($(host, ".moved")).toBeNull()
+    expect($(other, ".moved")?.textContent).toBe("1")
+    jq79.destroy()
+    other.remove()
+  })
+
+  it("mountShadow() takes a selector string too", () => {
+    host.id = "jq79-shadow-host"
+    const jq79 = new Component79(`<div class="sh">ok</div>`).mountShadow("#jq79-shadow-host")
+
+    expect(host.shadowRoot!.querySelector(".sh")).not.toBeNull()
+    jq79.destroy()
+  })
+
+  it("throws when the mount selector matches nothing", () => {
+    const jq79 = new Component79(`<div>x</div>`)
+
+    expect(() => jq79.render().mount("#nope")).toThrow(/mount target not found: #nope/)
+    expect(() => jq79.mountShadow("#nope")).toThrow(/mount target not found: #nope/)
+  })
+
   it("injects styles into document.head on render and removes them on destroy", () => {
     const jq79 = new Component79(`<div class="styled">x</div><style>.styled { color: red; }</style>`)
     const stylesBefore = document.head.querySelectorAll("style").length
@@ -166,6 +194,20 @@ describe("Component79", () => {
   })
 
   describe(":setup scripts", () => {
+    it("logs an error thrown by the script without breaking the render", async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+      const jq79 = new Component79(
+        `<script :setup>throw new Error("boom")</script><div class="t">rendered</div>`
+      ).render().mount(host)
+
+      await new Promise(resolve => setTimeout(resolve))
+
+      expect($(host, ".t")?.textContent).toBe("rendered")
+      expect(spy).toHaveBeenCalledWith("jq79: error in :setup script", expect.any(Error))
+      jq79.destroy()
+      spy.mockRestore()
+    })
+
     it("exposes top-level const values to the template", () => {
       const jq79 = new Component79(
         `<script :setup="{ fname, lname }">const fullName = fname + " " + lname</script>` +
@@ -522,6 +564,50 @@ describe("Component79", () => {
 
       // the literal wins over the same-named property in the parent scope
       expect($(host, ".child")?.textContent).toBe("Hardcoded title")
+      jq79.destroy()
+    })
+
+    it("upgrades a late-arriving component tag exactly once, ignoring later new keys", () => {
+      const child = new Component79(`<span class="child">child</span>`)
+      const jq79 = new Component79(`<div><late-child></late-child></div>`).render({}).mount(host)
+
+      expect($(host, ".child")).toBeNull() // an unknown element placeholder for now
+
+      jq79.data!.LateChild = child
+      expect($$(host, ".child")).toHaveLength(1)
+      const upgraded = $(host, ".child")
+
+      // a later new key sweeps the store again: the placeholder is already gone,
+      // so the upgrade effect must not render a second child
+      jq79.data!.somethingElse = 1
+      expect($$(host, ".child")).toHaveLength(1)
+      expect($(host, ".child")).toBe(upgraded)
+
+      jq79.destroy()
+    })
+
+    it("tears the child down when its definition is replaced by a non-component", () => {
+      const child = new Component79(`<span class="child">{{ user.name }}</span>`)
+      const jq79 = new Component79(
+        `<div><NestedChild :user></NestedChild></div>`
+      ).render({ user: { name: "Ada" }, NestedChild: child as any }).mount(host)
+
+      expect($(host, ".child")).not.toBeNull()
+
+      jq79.data!.NestedChild = null
+
+      expect($(host, ".child")).toBeNull()
+      jq79.destroy()
+    })
+
+    it("does not pass control attrs or @event handlers to the child as props", () => {
+      const child = new Component79(`<span class="child">{{ user.name }}|{{ show }}|{{ click }}</span>`)
+      const jq79 = new Component79(
+        `<div><NestedChild :if="show" :user @click="noop()"></NestedChild></div>`
+      ).render({ show: true, user: { name: "Ada" }, noop: () => {}, NestedChild: child }).mount(host)
+
+      // only `user` came through as a prop: `:if` and `@click` stay with the parent
+      expect($(host, ".child")?.textContent).toBe("Ada||")
       jq79.destroy()
     })
 

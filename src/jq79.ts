@@ -601,9 +601,15 @@ const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run
     const merge = (bindings: any) => {
       if (bindings && typeof bindings === "object") Object.assign(scope, bindings)
     }
-    const returned = factory({ $data: scope, $effect: effect, ...instanceHelpers })
-    if (returned instanceof Promise) returned.then(merge).catch(logError)
-    else merge(returned)
+    // the sync path is invoked straight from render(), so a throwing factory
+    // must be caught here too - not just by the `result` rejection handler
+    try {
+      const returned = factory({ $data: scope, $effect: effect, ...instanceHelpers })
+      if (returned instanceof Promise) returned.then(merge).catch(logError)
+      else merge(returned)
+    } catch (error) {
+      logError(error)
+    }
   }
 
   result.then(invoke, logError)

@@ -51,6 +51,22 @@ describe("jq79 vite plugin", () => {
       const custom: any = jq79({ exclude: /\/vendor\// })
       expect(await resolveId(custom, "./Card.html", "/abs/main.js", "/abs/vendor/Card.html")).toBe(null)
     })
+
+    it("leaves unresolvable and external specifiers to vite", async () => {
+      const unresolved = await plugin.resolveId.call(
+        { resolve: async () => null },
+        "./Missing.html",
+        "/abs/main.js"
+      )
+      expect(unresolved).toBe(null)
+
+      const external = await plugin.resolveId.call(
+        { resolve: async () => ({ id: "https://cdn.dev/Card.html", external: true }) },
+        "https://cdn.dev/Card.html",
+        "/abs/main.js"
+      )
+      expect(external).toBe(null)
+    })
   })
 
   describe("load", () => {
@@ -107,6 +123,26 @@ describe("jq79 vite plugin", () => {
       // hoistable ones become real imports / map entries
       expect(code).not.toContain("__jq79_2")
       expect(code).not.toContain('from "https://esm.sh/other"')
+    })
+
+    it("leaves html imports the include does not claim to runtime fetch", async () => {
+      const custom: any = jq79({ include: /\.c79\.html$/ })
+      const dir = resolve("node_modules/.cache/jq79-tests")
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "unclaimed.html")
+      await writeFile(file, `
+        <script :setup>
+          const Claimed = await import("./Card.c79.html")
+          const Plain = await import("./Plain.html")
+        </script>
+        <p>{{ x }}</p>
+      `)
+      const { code } = await custom.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain('import __jq79_0 from "./Card.c79.html"')
+      // .html the plugin wouldn't claim stays out of the map: Component79.fetch handles it
+      expect(code).not.toContain('from "./Plain.html"')
+      expect(code).not.toContain('"./Plain.html": __jq79')
     })
   })
 

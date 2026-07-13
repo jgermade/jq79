@@ -43,6 +43,23 @@ describe("$reactive", () => {
       expect(listener).toHaveBeenCalledWith("LA", "user.address.city")
     })
 
+    it("supports several listeners on the same key, each unsubscribing on its own", () => {
+      const first = vi.fn()
+      const second = vi.fn()
+      const scope = $reactive({ name: "a" })
+      const off = scope.$on("name", first)
+      scope.$on("name", second)
+
+      scope.name = "b"
+      expect(first).toHaveBeenCalledWith("b", "name")
+      expect(second).toHaveBeenCalledWith("b", "name")
+
+      off()
+      scope.name = "c"
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).toHaveBeenCalledTimes(2)
+    })
+
     it("fires immediate with undefined when a path runs through a missing object", () => {
       const listener = vi.fn()
       const scope = $reactive({ user: null as any })
