@@ -745,9 +745,71 @@ describe("Component79", () => {
     })
   })
 
+  describe("script locations (devtools)", () => {
+    // the error a throwing setup script logs, as seen by console.error
+    const thrownBy = async (src: string, options?: { filename?: string }) => {
+      const errors: any[] = []
+      const spy = vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args) })
+      new Component79(src, options).render().mount(host)
+      await Promise.resolve()
+      spy.mockRestore()
+      return errors[0]?.[1] as Error | undefined
+    }
+
+    it("names a fetched component's scripts after its URL", async () => {
+      const src = `<script :setup>\nboom()\n</script><p>x</p>`
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => src })))
+
+      const jq79 = await Component79.fetch("/components/card.html")
+      expect(jq79.filename).toBe("/components/card.html")
+
+      const errors: any[] = []
+      const spy = vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args) })
+      jq79.render().mount(host)
+      await Promise.resolve()
+      spy.mockRestore()
+
+      expect(String(errors[0]?.[1]?.stack)).toContain("/components/card.html?jq79-script=0")
+      jq79.destroy()
+    })
+
+    it("names the script in the stack trace of an error thrown inside it", async () => {
+      const error = await thrownBy(`<script :setup>\nboom()\n</script><p>x</p>`, { filename: "Card.html" })
+
+      expect(String(error?.stack)).toContain("Card.html?jq79-script=0")
+    })
+
+    it("gives each script block of a component its own name", async () => {
+      const src = `<script :setup>\nlet a = 1\n</script>\n<script :setup>\nboom()\n</script>\n<p>{{ a }}</p>`
+      const error = await thrownBy(src, { filename: "Two.html" })
+
+      // the second block, so the failure can't be confused with the first
+      expect(String(error?.stack)).toContain("Two.html?jq79-script=1")
+    })
+
+    it("names a factory script too", async () => {
+      const src = `<script>\nboom()\nexport default () => ({})\n</script><p>x</p>`
+      const errors: any[] = []
+      const spy = vi.spyOn(console, "error").mockImplementation((...args) => { errors.push(args) })
+      new Component79(src, { filename: "Factory.html" }).render().mount(host)
+      await Promise.resolve()
+      spy.mockRestore()
+
+      expect(String(errors[0]?.[1]?.stack)).toContain("Factory.html?jq79-script=0")
+    })
+
+    it("leaves an inline component's scripts untouched (nothing to name them after)", async () => {
+      const error = await thrownBy(`<script :setup>\nboom()\n</script><p>x</p>`)
+
+      expect(error?.message).toContain("boom is not a function")
+      expect(String(error?.stack)).not.toContain("jq79-script")
+    })
+  })
+
   describe("<style scoped>", () => {
     const scopeOf = (el: Element | null) => el?.getAttribute("data-jq79") ?? null
-    const headCss = (jq79: Component79) => jq79.styles.map(style => style.content).join("\n")
+    // what a head-mounted instance injects: the scoped rewrite where there is one
+    const headCss = (jq79: Component79) => jq79.styles.map(style => style.scoped ?? style.content).join("\n")
 
     it("stamps every rendered element and requires the stamp in the CSS", () => {
       const jq79 = new Component79(`
@@ -873,6 +935,56 @@ describe("Component79", () => {
       expect(headCss(bundled)).toBe(headCss(fetched)) // same source -> same scope
 
       fetched.destroy()
+    })
+
+    it("ignores scoped under mountShadow: the shadow root gets the CSS as written", () => {
+      const jq79 = new Component79(
+        `<p class="a">x</p><style scoped>:host { display: block; } .a { color: red; }</style>`
+      )
+      jq79.mountShadow(host)
+
+      const shadowCss = host.shadowRoot!.querySelector("style")!.textContent!
+
+      // a shadow root already scopes; stamping the selectors on top would break
+      // :host, which cannot carry the stamp (the host is outside the template)
+      expect(shadowCss).toContain(":host { display: block; }")
+      expect(shadowCss).not.toContain("data-jq79")
+
+      // the head rewrite is still there for whoever mounts this definition normally
+      expect(jq79.styles[0].scoped).toContain('.a[data-jq79="')
+
+      jq79.destroy()
+    })
+
+    it("refcounts head styles by what was actually injected", () => {
+      const parts = new Component79(`<span class="s">x</span><style scoped>.s { color: red; }</style>`)
+      const stylesBefore = document.head.querySelectorAll("style").length
+
+      const a = new Component79(parts).render().mount(host)
+      const b = new Component79(parts).render().mount(host)
+      expect(document.head.querySelectorAll("style").length).toBe(stylesBefore + 1)
+
+      // destroy() must release the same string render() acquired, or the
+      // refcount never reaches zero and the <style> leaks
+      a.destroy()
+      b.destroy()
+      expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+    })
+
+    it("warns when an uncompiled <style lang> reaches the runtime, and leaves it as written", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+      // what a fetched (unbundled) component with scss in it looks like: the
+      // vite plugin never saw it, so nothing compiled the block
+      const jq79 = new Component79(
+        `<div class="a">x</div><style lang="scss" scoped>.a { .b { color: red; } }</style>`
+      )
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('<style lang="scss">'))
+      expect(jq79.styles[0].content).toContain(".b { color: red; }") // untouched, not garbled
+      expect(jq79.template[0].attrs["data-jq79"]).toBeUndefined() // no scoping attempted on non-CSS
+
+      warn.mockRestore()
     })
 
     it("warns about :deep(), which browsers would silently drop", () => {

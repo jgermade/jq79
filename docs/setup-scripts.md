@@ -85,6 +85,18 @@ $: total = subtotal
   - discount
 ```
 
+## Debugging a script
+
+Setup scripts are compiled with `new Function` — they need `with`, which is a `SyntaxError` inside an ES module — so they aren't part of any bundle and no bundler source map reaches them. To keep them debuggable, each compiled script is named after the component it came from:
+
+```
+UserCard.html?jq79-script=0
+```
+
+It shows up under that name in the devtools sources tree and in stack traces, breakpoints set in it survive a reload, and a component with two `<script>` blocks gets one entry per block (`…=0`, `…=1`). The name comes from where the component was loaded: the URL for `Component79.fetch(url)`, the path relative to the project root for the [Vite plugin](vite-plugin.md). A component built from an inline string has no origin to name, so its scripts stay anonymous.
+
+What devtools shows under that name is the *compiled* script — the rewritten code (`$__effect(…)` instead of `$:`), wrapped in the function the engine built. Its line numbers are the compiled script's own, not the `.html` file's; the engine's function header shifts everything down and a `<script>` on line 1 can't be shifted back up. Reporting the component's own lines would need the runtime to emit a source map, which it doesn't do today.
+
 ## Factory scripts (`export default`)
 
 A `<script>` whose top level has an `export default` runs as a **plain

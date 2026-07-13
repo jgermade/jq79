@@ -84,6 +84,31 @@ describe("jq79 vite plugin", () => {
       expect(code).toContain("export default component")
     })
 
+    it("names the component after its path, so its scripts are findable in devtools", async () => {
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        root: resolve("tests"),
+        plugins: [jq79()],
+        resolve: { alias: { jq79: runtimePath } },
+        build: {
+          write: false,
+          minify: false,
+          lib: { entry: fixture("app.js"), formats: ["es"], fileName: "app" },
+        },
+      })
+      const { code } = (Array.isArray(result) ? result[0] : result).output[0]
+
+      const dir = resolve("node_modules/.cache/jq79-tests")
+      await mkdir(dir, { recursive: true })
+      const bundlePath = join(dir, "named-app.mjs")
+      await writeFile(bundlePath, code)
+      const { UserCard } = await import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+
+      // relative to the vite root, not an absolute path from the build machine
+      expect(UserCard.filename).toBe("fixtures/user-card.html")
+    })
+
     it("hoists literal import() specifiers into real imports", async () => {
       const file = fixture("parent.html")
       const { code } = await plugin.load.call({}, `${file}?jq79`)
@@ -274,6 +299,49 @@ describe("jq79 vite plugin", () => {
       } finally {
         vi.unstubAllGlobals()
       }
+    })
+
+    it("compiles <style lang=\"scss\"> - nesting and @use resolved, then scoped at runtime", async () => {
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        plugins: [jq79()],
+        resolve: { alias: { jq79: runtimePath } },
+        build: {
+          write: false,
+          minify: false,
+          lib: { entry: fixture("sass-app.js"), formats: ["es"], fileName: "sass-app" },
+        },
+      })
+      const { code } = (Array.isArray(result) ? result[0] : result).output[0]
+
+      // the SCSS is gone from the bundle: nesting flattened, @use variable inlined
+      expect(code).not.toContain("@use")
+      expect(code).not.toContain("$brand")
+      expect(code).toContain("rebeccapurple")
+      expect(code).not.toContain('lang=\\"scss\\"') // the tag the runtime parses is plain CSS
+
+      const dir = resolve("node_modules/.cache/jq79-tests")
+      await mkdir(dir, { recursive: true })
+      const bundlePath = join(dir, "sass-app.mjs")
+      await writeFile(bundlePath, code)
+      const { SassCard } = await import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const container = document.createElement("div")
+      SassCard.mount(container)
+
+      // compiled CSS reaching the runtime is scoped like any other stylesheet
+      const scope = container.querySelector(".sass-card")?.getAttribute("data-jq79")
+      const css = SassCard.styles.map((style: any) => style.scoped ?? style.content).join("\n")
+      expect(scope).toBeTruthy()
+      expect(css).toContain(`.sass-card[data-jq79="${scope}"]`)
+      expect(css).toContain(`.sass-card .label[data-jq79="${scope}"]`) // scss nesting, flattened
+      expect(css).toContain("rebeccapurple")
+      expect(warn).not.toHaveBeenCalled() // it went through the plugin: nothing to warn about
+
+      warn.mockRestore()
+      SassCard.destroy()
     })
 
     it("bundles a factory-script component with a static child import", async () => {

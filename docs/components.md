@@ -53,7 +53,9 @@ Notes:
 - **Scoping stops at the component boundary.** A nested component's elements carry their own scope, not the parent's, so a parent's scoped rules can't style a child's internals. Vue's `:deep()` escape hatch is not supported (it isn't real CSS — the browser drops the rule — and jq79 warns if it sees one).
 - `@keyframes` are left untouched, so animation names are still global: prefix them if two components might collide.
 - Pseudo-elements stay last (`.a::before` → `.a[data-jq79="…"]::before`), and `@media`/`@supports`/`@container` blocks are scoped inside.
-- `mountShadow` remains the stronger option: a shadow root also blocks outside CSS from coming *in*, which `scoped` deliberately doesn't.
+- **`mountShadow` ignores `scoped`.** A shadow root already scopes, so it gets the CSS as written — which is also what lets `:host { … }` keep working (the host element is outside the template, so it never carries the stamp, and a scoped `:host[data-jq79="…"]` would match nothing). The same component can be mounted both ways: head-mounted instances get the scoped rewrite, shadow-mounted ones get the source.
+- `mountShadow` remains the stronger option overall: a shadow root also blocks outside CSS from coming *in*, which `scoped` deliberately doesn't.
+- `<style lang="scss">` (and `less`/`stylus`) is compiled by the [Vite plugin](vite-plugin.md#style-lang--css-preprocessors) and composes with `scoped` — but it only works for components that go through the bundler, unlike everything else here.
 
 ## Loading remote components
 

@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises"
-import type { Plugin } from "vite"
+import { relative } from "node:path"
+import { preprocessCSS } from "vite"
+import type { Plugin, ResolvedConfig } from "vite"
 
 // Vite plugin: import .html single-file components as modules.
 //
@@ -8,9 +10,12 @@ import type { Plugin } from "vite"
 //
 // The imported value is a Component79 built from the file's source - the same
 // thing `await Component79.fetch(url)` resolves to, but bundled at build time
-// instead of fetched at runtime. The plugin is a pure loader: the component
-// source is inlined verbatim (no transforms), so a file keeps working
-// unchanged if it's ever served from public/ and loaded with fetch instead.
+// instead of fetched at runtime. The component source is inlined verbatim, so
+// a file keeps working unchanged if it's ever served from public/ and loaded
+// with fetch instead - with one deliberate exception: <style lang="scss"> (or
+// less/stylus/sass) is compiled to plain CSS here. A component using `lang`
+// therefore only works through the bundler; loaded with fetch() it would
+// reach the runtime uncompiled, which the runtime warns about.
 //
 // Only .html files imported from other modules are claimed; entry points
 // (index.html) have no importer and imports carrying an explicit query
@@ -60,6 +65,49 @@ const hoistableImports = (source: string, include: RegExp): string[] => {
   return [...specifiers]
 }
 
+// a <style> block with its attribute string, so `lang` can be read and the
+// content replaced. Attribute values are matched as quoted chunks so a ">"
+// inside one doesn't end the tag early
+const STYLE_BLOCK_RE = /<style((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]*?)<\/style\s*>/gi
+const LANG_ATTR_RE = /\blang\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+
+// compiles <style lang="scss|less|styl|sass"> blocks to plain CSS with Vite's
+// own preprocessing (the same call @vitejs/plugin-vue makes), so the runtime
+// only ever sees CSS. The preprocessor picks its parser from the extension,
+// and resolving relative @use/@import against a filename in the component's
+// own directory is what makes `@use "./vars"` work. Files the preprocessor
+// pulls in are registered as watch deps, so editing a partial re-runs HMR for
+// every component that uses it. `lang` is dropped from the emitted tag: what
+// the runtime parses is a plain <style> (with `scoped` and the rest intact)
+const compileStyleBlocks = async (
+  source: string,
+  file: string,
+  config: ResolvedConfig,
+  addWatchFile: (id: string) => void
+): Promise<string> => {
+  const blocks = [...source.matchAll(STYLE_BLOCK_RE)]
+  const compiled = await Promise.all(
+    blocks.map(async ([, attrs, content]) => {
+      const lang = attrs.match(LANG_ATTR_RE)
+      if (!lang) return null
+      const extension = lang[1] ?? lang[2] ?? lang[3]
+      const result = await preprocessCSS(content, `${file}.${extension}`, config)
+      result.deps?.forEach(addWatchFile)
+      return { attrs: attrs.replace(LANG_ATTR_RE, "").trimEnd(), css: result.code }
+    })
+  )
+
+  let out = ""
+  let last = 0
+  blocks.forEach((block, i) => {
+    const done = compiled[i]
+    if (!done) return
+    out += source.slice(last, block.index) + `<style${done.attrs}>${done.css}</style>`
+    last = block.index + block[0].length
+  })
+  return out + source.slice(last)
+}
+
 // the emitted module. Literal import("...") specifiers found in the
 // component's scripts become real module imports, handed to Component79 as a
 // resolution map: at runtime $__import checks the map before falling back to
@@ -76,7 +124,7 @@ const hoistableImports = (source: string, include: RegExp): string[] => {
 // an instance only used as a definition (nested component clones can't be
 // reached from here) falls back to a full reload. `mountRoot` is internal to
 // Component79, but plugin and runtime ship in lockstep from the same package.
-const componentModule = (source: string, include: RegExp): string => {
+const componentModule = (source: string, include: RegExp, filename: string): string => {
   const hoisted = hoistableImports(source, include)
   const imports = hoisted
     .map((spec, i) =>
@@ -93,6 +141,7 @@ ${imports}
 
 const src = ${JSON.stringify(source)}
 const modules = ${modulesMap}
+const filename = ${JSON.stringify(filename)}
 
 let component
 
@@ -103,6 +152,7 @@ if (import.meta.hot && import.meta.hot.data.component) {
   prior.scripts = next.scripts
   prior.styles = next.styles
   prior.modules = modules
+  prior.filename = filename
   const root = prior.mountRoot
   if (root) {
     prior.mount(root, { ...prior.data })
@@ -111,7 +161,7 @@ if (import.meta.hot && import.meta.hot.data.component) {
   }
   component = prior
 } else {
-  component = new Component79(src, { modules })
+  component = new Component79(src, { modules, filename })
 }
 
 if (import.meta.hot) {
@@ -127,9 +177,15 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
   const include = options.include ?? /\.html$/
   const { exclude } = options
 
+  let config: ResolvedConfig | null = null
+
   return {
     name: "jq79",
     enforce: "pre",
+
+    configResolved(resolved) {
+      config = resolved
+    },
 
     async resolveId(source, importer) {
       if (!importer) return null // entry points are never components
@@ -145,7 +201,15 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
     async load(id) {
       if (!id.endsWith(COMPONENT_QUERY)) return null
       const file = id.slice(0, -COMPONENT_QUERY.length)
-      return { code: componentModule(await readFile(file, "utf8"), include), map: null }
+
+      let source = await readFile(file, "utf8")
+      if (config) source = await compileStyleBlocks(source, file, config, dep => this.addWatchFile(dep))
+
+      // the runtime names the component's setup scripts after this, so devtools
+      // shows a path the user recognizes instead of an anonymous VM script
+      const filename = config ? relative(config.root, file) : file
+
+      return { code: componentModule(source, include, filename), map: null }
     },
   }
 }

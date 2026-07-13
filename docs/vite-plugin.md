@@ -27,14 +27,46 @@ network request.
 ## A loader, not a compiler
 
 The plugin inlines the file's source verbatim; nothing inside the component is
-transformed. The same `.html` file works unchanged in all three delivery
-modes:
+transformed — with the single exception of `<style lang>` below. The same
+`.html` file works unchanged in all three delivery modes:
 
 - **Bundled** — placed in `src/`, imported as a module (this plugin).
 - **Fetched** — placed in `public/`, loaded with `Component79.fetch(url)` or
   `import("./card.html")` from a setup script, no build required.
 - **No project at all** — served from any static host and used with the CDN
   build of jq79.
+
+## `<style lang>` — CSS preprocessors
+
+A style block with a `lang` is compiled to plain CSS by the plugin, through
+Vite's own preprocessing. Install the preprocessor you use (`sass`, `less`,
+`stylus`) and write what you'd write in any Vite project — nesting, `@use`,
+variables, partials:
+
+```html
+<style lang="scss" scoped>
+  @use "./vars" as vars;
+
+  .card {
+    color: vars.$brand;
+    .title { font-weight: bold; }
+  }
+</style>
+```
+
+The runtime only ever sees the compiled CSS, so `lang` composes with
+[`scoped`](components.md#styles) — selectors are scoped after the preprocessor
+has flattened them. Files pulled in by `@use`/`@import` are registered as watch
+dependencies, so editing a partial triggers HMR in every component using it.
+
+**`lang` is the one thing that ties a component to the bundler.** A `.html`
+that never goes through the plugin — one in `public/` loaded with
+`Component79.fetch()`, one served from a CDN, one written inline as a template
+string — reaches the runtime uncompiled, and a browser silently drops a
+stylesheet it can't parse. So the runtime doesn't stay quiet: parsing a
+component whose `<style>` still carries a `lang` logs a warning saying the
+plugin never compiled it. If a component must work in both delivery modes,
+write plain CSS.
 
 ## Using an imported component
 

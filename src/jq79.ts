@@ -15,6 +15,10 @@ type TemplateNode = {
 type TagBlock = {
   attrs: Record<string, string>
   content: string
+  // <style scoped> only: `content` rewritten to require the component's scope
+  // attribute. Kept beside the original rather than replacing it, because a
+  // shadow root doesn't want it - see headStyle()
+  scoped?: string
 }
 
 const elementAttrs = (el: Element): Record<string, string> =>
@@ -146,7 +150,13 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
 
     // a fresh instance per usage site: the definition's parsed parts (and
     // pre-resolved modules) are shared, but store/effects/DOM are per instance
-    const instance = new Component79({ template: nextDef.template, scripts: nextDef.scripts, styles: nextDef.styles, modules: nextDef.modules })
+    const instance = new Component79({
+      template: nextDef.template,
+      scripts: nextDef.scripts,
+      styles: nextDef.styles,
+      modules: nextDef.modules,
+      filename: nextDef.filename,
+    })
     const seed = untracked(() =>
       Object.fromEntries(Object.entries(props).map(([name, expr]) => [name, evalExpr(expr, scope)]))
     )
@@ -447,6 +457,9 @@ type ComponentParts = {
   // the literal specifier. Bundlers (the jq79/vite plugin) fill this so
   // imports resolve from the bundle instead of being fetched at runtime
   modules?: Record<string, any>
+  // where this component came from (a URL for fetch(), a path for the vite
+  // plugin). Names the setup scripts in devtools - see scriptSourceUrl
+  filename?: string
 }
 
 const VOID_ELEMENTS = new Set([
@@ -568,20 +581,36 @@ const parseComponentString = (component: string): ComponentParts => {
   const template: TemplateNode[] = []
 
   Array.from(root.content.children).forEach(el => {
-    const block = { attrs: elementAttrs(el), content: el.textContent ?? "" }
+    const block: TagBlock = { attrs: elementAttrs(el), content: el.textContent ?? "" }
 
     if (el.tagName === "SCRIPT") scripts.push(block)
     else if (el.tagName === "STYLE") styles.push(block)
     else template.push(elementToAST(el))
   })
 
-  // scoping is resolved once, here: the stamped template and the rewritten
-  // CSS are what every instance of this definition renders and injects
-  if (styles.some(style => "scoped" in style.attrs)) {
+  // <style lang="scss"> is compiled by the jq79/vite plugin, so a `lang` still
+  // here means this component never went through it - it was fetched, loaded
+  // from a URL, or built from an inline string. The browser would drop the
+  // uncompiled source without a word, so say it out loud instead
+  styles.forEach(style => {
+    if ("lang" in style.attrs) {
+      console.warn(
+        `jq79: <style lang="${style.attrs.lang}"> needs the jq79/vite plugin to compile it. ` +
+        "This component didn't go through the bundler, so its styles were left uncompiled and the browser will ignore them."
+      )
+    }
+  })
+
+  // scoping is resolved once, here: the stamped template and the scoped CSS
+  // are what every instance of this definition renders and injects. An
+  // uncompiled `lang` block is left as it was written - rewriting selectors
+  // in something that isn't CSS yet would only garble what devtools shows
+  const isScoped = (style: TagBlock) => "scoped" in style.attrs && !("lang" in style.attrs)
+  if (styles.some(isScoped)) {
     const scope = scopeHash(component)
     stampScope(template, scope)
     styles.forEach(style => {
-      if ("scoped" in style.attrs) style.content = scopeCss(style.content, scope)
+      if (isScoped(style)) style.scoped = scopeCss(style.content, scope)
     })
   }
 
@@ -591,6 +620,40 @@ const parseComponentString = (component: string): ComponentParts => {
 // loads .html URLs as components, delegating anything else to native import()
 const importResource = (url: string): Promise<any> =>
   /\.html?([?#]|$)/.test(url) ? Component79.fetch(url) : import(url)
+
+// ---------------------------------------------------------------------------
+// naming scripts for devtools
+//
+// setup scripts are compiled with new Function (they need `with`, which is a
+// SyntaxError in a module), so no bundler source map can reach them: they show
+// up as an anonymous "VM1234" script, breakpoints don't survive a reload, and
+// stack traces name nothing. A //# sourceURL comment fixes all three - the
+// compiled script takes the component's name, so it is findable in the sources
+// tree, keeps its breakpoints, and appears by name in stack traces.
+//
+// The line numbers it reports are the compiled script's own, not the .html
+// file's: the engine wraps a Function body in a header ("function anonymous(
+// args\n) {\n") that shifts everything down, and no amount of padding can
+// shift code *up* to match a <script> sitting on line 1. Reporting the
+// component's real lines would need a source map, which the runtime doesn't
+// emit today
+// ---------------------------------------------------------------------------
+
+// where a script block came from: the component's filename, and its index
+// among the component's scripts (two scripts in one file need distinct names,
+// or devtools shows only one of them)
+type ScriptLocation = { filename?: string; index?: number }
+
+// nothing to name an inline component's scripts after, so they stay anonymous
+const sourceUrlComment = (filename: string | undefined, index: number): string =>
+  filename ? `\n//# sourceURL=${filename}?jq79-script=${index}` : ""
+
+// what a <style> block injects into document.head: the scoped rewrite when it
+// has one, the source otherwise. A shadow root uses `content` directly instead
+// - scoping is what a shadow root already does, and doing both would break the
+// `:host` rules only shadow rendering can have (`:host[data-jq79=...]` matches
+// nothing: the host element is outside the template, so it carries no stamp)
+const headStyle = (style: TagBlock): string => style.scoped ?? style.content
 
 // document.head styles are shared by content and refcounted, so N instances
 // of the same component (e.g. one per :each item) inject a single <style> tag
@@ -633,7 +696,7 @@ const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive }
 // The body is wrapped in an async IIFE so top-level `await` works: everything
 // up to the first await runs synchronously (before the template renders), and
 // later assignments update the DOM reactively when they happen
-const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource) => {
+const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}) => {
   // instanceHelpers are per-component-instance additions (e.g. $emit, which
   // is bound to this instance's DOM position)
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
@@ -644,7 +707,7 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
   })
   const result: Promise<void> = new Function(
     "$scope", "$__effect", "$__import", ...Object.keys(helpers),
-    `return (async () => { with ($scope) { ${code} } })()`
+    `return (async () => { with ($scope) { ${code} } })()${sourceUrlComment(at.filename, at.index ?? 0)}`
   )(scriptScope, effect, importer, ...Object.values(helpers))
   result.catch(error => console.error("jq79: error in :setup script", error))
 }
@@ -660,12 +723,12 @@ const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.def
 // synchronous body invokes the factory before the first render, matching
 // setup-script timing; bodies with top-level await (static imports included)
 // resolve later and the template updates reactively
-const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource) => {
+const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}) => {
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
   const $__exports: { default?: (ctx: Record<string, any>) => any; done?: boolean } = {}
   const result: Promise<void> = new Function(
     "$__exports", "$__default", "$__import", ...Object.keys(helpers),
-    `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()`
+    `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()${sourceUrlComment(at.filename, at.index ?? 0)}`
   )($__exports, interopDefault, importer, ...Object.values(helpers))
 
   const logError = (error: any) => console.error("jq79: error in factory script", error)
@@ -710,6 +773,8 @@ export class Component79 {
   // pre-resolved modules for setup-script `import(...)` calls (see
   // ComponentParts.modules); checked before falling back to fetch/import
   modules?: Record<string, any>
+  // the component's origin, used to name its scripts in devtools
+  filename?: string
 
   data: ReactiveDeepData<Record<string, any>> | null = null
 
@@ -734,18 +799,21 @@ export class Component79 {
   // outside the render generation so they survive re-render and destroy()
   private emitListeners = new Map<string, Set<EmitListener>>()
 
-  constructor(src: string | ComponentParts, options: { modules?: Record<string, any> } = {}) {
+  constructor(src: string | ComponentParts, options: { modules?: Record<string, any>; filename?: string } = {}) {
     const parts = typeof src === "string" ? parseComponentString(src) : src
     this.template = parts.template
     this.scripts = parts.scripts
     this.styles = parts.styles
     this.modules = options.modules ?? (typeof src === "string" ? undefined : src.modules)
+    this.filename = options.filename ?? (typeof src === "string" ? undefined : src.filename)
   }
 
   static async fetch(url: string): Promise<Component79> {
     const response = await fetch(url)
     if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
-    return new Component79(await response.text())
+    // the URL names the component's scripts in devtools, and is where the
+    // browser will look for the source when a breakpoint lands in one
+    return new Component79(await response.text(), { filename: url })
   }
 
   // subscribes to this instance's $emit events, on top of the DOM CustomEvent
@@ -840,20 +908,25 @@ export class Component79 {
     // scripts run before the template renders so `$:` values are initialized;
     // a `:mounted` script defers entirely until mount() instead. A top-level
     // `export default` switches the script to factory mode (plain lexical JS)
-    this.scripts.forEach(script => {
+    // a `:mounted` script is deferred by prepending the await on the code's own
+    // first line, so deferring doesn't shift the lines devtools reports for it
+    const defer = (code: string) => `await $mounted();${code}`
+
+    this.scripts.forEach((script, index) => {
       const instanceHelpers = { $emit, $mounted, $self, $$self }
+      const at: ScriptLocation = { filename: this.filename, index }
       const factoryCode = transformFactoryScript(script.content)
       if (factoryCode !== null) {
-        const body = ":mounted" in script.attrs ? `await $mounted();\n${factoryCode}` : factoryCode
-        runFactoryScript(body, store, fx.effect, instanceHelpers, $import)
+        const body = ":mounted" in script.attrs ? defer(factoryCode) : factoryCode
+        runFactoryScript(body, store, fx.effect, instanceHelpers, $import, at)
         return
       }
       const { vars, code } = transformSetupScript(script.content)
       // pre-declare script vars on the store so `with` resolves assignments
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
-      const body = ":mounted" in script.attrs ? `await $mounted();\n${code}` : code
-      runSetupScript(body, store, fx.effect, instanceHelpers, $import)
+      const body = ":mounted" in script.attrs ? defer(code) : code
+      runSetupScript(body, store, fx.effect, instanceHelpers, $import, at)
     })
 
     const content = document.createDocumentFragment()
@@ -863,11 +936,11 @@ export class Component79 {
     if (shadow) {
       this.styleEls = this.styles.map(style => {
         const el = document.createElement("style")
-        el.textContent = style.content
+        el.textContent = style.content // the source: a shadow root scopes it already
         return el
       })
     } else {
-      this.styles.forEach(style => acquireStyle(style.content))
+      this.styles.forEach(style => acquireStyle(headStyle(style)))
       this.ownsSharedStyles = true
     }
 
@@ -935,7 +1008,7 @@ export class Component79 {
     this.styleEls.forEach(el => el.parentNode?.removeChild(el))
     this.styleEls = []
     if (this.ownsSharedStyles) {
-      this.styles.forEach(style => releaseStyle(style.content))
+      this.styles.forEach(style => releaseStyle(headStyle(style)))
       this.ownsSharedStyles = false
     }
     this.content = null
