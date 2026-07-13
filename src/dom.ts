@@ -56,13 +56,21 @@ export function isSafeUrl(value: string): boolean {
   }
 }
 
+// copia los hijos de `source` en `target`, saneando los elementos y clonando
+// el texto; cualquier otra cosa (comentarios, etc.) se descarta
+function appendSanitizedChildren(source: ParentNode, target: HTMLElement): void {
+  for (const child of Array.from(source.childNodes)) {
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      const sanitizedChild = sanitizeNode(child as HTMLElement);
+      if (sanitizedChild) target.appendChild(sanitizedChild);
+    } else if (child.nodeType === Node.TEXT_NODE) {
+      target.appendChild(child.cloneNode());
+    }
+  }
+}
+
+// sanea un elemento (los llamadores solo pasan nodos ELEMENT_NODE)
 function sanitizeNode(node: HTMLElement): HTMLElement | null {
-  // Nodo de texto: siempre seguro, se deja tal cual
-  if (node.nodeType === Node.TEXT_NODE) return node;
-
-  // Comentarios y cualquier otra cosa: fuera
-  if (node.nodeType !== Node.ELEMENT_NODE) return null;
-
   const tag = node.tagName.toLowerCase();
   if (!ALLOWED_TAGS.has(tag)) return null; // tag no permitido → se descarta el nodo entero
 
@@ -85,14 +93,7 @@ function sanitizeNode(node: HTMLElement): HTMLElement | null {
     if (clean.hasAttribute('target')) clean.removeAttribute('target');
   }
 
-  for (const child of Array.from(node.childNodes)) {
-    if (child.nodeType === Node.ELEMENT_NODE) {
-      const sanitizedChild = sanitizeNode(child as HTMLElement);
-      if (sanitizedChild) clean.appendChild(sanitizedChild);
-    } else if (child.nodeType === Node.TEXT_NODE) {
-      clean.appendChild(child.cloneNode());
-    }
-  }
+  appendSanitizedChildren(node, clean);
 
   return clean;
 }
@@ -101,14 +102,7 @@ export function sanitizeHTML(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const container = document.createElement('div');
 
-  for (const child of Array.from(doc.body.childNodes)) {
-    if (child.nodeType === Node.ELEMENT_NODE) {
-      const sanitizedChild = sanitizeNode(child as HTMLElement);
-      if (sanitizedChild) container.appendChild(sanitizedChild);
-    } else if (child.nodeType === Node.TEXT_NODE) {
-      container.appendChild(child.cloneNode());
-    }
-  }
+  appendSanitizedChildren(doc.body, container);
 
   return container.innerHTML;
 }

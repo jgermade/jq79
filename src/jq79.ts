@@ -262,7 +262,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   const textExpr = node.attrs[":text"]
   const htmlExpr = node.attrs[":html"]
   if (textExpr !== undefined) {
-    fx.effect(() => { el.textContent = evalExpr(textExpr, scope) ?? "" })
+    fx.effect(() => { el.textContent = String(evalExpr(textExpr, scope) ?? "") })
   } else if (htmlExpr !== undefined) {
     fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(htmlExpr, scope) ?? "")) })
   } else {
