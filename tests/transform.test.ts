@@ -56,6 +56,52 @@ describe("setup script scanner", () => {
     expect(vars).toEqual([]) // nothing declared, but the body still re-runs
     expect(code).toBe(`$__effect(() => { console.log(count) });`)
   })
+
+  it("keeps a leading-dot method chain in the same reactive statement", () => {
+    const { vars, code } = transformSetupScript(`$: names = users\n  .filter(u => u.active)\n  .map(u => u.name)\nlet after = 1`)
+
+    expect(vars).toEqual(["names", "after"])
+    expect(code).toBe(
+      `$__effect(() => { names = users\n  .filter(u => u.active)\n  .map(u => u.name) });\nafter = 1`
+    )
+  })
+
+  it("keeps multi-line operator, ternary and optional-chaining continuations together", () => {
+    expect(transformSetupScript(`$: total = a\n  + b\n  - c`).code).toBe(
+      `$__effect(() => { total = a\n  + b\n  - c });`
+    )
+    expect(transformSetupScript(`$: label = ok\n  ? "yes"\n  : "no"`).code).toBe(
+      `$__effect(() => { label = ok\n  ? "yes"\n  : "no" });`
+    )
+    expect(transformSetupScript(`$: city = user\n  ?.address\n  ?? "unknown"`).code).toBe(
+      `$__effect(() => { city = user\n  ?.address\n  ?? "unknown" });`
+    )
+  })
+
+  it("continues across a comment line before the chained call", () => {
+    const { code } = transformSetupScript(`$: names = users\n  // only the active ones\n  .filter(u => u.active)`)
+
+    expect(code).toBe(`$__effect(() => { names = users\n  // only the active ones\n  .filter(u => u.active) });`)
+  })
+
+  it("ends the statement when the next line starts a new one", () => {
+    const { code } = transformSetupScript(`$: doubled = n * 2\nconsole.log(doubled)`)
+
+    expect(code).toBe(`$__effect(() => { doubled = n * 2 });\nconsole.log(doubled)`)
+  })
+
+  it("ends the statement before a line starting with a unary operator, as JS does", () => {
+    const { code } = transformSetupScript(`$: flag = a\n!function () {}()`)
+
+    expect(code).toBe(`$__effect(() => { flag = a });\n!function () {}()`)
+  })
+
+  it("preserves line numbers", () => {
+    const src = `let a = 1\n$: b = a\n  + 1\n$: c = b\nfn(c)`
+    const { code } = transformSetupScript(src)
+
+    expect(code.split("\n")).toHaveLength(src.split("\n").length)
+  })
 })
 
 describe("transformFactoryScript", () => {

@@ -48,9 +48,33 @@ const skipBlockComment = (src: string, start: number): number => {
   return end === -1 ? src.length : end + 2
 }
 
-// end of a statement starting at `start`: the first newline or `;` that isn't
-// inside a string/comment or unbalanced brackets, so multi-line RHS like a
-// wrapped function call or template literal stays in one piece
+// index of the next thing that isn't whitespace or a comment
+const skipToToken = (src: string, start: number): number => {
+  let i = start
+  while (i < src.length) {
+    if (/\s/.test(src[i])) { i++; continue }
+    if (src[i] === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
+    if (src[i] === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    break
+  }
+  return i
+}
+
+// tokens that can't *start* a statement, so a line beginning with one is
+// continuing the previous expression rather than opening a new statement -
+// the same call JS's automatic semicolon insertion makes. Unary-only forms
+// (!, ~, ++, --) are deliberately absent: those do start a statement, and JS
+// inserts the semicolon before them
+const CONTINUATION_RE = /^(\?\.|\?\?|&&|\|\||\*\*|[.,+\-*/%&|^<>=?:([])/
+
+// end of a statement starting at `start`: the first `;` or line break that
+// isn't inside a string/comment or unbalanced brackets. A line break only
+// ends the statement if the next line can't continue it, so leading-dot
+// method chains and multi-line operator chains stay in one piece:
+//
+//   $: total = items
+//     .filter(item => item.active)      <- still the same statement
+//     .length
 const findStatementEnd = (src: string, start: number): number => {
   let depth = 0
   let i = start
@@ -61,7 +85,13 @@ const findStatementEnd = (src: string, start: number): number => {
     if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
     if ("([{".includes(ch)) depth++
     else if (")]}".includes(ch)) depth--
-    else if (depth <= 0 && (ch === "\n" || ch === ";")) return i
+    else if (depth <= 0 && ch === ";") return i
+    else if (depth <= 0 && ch === "\n") {
+      const next = skipToToken(src, i + 1)
+      if (next >= src.length || !CONTINUATION_RE.test(src.slice(next, next + 2))) return i
+      i = next
+      continue
+    }
     i++
   }
   return src.length

@@ -40,6 +40,48 @@ describe("renderComponent", () => {
     expect(el.getAttribute("disabled")).toBe("true")
   })
 
+  describe("multi-line expressions", () => {
+    it("interpolates a {{ }} expression spanning several lines", () => {
+      const component = parseComponent(`<p class="out">{{ items\n  .map(n => n * 2)\n  .join(",") }}</p>`)
+      const data = $reactive({ items: [1, 2, 3] })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($(container, ".out")?.textContent).toBe("2,4,6")
+
+      data.items = [5]
+      expect($(container, ".out")?.textContent).toBe("10")
+    })
+
+    it("iterates an :each list expression spanning several lines", () => {
+      const component = parseComponent(
+        `<ul><li class="item" :each="n in items\n  .filter(n => n > 1)\n  .map(n => n * 10)">{{ n }}</li></ul>`
+      )
+      const data = $reactive({ items: [1, 2, 3] })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, ".item").map(el => el.textContent)).toEqual(["20", "30"])
+
+      data.items = [1, 2, 3, 4]
+      expect($$(container, ".item").map(el => el.textContent)).toEqual(["20", "30", "40"])
+    })
+
+    it("evaluates multi-line :if and :attrs expressions", () => {
+      const component = parseComponent(
+        `<div class="box" :if="items\n  .filter(n => n > 1)\n  .length > 0" :attrs="{\n  'data-count': items.length,\n}"></div>`
+      )
+      const data = $reactive({ items: [1, 2, 3] })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($(container, ".box")?.getAttribute("data-count")).toBe("3")
+
+      data.items = [1]
+      expect($(container, ".box")).toBeNull()
+    })
+  })
+
   describe(":text / :html", () => {
     it("sets textContent from :text and updates it reactively", () => {
       const component = parseComponent(`<div class="n" :text="user.name"></div>`)

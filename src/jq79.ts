@@ -52,12 +52,15 @@ const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<stri
   }
 }
 
+// [\s\S] rather than `.` so an expression can span lines, like the ones in
+// directive attributes (which reach evalExpr wrapped in parens either way)
 const interpolate = (template: string, scope: Record<string, any>): string =>
-  template.replace(/{{\s*(.+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
+  template.replace(/{{\s*([\s\S]+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
 
 
 const CONTROL_ATTRS = new Set([":attrs", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
-const EACH_PATTERN = /^\s*(\w+)\s+in\s+(.+)$/
+// the list expression can span lines, so it matches [\s\S] rather than `.`
+const EACH_PATTERN = /^\s*(\w+)\s+in\s+([\s\S]+)$/
 
 type ConditionalBranch = { expr?: string; node: TemplateNode }
 

@@ -241,6 +241,25 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("re-runs a $: declaration written as a multi-line chain", () => {
+      const src = [
+        "<script :setup>",
+        "let items = [1, 2, 3]",
+        "$: doubled = items",
+        "  .map(n => n * 2)",
+        "  .join(',')",
+        "</script>",
+        "<p class='chain'>{{ doubled }}</p>",
+      ].join("\n")
+      const jq79 = new Component79(src).render().mount(host)
+
+      expect($(host, ".chain")?.textContent).toBe("2,4,6")
+
+      jq79.data!.items = [5]
+      expect($(host, ".chain")?.textContent).toBe("10")
+      jq79.destroy()
+    })
+
     it("updates the DOM from async assignments in setup code (the fetch-user example)", async () => {
       vi.stubGlobal("loadUser", () => Promise.resolve({ firstName: "Ada", lastName: "Lovelace" }))
 
@@ -838,6 +857,22 @@ describe("Component79", () => {
       expect(child.textContent).toBe("x")
 
       parent.destroy()
+    })
+
+    it("scopes a component fetched at runtime, same as a bundled one", async () => {
+      const src = `<div class="fetched">x</div><style scoped>.fetched { color: red; }</style>`
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => src })))
+
+      const fetched = await Component79.fetch("/components/card.html")
+      fetched.render().mount(host)
+      const bundled = new Component79(src) // what the vite plugin emits: same source string
+
+      const scope = scopeOf($(host, ".fetched"))
+      expect(scope).not.toBeNull()
+      expect(headCss(fetched)).toContain(`.fetched[data-jq79="${scope}"]`)
+      expect(headCss(bundled)).toBe(headCss(fetched)) // same source -> same scope
+
+      fetched.destroy()
     })
 
     it("warns about :deep(), which browsers would silently drop", () => {

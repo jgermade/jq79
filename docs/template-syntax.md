@@ -9,6 +9,14 @@ Any JS expression between `{{ }}`:
 <span>{{ price * quantity }} €</span>
 ```
 
+Expressions may span several lines — both here and in every directive (`:if`, `:each`, `:attrs`, `@event`, …):
+
+```html
+<span>{{ items
+  .filter(item => item.active)
+  .length }}</span>
+```
+
 ## `:attrs` — dynamic attributes
 
 Evaluates to an object; each entry becomes an attribute. `null`, `undefined` and `false` values remove the attribute.

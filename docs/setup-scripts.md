@@ -73,6 +73,18 @@ new Component79(src)
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. `let a = 1, b = 2` multi-declarators are not supported — one declaration per statement.
 
+A `$:` declaration may span several lines: a line break only ends it if the next line can't continue the expression, the same call JavaScript's semicolon insertion makes. So method chains and operator chains work as written:
+
+```js
+$: activeNames = users
+  .filter(user => user.active)
+  .map(user => user.name)
+
+$: total = subtotal
+  + shipping
+  - discount
+```
+
 ## Factory scripts (`export default`)
 
 A `<script>` whose top level has an `export default` runs as a **plain
