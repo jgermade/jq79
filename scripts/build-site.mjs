@@ -9,11 +9,15 @@
 //
 // Expects `npm run build` and `npm run test:coverage` to have run first.
 
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { posix } from "node:path"
+import { gzip } from "node:zlib"
+import { promisify } from "node:util"
 import { marked } from "marked"
 import { markedHighlight } from "marked-highlight"
 import hljs from "highlight.js"
+
+const gzipSize = promisify(gzip)
 
 marked.use(
   markedHighlight({
@@ -176,5 +180,22 @@ await cp("coverage", posix.join(SITE, "coverage"), { recursive: true })
 await rm(posix.join(SITE, "coverage/coverage-summary.json"), { force: true })
 await writeFile(posix.join(SITE, "badges/npm.svg"), badge("npm", `v${pkg.version}`, "#007ec6"))
 await writeFile(posix.join(SITE, "badges/coverage.svg"), badge("coverage", `${pct.toFixed(1)}%`, coverageColor(pct)))
+
+// size badges: esm (dist/jq79.js) and cdn (dist/jq79.global.js), normal + gzip
+const fmtSize = bytes => {
+  if (bytes < 1024) return `${bytes}b`
+  return `${(bytes / 1024).toFixed(1)}kb`
+}
+const sizeBadge = async (label, file, color) => {
+  const raw = await stat(file)
+  const buf = await readFile(file)
+  const gz = await gzipSize(buf)
+  await writeFile(
+    posix.join(SITE, "badges", `${label}-size.svg`),
+    badge(label, `${fmtSize(raw.size)} | zip ${fmtSize(gz.length)}`, color)
+  )
+}
+await sizeBadge("esm", "dist/jq79.js", "#3c1")
+await sizeBadge("cdn", "dist/jq79.global.js", "#007ec6")
 
 console.log(`site/ built: v${pkg.version}, coverage ${pct.toFixed(1)}%`)
