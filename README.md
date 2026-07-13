@@ -1,7 +1,7 @@
 
 # jq79
 
-<img src="assets/Component79.svg" alt="jq79 logo" width="120" align="right">
+<img src="assets/Component79.svg" alt="jq79 logo" width="100" align="right">
 
 A mini reactive component library in a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
 
