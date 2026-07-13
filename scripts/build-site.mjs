@@ -237,6 +237,6 @@ const sizeBadge = async (label, file, c2, c4) => {
   )
 }
 await sizeBadge("esm", "dist/jq79.js", "goldenrod", "#778899")
-await sizeBadge("cdn", "dist/jq79.global.js", "#f08080", "#778899")
+await sizeBadge("cjs", "dist/jq79.global.js", "#6495ed", "#778899")
 
 console.log(`site/ built: v${pkg.version}, coverage ${pct.toFixed(1)}%`)
