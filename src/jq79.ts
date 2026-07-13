@@ -114,7 +114,9 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
 
   const props: Record<string, string> = {} // prop name -> expression in parent scope
   Object.entries(node.attrs).forEach(([attr, value]) => {
-    if (CONTROL_ATTRS.has(attr) || attr.startsWith("@")) return
+    // the parent's scope stamp is stamped on every template element, this tag
+    // included - it's not a prop, and the child renders under its own scope
+    if (attr === SCOPE_ATTR || CONTROL_ATTRS.has(attr) || attr.startsWith("@")) return
     if (attr.startsWith(":")) {
       const name = kebabToCamel(attr.slice(1))
       props[name] = value || name
@@ -471,6 +473,68 @@ const expandSelfClosingTags = (src: string): string =>
     )
     .join("")
 
+// <style scoped> support. Every element of the component's own template is
+// stamped with data-jq79="<hash>" and the style's selectors are rewritten to
+// require that attribute, so its rules can't reach anything the component
+// didn't render. Purely a runtime transform (the browser parses the CSS), so
+// it works the same for a bundled component and one loaded with fetch()
+const SCOPE_ATTR = "data-jq79"
+
+// FNV-1a over the source: stable per definition (not per instance), so N
+// instances of the same component share one refcounted <style> in the head
+const scopeHash = (src: string): string => {
+  let hash = 2166136261
+  for (let i = 0; i < src.length; i++) hash = Math.imul(hash ^ src.charCodeAt(i), 16777619)
+  return (hash >>> 0).toString(36)
+}
+
+const stampScope = (nodes: (TemplateNode | string)[], scope: string) => {
+  nodes.forEach(node => {
+    if (typeof node === "string") return
+    node.attrs[SCOPE_ATTR] = scope
+    stampScope(node.children, scope)
+  })
+}
+
+// the scope attribute goes on the selector's last compound - the element the
+// rule actually targets - but *before* a pseudo-element, which must stay last
+// (".a::before" scopes to ".a[data-jq79='x']::before", not "::before[...]")
+const scopeSelector = (selectorText: string, scope: string): string =>
+  selectorText
+    .split(",")
+    .map(part => {
+      const selector = part.trim()
+      const pseudoAt = selector.indexOf("::")
+      const target = pseudoAt === -1 ? selector : selector.slice(0, pseudoAt)
+      const pseudoElement = pseudoAt === -1 ? "" : selector.slice(pseudoAt)
+      return `${target}[${SCOPE_ATTR}="${scope}"]${pseudoElement}`
+    })
+    .join(", ")
+
+// CSSStyleRule is scoped in place; CSSGroupingRule (@media, @supports,
+// @container) is recursed into; everything else - notably @keyframes, whose
+// "selectors" are percentages - is left alone
+const scopeRules = (rules: CSSRuleList, scope: string) => {
+  Array.from(rules).forEach(rule => {
+    if (rule instanceof CSSStyleRule) rule.selectorText = scopeSelector(rule.selectorText, scope)
+    else if (rule instanceof CSSGroupingRule) scopeRules(rule.cssRules, scope)
+  })
+}
+
+// the CSS parser is the browser's own (no dependency, no hand-rolled parser).
+// Note browsers *silently drop* rules whose selector they can't parse, which
+// is what Vue's :deep()/::v-deep/>>> escape hatches are - unsupported here,
+// and warned about rather than left to vanish
+const scopeCss = (css: string, scope: string): string => {
+  if (/:deep\(|::v-deep|>>>/.test(css)) {
+    console.warn("jq79: :deep()/::v-deep/>>> are not supported in <style scoped>; the rule will be dropped by the browser")
+  }
+  const sheet = new CSSStyleSheet()
+  sheet.replaceSync(css)
+  scopeRules(sheet.cssRules, scope)
+  return Array.from(sheet.cssRules).map(rule => rule.cssText).join("\n")
+}
+
 // converts a string of HTML into an AST representation of the component:
 // - template: the non-script/style top-level elements, as TemplateNodes
 // - scripts/styles: { attrs, content } blocks in source order
@@ -507,6 +571,16 @@ const parseComponentString = (component: string): ComponentParts => {
     else if (el.tagName === "STYLE") styles.push(block)
     else template.push(elementToAST(el))
   })
+
+  // scoping is resolved once, here: the stamped template and the rewritten
+  // CSS are what every instance of this definition renders and injects
+  if (styles.some(style => "scoped" in style.attrs)) {
+    const scope = scopeHash(component)
+    stampScope(template, scope)
+    styles.forEach(style => {
+      if ("scoped" in style.attrs) style.content = scopeCss(style.content, scope)
+    })
+  }
 
   return { template, scripts, styles }
 }

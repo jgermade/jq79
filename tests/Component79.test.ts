@@ -725,4 +725,128 @@ describe("Component79", () => {
       expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
     })
   })
+
+  describe("<style scoped>", () => {
+    const scopeOf = (el: Element | null) => el?.getAttribute("data-jq79") ?? null
+    const headCss = (jq79: Component79) => jq79.styles.map(style => style.content).join("\n")
+
+    it("stamps every rendered element and requires the stamp in the CSS", () => {
+      const jq79 = new Component79(`
+        <div class="card"><span class="title">hi</span></div>
+        <style scoped>.card .title { color: red; }</style>
+      `).render().mount(host)
+
+      const scope = scopeOf($(host, ".card"))
+      expect(scope).toMatch(/^[a-z0-9]+$/)
+      expect(scopeOf($(host, ".title"))).toBe(scope)
+      expect(headCss(jq79)).toContain(`.card .title[data-jq79="${scope}"]`)
+
+      jq79.destroy()
+    })
+
+    it("leaves an unscoped <style> and its template alone", () => {
+      const jq79 = new Component79(`<div class="plain">x</div><style>.plain { color: red; }</style>`).render().mount(host)
+
+      expect(scopeOf($(host, ".plain"))).toBeNull()
+      expect(headCss(jq79)).toContain(".plain {")
+      expect(headCss(jq79)).not.toContain("data-jq79")
+
+      jq79.destroy()
+    })
+
+    it("scopes the last compound, keeping pseudo-elements last and @keyframes untouched", () => {
+      const jq79 = new Component79(`
+        <div class="a">x</div>
+        <style scoped>
+          .a::before { content: "x"; }
+          .a:hover, .b > .c { color: red; }
+          @media (min-width: 10px) { .a { color: blue; } }
+          @keyframes spin { from { opacity: 0; } to { opacity: 1; } }
+        </style>
+      `).render().mount(host)
+
+      const scope = scopeOf($(host, ".a"))
+      const css = headCss(jq79)
+
+      expect(css).toContain(`.a[data-jq79="${scope}"]::before`)
+      expect(css).toContain(`.a:hover[data-jq79="${scope}"]`)
+      expect(css).toContain(`.b > .c[data-jq79="${scope}"]`)
+      expect(css).toContain(`.a[data-jq79="${scope}"] { color: blue; }`) // inside @media
+      expect(css).toMatch(/@keyframes spin \{[^}]*0%/) // keyframe selectors left alone
+
+      jq79.destroy()
+    })
+
+    it("scopes elements added later by :if and :each", async () => {
+      const jq79 = new Component79(`
+        <ul class="list"><li :each="n in items" class="item">{{ n }}</li></ul>
+        <p :if="open" class="panel">open</p>
+        <style scoped>.item { color: red; }</style>
+      `).render({ items: [1], open: false }).mount(host)
+
+      const scope = scopeOf($(host, ".list"))
+      expect(scopeOf($(host, ".item"))).toBe(scope)
+
+      jq79.data!.items = [1, 2]
+      jq79.data!.open = true
+      await Promise.resolve()
+
+      expect($$(host, ".item")).toHaveLength(2)
+      $$(host, ".item").forEach(item => expect(scopeOf(item)).toBe(scope))
+      expect(scopeOf($(host, ".panel"))).toBe(scope)
+
+      jq79.destroy()
+    })
+
+    it("gives instances of the same definition one shared scope and one head <style>", () => {
+      const parts = new Component79(`<span class="s">x</span><style scoped>.s { color: red; }</style>`)
+      const stylesBefore = document.head.querySelectorAll("style").length
+
+      const a = new Component79(parts).render().mount(host)
+      const b = new Component79(parts).render().mount(host)
+
+      const [first, second] = $$(host, ".s")
+      expect(scopeOf(first)).toBe(scopeOf(second))
+      expect(document.head.querySelectorAll("style").length).toBe(stylesBefore + 1)
+
+      a.destroy()
+      b.destroy()
+      expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+    })
+
+    it("gives different sources different scopes", () => {
+      const a = new Component79(`<div class="x">a</div><style scoped>.x { color: red; }</style>`).render().mount(host)
+      const b = new Component79(`<div class="x">b</div><style scoped>.x { color: blue; }</style>`).render().mount(host)
+
+      const [first, second] = $$(host, ".x")
+      expect(scopeOf(first)).not.toBe(scopeOf(second))
+
+      a.destroy()
+      b.destroy()
+    })
+
+    it("stops at the component boundary: a child renders under its own scope, and the stamp is not a prop", () => {
+      const Child = new Component79(`<b class="child">{{ label ?? "none" }}</b>`)
+      const parent = new Component79(`
+        <div class="wrap"><Child :label="'x'"></Child></div>
+        <style scoped>.child { color: red; }</style>
+      `).render({ Child }).mount(host)
+
+      const child = $(host, ".child")!
+      expect(scopeOf($(host, ".wrap"))).not.toBeNull()
+      expect(scopeOf(child)).toBeNull() // parent's scoped CSS can't reach it
+      expect(child.textContent).toBe("x")
+
+      parent.destroy()
+    })
+
+    it("warns about :deep(), which browsers would silently drop", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+      new Component79(`<div class="a">x</div><style scoped>.a :deep(.b) { color: red; }</style>`)
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(":deep()"))
+      warn.mockRestore()
+    })
+  })
 })
