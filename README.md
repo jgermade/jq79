@@ -47,7 +47,7 @@ Or grab [`src/jq79.ts`](src/jq79.ts) directly — the whole library is one file.
 ```js
 import { Component79 } from "jq79"
 
-const jq79 = new Component79(`
+const jq79 = new Component79(html`
   <script :setup>
     let firstName = null
     let lastName = null
