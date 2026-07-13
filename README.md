@@ -63,7 +63,7 @@ const jq79 = new Component79(`
   </style>
 `)
 
-jq79.render().mount("#app")
+jq79.mount("#app")
 ```
 
 When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$:` declaration, which flips the `:if` and renders the span — no manual wiring.
@@ -75,23 +75,27 @@ When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$
 ```js
 const jq79 = new Component79(src)      // src: string, or { template, scripts, styles }
 
-jq79.render(data)                      // build reactive DOM, run setup scripts, inject styles
-   .mount(el)                         // attach; accepts an Element or a selector string
+jq79.on("submit", (e, payload) => {})  // subscribe to the component's $emit events
+   .off("submit", listener)           // unsubscribe
 
-jq79.unmount()                         // detach, keeping state — mount() re-attaches, with
+jq79.mount(el, data)                   // render (reactive DOM, setup scripts, styles) + attach
+                                      // el: Element or selector string; data is optional
+
+jq79.detach()                          // detach, keeping state — mount(el) re-attaches, with
                                       // any updates that happened while detached applied
    .destroy()                         // dispose all effects and remove injected styles
 ```
 
-- `render(data)` injects the component's `<style>` blocks into `document.head`.
-- `renderShadow(data)` instead attaches a shadow root to the mount target and injects content and styles there, so CSS stays scoped to the component.
+- `mount(el, data?)` renders on the first mount, and re-renders fresh whenever `data` is passed. `mount(el)` on an already-rendered component just re-attaches, keeping its state — the `detach()`/`mount()` round trip. Styles go into `document.head`.
+- `mountShadow(el, data?)` instead attaches a shadow root to the target and injects content and styles there, so CSS stays scoped to the component.
+- `render(data)` / `renderShadow(data)` are also available standalone, for rendering while detached (effects keep the detached DOM up to date; a later `mount(el)` attaches it).
 - `jq79.data` is the live reactive store — mutate it from outside and the DOM follows.
 
 ### Loading remote components
 
 ```js
 const jq79 = await Component79.fetch("/components/user-card.html")
-jq79.render({ userId: 42 }).mount("#app")
+jq79.mount("#app", { userId: 42 })
 ```
 
 ## Template syntax
@@ -234,7 +238,16 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 </div>
 ```
 
-  Events emitted before the component is mounted have no ancestors to bubble to, so nobody hears them — `$emit` is meant for handlers and async code, not synchronous top-level setup.
+  From JS, subscribe on the instance itself with `on(eventName, (event, payload) => …)` — `payload` is the same value as `event.detail`. `on`/`off` are chainable, can be called before mounting, and survive re-renders:
+
+```js
+new Component79(src)
+  .on("saved", (e, payload) => console.log(payload.id))
+  .on("cancelled", () => console.log("cancelled"))
+  .mount("#app")
+```
+
+  Events emitted before the component is mounted have no ancestors to bubble to, so no DOM listener hears them (`$emit` is meant for handlers and async code, not synchronous top-level setup) — but instance `on()` listeners are notified even while detached.
 
 - `await $mounted()` suspends the script until the component is attached to the DOM, so everything below it can use `querySelector` (or `$`/`$$`) directly:
 

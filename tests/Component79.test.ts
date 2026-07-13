@@ -35,6 +35,49 @@ describe("Component79", () => {
     jq79.destroy()
   })
 
+  it("mount(el, data) renders and attaches in one call, so on().mount() chains work", () => {
+    const seen: any[] = []
+    const jq79 = new Component79(
+      `<script :setup>const fire = p => $emit("submit", p)</script><div class="one">{{ msg }}</div>`
+    )
+      .on("submit", (_e, payload) => seen.push(payload))
+      .mount(host, { msg: "hi" })
+
+    expect($(host, ".one")?.textContent).toBe("hi")
+
+    ;(jq79.data as any).fire("x")
+    expect(seen).toEqual(["x"])
+    jq79.destroy()
+  })
+
+  it("mount(el) without data re-attaches an already-rendered component, keeping state", () => {
+    const jq79 = new Component79(`<div class="keep">{{ n }}</div>`).mount(host, { n: 1 })
+    jq79.data!.n = 2
+
+    jq79.detach().mount(host)
+    expect($(host, ".keep")?.textContent).toBe("2")
+    jq79.destroy()
+  })
+
+  it("mount(el, data) on an already-rendered component re-renders fresh with that data", () => {
+    const jq79 = new Component79(`<div class="fresh">{{ n }}</div>`).mount(host, { n: 1 })
+    jq79.data!.n = 5
+
+    jq79.mount(host, { n: 2 })
+    expect($(host, ".fresh")?.textContent).toBe("2")
+    jq79.destroy()
+  })
+
+  it("mountShadow(el, data) renders into a shadow root in one call", () => {
+    const stylesBefore = document.head.querySelectorAll("style").length
+    const jq79 = new Component79(`<div class="sh">{{ v }}</div><style>.sh { color: blue; }</style>`)
+      .mountShadow(host, { v: "shadowed" })
+
+    expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+    expect(host.shadowRoot!.querySelector(".sh")?.textContent).toBe("shadowed")
+    jq79.destroy()
+  })
+
   it("mounts into a selector string", () => {
     host.id = "jq79-host"
     const jq79 = new Component79(`<div class="sel">ok</div>`).render().mount("#jq79-host")
@@ -50,7 +93,7 @@ describe("Component79", () => {
     jq79.render().mount(host)
     expect(document.head.querySelectorAll("style").length).toBe(stylesBefore + 1)
 
-    jq79.unmount().destroy()
+    jq79.detach().destroy()
     expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
   })
 
@@ -68,10 +111,10 @@ describe("Component79", () => {
     jq79.destroy()
   })
 
-  it("unmount() detaches but keeps state, and mount() re-attaches with pending updates applied", () => {
+  it("detach() detaches but keeps state, and mount() re-attaches with pending updates applied", () => {
     const jq79 = new Component79(`<div class="m">{{ n }}</div>`).render({ n: 1 }).mount(host)
 
-    jq79.unmount()
+    jq79.detach()
     expect($(host, ".m")).toBeNull()
 
     jq79.data!.n = 2
@@ -81,12 +124,12 @@ describe("Component79", () => {
     jq79.destroy()
   })
 
-  it("unmount() also collects nodes that :if inserted after mounting", () => {
+  it("detach() also collects nodes that :if inserted after mounting", () => {
     const jq79 = new Component79(`<div :if="show" class="cond">yes</div>`).render({ show: false }).mount(host)
     jq79.data!.show = true
     expect($(host, ".cond")).not.toBeNull()
 
-    jq79.unmount()
+    jq79.detach()
     expect(host.childNodes.length).toBe(0)
 
     jq79.mount(host)
@@ -400,6 +443,62 @@ describe("Component79", () => {
       // the child found itself through a document-level selector that
       // requires its ancestors to be attached too
       expect($(host, ".m-inner")?.textContent).toBe("EM")
+      jq79.destroy()
+    })
+  })
+
+  describe("instance events: on() / off()", () => {
+    const src =
+      `<script :setup>const fire = payload => $emit("submit", payload)</script>` +
+      `<button class="btn" @click="fire('sent')">go</button>`
+
+    it("delivers $emit events to on() listeners with (event, payload), chainable before render", () => {
+      const seen: any[] = []
+      const jq79 = new Component79(src)
+        .on("submit", (e, payload) => seen.push([e.detail, payload]))
+        .render()
+        .mount(host)
+
+      $(host, ".btn")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect(seen).toEqual([["sent", "sent"]])
+      jq79.destroy()
+    })
+
+    it("off() unsubscribes a listener", () => {
+      const seen: any[] = []
+      const listener = (_e: CustomEvent, payload: any) => seen.push(payload)
+      const jq79 = new Component79(src).on("submit", listener).render().mount(host)
+
+      $(host, ".btn")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+      jq79.off("submit", listener)
+      $(host, ".btn")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect(seen).toEqual(["sent"])
+      jq79.destroy()
+    })
+
+    it("hears emits while the component is detached, where nothing bubbles", () => {
+      const seen: any[] = []
+      const jq79 = new Component79(src).on("submit", (_e, payload) => seen.push(payload)).render()
+
+      ;(jq79.data as any).fire("early")
+
+      expect(seen).toEqual(["early"])
+      jq79.destroy()
+    })
+
+    it("survives re-render, and ignores emits from a stale render generation", () => {
+      const seen: any[] = []
+      const jq79 = new Component79(src).on("submit", (_e, payload) => seen.push(payload)).render().mount(host)
+      const staleFire = (jq79.data as any).fire
+
+      jq79.render().mount(host)
+
+      staleFire("stale")
+      ;(jq79.data as any).fire("current")
+
+      expect(seen).toEqual(["current"])
       jq79.destroy()
     })
   })

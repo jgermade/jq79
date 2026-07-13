@@ -337,7 +337,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
 
     childFx?.dispose()
     childFx = null
-    current?.destroy() // unmounts its marker range, removing the child's DOM
+    current?.destroy() // detaches its marker range, removing the child's DOM
     current = null
     currentDef = nextDef
     if (!nextDef) return
@@ -888,13 +888,15 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
   result.catch(error => console.error("jq79: error in :setup script", error))
 }
 
+type EmitListener = (event: CustomEvent, payload: any) => void
+
 // a parsed single-file component. Typical lifecycle:
 //
 //   const jq79 = new Component79(src)   // or await Component79.fetch(url)
-//   jq79.render({ user })               // build reactive DOM, run scripts, inject styles
-//      .mount("#app")                  // attach (renderShadow mounts into a shadow root)
-//   ...
-//   jq79.unmount()                      // detach, keeping state - mount() re-attaches
+//   jq79.on("submit", (e, payload) => {}) // hear this instance's $emit events
+//   jq79.mount("#app", { user })        // render (reactive DOM, scripts, styles) + attach
+//   ...                                 // (mountShadow mounts into a shadow root)
+//   jq79.detach()                       // detach, keeping state - mount() re-attaches
 //      .destroy()                      // dispose effects and remove styles
 export class Component79 {
   template: TemplateNode[]
@@ -904,11 +906,11 @@ export class Component79 {
   data: ReactiveDeepData<Record<string, any>> | null = null
 
   private fx: EffectScope | null = null
-  // holds the rendered nodes while unmounted; anchors keep this fragment as
+  // holds the rendered nodes while detached; anchors keep this fragment as
   // their parentNode, so effects keep the (detached) DOM up to date and a
   // later mount() shows current state
   private content: DocumentFragment | null = null
-  // markers bracketing the component's output so unmount() can collect nodes
+  // markers bracketing the component's output so detach() can collect nodes
   // that :if/:each inserted next to the anchors after mounting
   private startMarker: Comment | null = null
   private endMarker: Comment | null = null
@@ -920,6 +922,9 @@ export class Component79 {
   private mountRoot: Element | ShadowRoot | DocumentFragment | null = null
   // settles the $mounted() promise handed to this render generation's scripts
   private resolveMounted: (() => void) | null = null
+  // instance-level listeners for $emit events, registered with on(). Kept
+  // outside the render generation so they survive re-render and destroy()
+  private emitListeners = new Map<string, Set<EmitListener>>()
 
   constructor(src: string | ComponentParts) {
     const { template, scripts, styles } = typeof src === "string" ? parseComponentString(src) : src
@@ -932,6 +937,21 @@ export class Component79 {
     const response = await fetch(url)
     if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
     return new Component79(await response.text())
+  }
+
+  // subscribes to this instance's $emit events, on top of the DOM CustomEvent
+  // dispatch - so it hears emits even while the component is detached (where
+  // the event has no ancestors to bubble to). Chainable; can be called before
+  // render()
+  on(eventName: string, listener: EmitListener): this {
+    if (!this.emitListeners.has(eventName)) this.emitListeners.set(eventName, new Set())
+    this.emitListeners.get(eventName)!.add(listener)
+    return this
+  }
+
+  off(eventName: string, listener: EmitListener): this {
+    this.emitListeners.get(eventName)?.delete(listener)
+    return this
   }
 
   render(data: Record<string, any> = {}): this {
@@ -960,10 +980,17 @@ export class Component79 {
     // marker, so once mounted it travels up the real DOM and parents can
     // listen on any ancestor (or with @event-name on a wrapping element).
     // Captures the marker rather than `this` so a later re-render's scripts
-    // can't dispatch from the wrong generation
+    // can't dispatch from the wrong generation - the same guard keeps stale
+    // generations from reaching the instance's on() listeners
     const marker = this.startMarker
-    const $emit = (eventName: string, payload?: any): boolean =>
-      marker.dispatchEvent(new CustomEvent(eventName, { detail: payload, bubbles: true, composed: true }))
+    const $emit = (eventName: string, payload?: any): boolean => {
+      const event = new CustomEvent(eventName, { detail: payload, bubbles: true, composed: true })
+      const result = marker.dispatchEvent(event)
+      if (marker === this.startMarker) {
+        this.emitListeners.get(eventName)?.forEach(listener => listener(event, payload))
+      }
+      return result
+    }
 
     // `await $mounted()` suspends a setup script until mount() attaches the
     // component, so code below it can querySelector its own DOM. Resumption
@@ -1023,23 +1050,44 @@ export class Component79 {
     return this
   }
 
-  mount(parent: Element | ShadowRoot | DocumentFragment | string): this {
+  // renders (when needed) and attaches in one call: the component is rendered
+  // on the first mount, and re-rendered fresh whenever `data` is passed.
+  // mount(el) on an already-rendered component just re-attaches, keeping its
+  // state - the detach()/mount() round trip. Rendering here keeps whichever
+  // style mode was last used (document.head unless renderShadow/mountShadow
+  // chose a shadow root)
+  mount(parent: Element | ShadowRoot | DocumentFragment | string, data?: Record<string, any>): this {
     const target = typeof parent === "string" ? $(parent) : parent
     if (!target) throw new Error(`mount target not found: ${parent}`)
-    if (!this.content) throw new Error("render() must be called before mount()")
-    if (this.mountRoot) this.unmount()
+    if (!this.content || data !== undefined) this.renderWith(data ?? {}, this.useShadow)
+    return this.attach(target)
+  }
+
+  // like mount(), but renders with styles scoped to a shadow root on the
+  // target instead of document.head
+  mountShadow(parent: Element | ShadowRoot | DocumentFragment | string, data?: Record<string, any>): this {
+    const target = typeof parent === "string" ? $(parent) : parent
+    if (!target) throw new Error(`mount target not found: ${parent}`)
+    if (!this.content || data !== undefined || !this.useShadow) this.renderWith(data ?? {}, true)
+    return this.attach(target)
+  }
+
+  private attach(target: Element | ShadowRoot | DocumentFragment): this {
+    if (this.mountRoot) this.detach()
 
     const root = this.useShadow && target instanceof Element
       ? target.shadowRoot ?? target.attachShadow({ mode: "open" })
       : target
     if (this.useShadow) this.styleEls.forEach(el => root.appendChild(el))
-    root.appendChild(this.content)
+    root.appendChild(this.content!)
     this.mountRoot = root
     this.resolveMounted?.()
     return this
   }
 
-  unmount(): this {
+  // detaches from the DOM while keeping all state; a later mount() re-attaches
+  // with any updates that happened while detached already applied
+  detach(): this {
     if (!this.mountRoot || !this.content || !this.startMarker || !this.endMarker) return this
 
     // move everything between the markers (inclusive) back into the holding
@@ -1057,7 +1105,7 @@ export class Component79 {
   }
 
   destroy(): this {
-    this.unmount()
+    this.detach()
     this.fx?.dispose()
     this.fx = null
     this.styleEls.forEach(el => el.parentNode?.removeChild(el))
