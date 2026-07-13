@@ -49,6 +49,8 @@
   "scripts": {
     "build": "tsup && tsc src/jq79.ts src/vite.ts --declaration --emitDeclarationOnly --strict --skipLibCheck --lib dom,es2020 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "site": "node scripts/build-site.mjs",
     "prepublishOnly": "npm test && npm run build"
   },
   "peerDependencies": {
@@ -61,7 +63,9 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "jsdom": "^29.1.1",
+    "marked": "^18.0.6",
     "tsup": "^8.5.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.4",

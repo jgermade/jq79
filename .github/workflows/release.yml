@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     if: github.ref == 'refs/heads/main'
+    outputs:
+      new_tag: ${{ steps.bump_version.outputs.new_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,3 +65,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NEW_TAG: ${{ steps.bump_version.outputs.new_tag }}
         run: gh release create "$NEW_TAG" dist/* --title "$NEW_TAG" --generate-notes
+
+  # GitHub Pages site: rendered docs, self-hosted badges (npm version, test
+  # coverage), the HTML coverage report, and the dist files at the site root
+  # so the Pages URL doubles as a CDN. Requires Pages to be configured with
+  # "GitHub Actions" as the source (repo Settings > Pages)
+  pages:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the version-bump commit the release job just pushed
+          ref: ${{ needs.release.outputs.new_tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm install --no-save
+
+      - run: npm run build
+
+      - run: npm run test:coverage
+
+      - run: npm run site
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v5

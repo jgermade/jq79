@@ -1,0 +1,143 @@
+// Builds the GitHub Pages site into site/ from things the repo already has:
+//
+//   /                 index.html (rendered README) + the dist/ files, so the
+//                     Pages URL doubles as a CDN (https://.../jq79/jq79.js)
+//   /docs/*.html      rendered documentation pages
+//   /coverage/        the HTML coverage report (vitest run --coverage)
+//   /badges/npm.svg   self-hosted badges (npm version, test coverage)
+//   /badges/coverage.svg
+//
+// Expects `npm run build` and `npm run test:coverage` to have run first.
+
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { posix } from "node:path"
+import { marked } from "marked"
+
+const SITE = "site"
+const REPO_URL = "https://github.com/jgermade/jq79"
+const NPM_URL = "https://www.npmjs.com/package/jq79"
+
+const pkg = JSON.parse(await readFile("package.json", "utf8"))
+
+// --- badges -----------------------------------------------------------------
+
+// a minimal shields-style flat badge (label gray, value colored)
+const badge = (label, value, color) => {
+  const width = text => Math.round(text.length * 6.5 + 12)
+  const lw = width(label)
+  const vw = width(value)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${lw + vw}" height="20" role="img" aria-label="${label}: ${value}">
+  <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+  <clipPath id="r"><rect width="${lw + vw}" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="${lw}" height="20" fill="#555"/>
+    <rect x="${lw}" width="${vw}" height="20" fill="${color}"/>
+    <rect width="${lw + vw}" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+    <text x="${lw / 2}" y="14">${label}</text>
+    <text x="${lw + vw / 2}" y="14">${value}</text>
+  </g>
+</svg>`
+}
+
+const coverageColor = pct =>
+  pct >= 90 ? "#4c1" : pct >= 80 ? "#97ca00" : pct >= 70 ? "#dfb317" : "#e05d44"
+
+// --- markdown pages ----------------------------------------------------------
+
+const PAGE_CSS = `
+:root { color-scheme: light dark; --fg: #1f2328; --bg: #fff; --muted: #59636e; --line: #d1d9e0; --accent: #0969da; --code-bg: #f6f8fa; }
+@media (prefers-color-scheme: dark) { :root { --fg: #f0f6fc; --bg: #0d1117; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --code-bg: #151b23; } }
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--fg); background: var(--bg); }
+header { border-bottom: 1px solid var(--line); }
+header nav { max-width: 860px; margin: 0 auto; padding: 0.7rem 1.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
+header nav strong { margin-right: auto; }
+header a { color: var(--fg); text-decoration: none; }
+header a:hover { color: var(--accent); }
+main { max-width: 860px; margin: 0 auto; padding: 1.5rem; }
+main a { color: var(--accent); }
+h1, h2, h3 { line-height: 1.25; }
+h1 { border-bottom: 1px solid var(--line); padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid var(--line); padding-bottom: 0.3em; margin-top: 1.8em; }
+code { font: 85%/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px; }
+pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--line); padding: 0.4em 0.8em; }
+img { max-width: 100%; }
+blockquote { margin: 0; padding: 0 1em; color: var(--muted); border-left: 0.25em solid var(--line); }
+footer { max-width: 860px; margin: 0 auto; padding: 1rem 1.5rem 2rem; color: var(--muted); border-top: 1px solid var(--line); font-size: 0.85rem; }
+`
+
+const page = (title, body, root) => `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>${PAGE_CSS}</style>
+</head>
+<body>
+<header><nav>
+  <strong><a href="${root}index.html">jq79</a></strong>
+  <a href="${root}coverage/index.html">Coverage</a>
+  <a href="${NPM_URL}">npm</a>
+  <a href="${REPO_URL}">GitHub</a>
+</nav></header>
+<main>
+${body}
+</main>
+<footer>jq79 v${pkg.version} · ISC license · generated from the repo's markdown</footer>
+</body>
+</html>
+`
+
+// rewrites relative links from the markdown sources to their site/GitHub
+// homes: .md files become site pages, assets stay relative, and anything
+// else (source files, workflows, ...) points at the GitHub repo
+const rewriteLinks = (html, srcDir) =>
+  html.replace(/(href|src)="([^"]+)"/g, (match, attr, url) => {
+    if (/^(https?:|mailto:|data:|#)/.test(url)) return match
+    const [path, hash = ""] = url.split(/(?=#)/)
+    const repoPath = posix.normalize(posix.join(srcDir, path))
+    const relativeTo = target => posix.relative(srcDir, target) || "."
+    if (repoPath.toLowerCase() === "readme.md") return `${attr}="${relativeTo("index.html")}${hash}"`
+    if (repoPath.endsWith(".md")) return `${attr}="${relativeTo(repoPath.replace(/\.md$/, ".html"))}${hash}"`
+    if (repoPath.startsWith("assets/")) return `${attr}="${relativeTo(repoPath)}"`
+    return `${attr}="${REPO_URL}/blob/main/${repoPath}${hash}"`
+  })
+
+const renderPage = async (mdPath, outPath, root) => {
+  const md = await readFile(mdPath, "utf8")
+  const title = md.match(/^#\s+(.+)$/m)?.[1] ?? "jq79"
+  const body = rewriteLinks(await marked.parse(md), posix.dirname(mdPath))
+  await mkdir(posix.dirname(posix.join(SITE, outPath)), { recursive: true })
+  await writeFile(posix.join(SITE, outPath), page(title === "jq79" ? "jq79" : `${title} · jq79`, body, root))
+}
+
+// --- assemble ----------------------------------------------------------------
+
+await rm(SITE, { recursive: true, force: true })
+await mkdir(posix.join(SITE, "badges"), { recursive: true })
+
+// the dist files at the site root, CDN-style, plus the readme's assets
+await cp("dist", SITE, { recursive: true })
+await cp("assets", posix.join(SITE, "assets"), { recursive: true })
+
+// rendered markdown: README as the landing page, docs/ alongside
+await renderPage("README.md", "index.html", "./")
+for (const file of await readdir("docs")) {
+  if (file.endsWith(".md")) await renderPage(`docs/${file}`, `docs/${file.replace(/\.md$/, ".html")}`, "../")
+}
+
+// coverage report + badges
+const summary = JSON.parse(await readFile("coverage/coverage-summary.json", "utf8"))
+const pct = summary.total.lines.pct
+await cp("coverage", posix.join(SITE, "coverage"), { recursive: true })
+await rm(posix.join(SITE, "coverage/coverage-summary.json"), { force: true })
+await writeFile(posix.join(SITE, "badges/npm.svg"), badge("npm", `v${pkg.version}`, "#007ec6"))
+await writeFile(posix.join(SITE, "badges/coverage.svg"), badge("coverage", `${pct.toFixed(1)}%`, coverageColor(pct)))
+
+console.log(`site/ built: v${pkg.version}, coverage ${pct.toFixed(1)}%`)

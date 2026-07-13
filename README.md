@@ -3,6 +3,9 @@
 
 <img src="assets/Component79.svg" alt="jq79 logo" width="100" align="right">
 
+[![npm](https://jgermade.github.io/jq79/badges/npm.svg)](https://www.npmjs.com/package/jq79)
+[![coverage](https://jgermade.github.io/jq79/badges/coverage.svg)](https://jgermade.github.io/jq79/coverage/)
+
 A mini reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
 
 > no compiler, no virtual DOM, no dependencies.
@@ -49,16 +52,19 @@ Once published to npm, the package is automatically served by every major CDN â€
   import { Component79 } from "https://esm.sh/jq79"
   // or: https://cdn.jsdelivr.net/npm/jq79/+esm
   // or: https://unpkg.com/jq79?module
+  // or, straight from this repo's GitHub Pages (latest release):
+  //     https://jgermade.github.io/jq79/jq79.js
 </script>
 
 <!-- or as a classic script exposing window.jq79 -->
 <script src="https://cdn.jsdelivr.net/npm/jq79/dist/jq79.global.js"></script>
+<!-- or: <script src="https://jgermade.github.io/jq79/jq79.global.js"></script> -->
 <script>
   const { Component79 } = jq79
 </script>
 ```
 
-Pin a version in production: `https://cdn.jsdelivr.net/npm/jq79@0.1.0/...`.
+Pin a version in production: `https://cdn.jsdelivr.net/npm/jq79@0.1.0/...` (the GitHub Pages copy always tracks the latest release).
 
 The source is small enough to read in a sitting: the core (parsing, rendering, components) lives in [`src/jq79.ts`](src/jq79.ts), with three leaf helpers â€” [`dom.ts`](src/dom.ts), [`reactive.ts`](src/reactive.ts) and [`transform.ts`](src/transform.ts). The published build is a single dependency-free file.
 
