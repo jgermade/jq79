@@ -63,8 +63,8 @@ const coverageColor = pct =>
 // --- markdown pages ----------------------------------------------------------
 
 const PAGE_CSS = `
-:root { color-scheme: light dark; --fg: #1f2328; --bg: #fff; --muted: #59636e; --line: #d1d9e0; --accent: #0969da; --code-bg: #f6f8fa; }
-@media (prefers-color-scheme: dark) { :root { --fg: #f0f6fc; --bg: #0d1117; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --code-bg: #2d2a2e; } }
+:root { color-scheme: light dark; --fg: #1f2328; --body-bg: #333a3e; --bg: #fff; --muted: #59636e; --line: #d1d9e0; --accent: #0969da; --code-bg: #ecf1f5; }
+@media (prefers-color-scheme: dark) { :root { --fg: #f0f6fc; --body-bg: #222; --bg: #333a3e; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --code-bg: #2d2a2e; } }
 * { box-sizing: border-box; }
 body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: royalblue; background: rgba(49, 120, 198, .75); }
 main { color: var(--fg); background: var(--bg); }
@@ -186,6 +186,7 @@ for (const file of await readdir("docs")) {
 const summary = JSON.parse(await readFile("coverage/coverage-summary.json", "utf8"))
 const pct = summary.total.lines.pct
 await cp("coverage", posix.join(SITE, "coverage"), { recursive: true })
+await cp("assets", posix.join(SITE, "assets"), { recursive: true })
 await rm(posix.join(SITE, "coverage/coverage-summary.json"), { force: true })
 await writeFile(posix.join(SITE, "badges/npm.svg"), badge("npm", `v${pkg.version}`, "#cb3837"))
 await writeFile(posix.join(SITE, "badges/coverage.svg"), badge("coverage", `${pct.toFixed(1)}%`, "#2e8b57"))
