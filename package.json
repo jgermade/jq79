@@ -36,7 +36,8 @@
   "jsdelivr": "./dist/jq79.global.js",
   "files": [
     "dist",
-    "src/jq79.ts"
+    "src/jq79.ts",
+    "assets"
   ],
   "sideEffects": false,
   "scripts": {
