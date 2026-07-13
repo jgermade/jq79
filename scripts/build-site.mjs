@@ -12,6 +12,18 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { posix } from "node:path"
 import { marked } from "marked"
+import { markedHighlight } from "marked-highlight"
+import hljs from "highlight.js"
+
+marked.use(
+  markedHighlight({
+    langPrefix: "hljs language-",
+    highlight(code, lang) {
+      const language = hljs.getLanguage(lang) ? lang : "plaintext"
+      return hljs.highlight(code, { language }).value
+    },
+  })
+)
 
 const SITE = "site"
 const REPO_URL = "https://github.com/jgermade/jq79"
@@ -66,6 +78,24 @@ h2 { border-bottom: 1px solid var(--line); padding-bottom: 0.3em; margin-top: 1.
 code { font: 85%/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px; }
 pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
 pre code { background: none; padding: 0; }
+.hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type { color: #cf222e; }
+.hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition { color: #0a3069; }
+.hljs-number, .hljs-symbol { color: #0550ae; }
+.hljs-title, .hljs-function, .hljs-title.function_ { color: #8250df; }
+.hljs-variable, .hljs-template-variable, .hljs-attribute { color: #953800; }
+.hljs-built_in, .hljs-class .hljs-title { color: #953800; }
+.hljs-deletion { color: #82071e; background: #ffebe9; }
+@media (prefers-color-scheme: dark) {
+  .hljs-comment, .hljs-quote { color: var(--muted); }
+  .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type { color: #ff7b72; }
+  .hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition { color: #a5d6ff; }
+  .hljs-number, .hljs-symbol { color: #79c0ff; }
+  .hljs-title, .hljs-function, .hljs-title.function_ { color: #d2a8ff; }
+  .hljs-variable, .hljs-template-variable, .hljs-attribute { color: #ffa657; }
+  .hljs-built_in, .hljs-class .hljs-title { color: #ffa657; }
+  .hljs-deletion { color: #ffdcd7; background: #67060c; }
+}
 table { border-collapse: collapse; display: block; overflow-x: auto; }
 th, td { border: 1px solid var(--line); padding: 0.4em 0.8em; }
 img { max-width: 100%; }
