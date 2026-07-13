@@ -186,16 +186,57 @@ const fmtSize = bytes => {
   if (bytes < 1024) return `${bytes}b`
   return `${(bytes / 1024).toFixed(1)}kb`
 }
-const sizeBadge = async (label, file, color) => {
+
+// a 4-segment badge: label | size | zip | gzip — alternating dark/orange/dark/purple
+const badge4 = (s1, s2, s3, s4) => {
+  const width = text => Math.round(text.length * 6.5 + 12)
+  const segs = [
+    { text: s1, color: "#555" },
+    { text: s2, color: "#fe7d37" },
+    { text: s3, color: "#555" },
+    { text: s4, color: "#9742d4" },
+  ]
+  const widths = segs.map(s => width(s.text))
+  const total = widths.reduce((a, b) => a + b, 0)
+  let x = 0
+  const rects = segs
+    .map((s, i) => {
+      const r = `<rect x="${x}" width="${widths[i]}" height="20" fill="${s.color}"/>`
+      x += widths[i]
+      return r
+    })
+    .join("\n    ")
+  x = 0
+  const texts = segs
+    .map((s, i) => {
+      const cx = x + widths[i] / 2
+      x += widths[i]
+      return `<text x="${cx}" y="14">${s.text}</text>`
+    })
+    .join("\n    ")
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="20" role="img" aria-label="${s1}: ${s2} | ${s3} ${s4}">
+  <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+  <clipPath id="r"><rect width="${total}" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    ${rects}
+    <rect width="${total}" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+    ${texts}
+  </g>
+</svg>`
+}
+
+const sizeBadge = async (label, file) => {
   const raw = await stat(file)
   const buf = await readFile(file)
   const gz = await gzipSize(buf)
   await writeFile(
     posix.join(SITE, "badges", `${label}-size.svg`),
-    badge(label, `${fmtSize(raw.size)} | zip ${fmtSize(gz.length)}`, color)
+    badge4(label, fmtSize(raw.size), "zip", fmtSize(gz.length))
   )
 }
-await sizeBadge("esm", "dist/jq79.js", "#3c1")
-await sizeBadge("cdn", "dist/jq79.global.js", "#007ec6")
+await sizeBadge("esm", "dist/jq79.js")
+await sizeBadge("cdn", "dist/jq79.global.js")
 
 console.log(`site/ built: v${pkg.version}, coverage ${pct.toFixed(1)}%`)
