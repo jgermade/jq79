@@ -90,7 +90,10 @@ jobs:
           node-version: 24
           cache: npm
 
-      - run: npm install --no-save
+      - name: Install dependencies
+        run: |
+          npm install --no-save
+          npm install --no-save -D highlight.js
 
       - run: npm run build
 
