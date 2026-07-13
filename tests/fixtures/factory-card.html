@@ -1,0 +1,14 @@
+<script>
+import UserCard from "./user-card.html"
+
+export default ({ $data, $effect }) => {
+  $data.count = 2
+  $effect(() => { $data.double = $data.count * 2 })
+  return { UserCard, title: "Factory" }
+}
+</script>
+
+<section class="factory">
+  <h2>{{ title }} {{ double }}</h2>
+  <UserCard></UserCard>
+</section>

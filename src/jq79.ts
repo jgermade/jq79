@@ -147,11 +147,14 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // like :each's keyed diffing
   const reactiveProxies = new WeakSet<object>()
 
-  const notify = (dotKey: string, value: any) => {
+  const notify = (dotKey: string, value: any, isNewKey = false) => {
     exactListeners.get(dotKey)?.forEach(listener => listener(value, dotKey))
     anyListeners.forEach(listener => listener(dotKey, value))
     effects.forEach(effect => {
-      if (Array.from(effect.deps).some(dep => pathsOverlap(dep, dotKey))) effect.run()
+      // a newly-created key re-runs every effect: an effect that read the
+      // name while it didn't exist couldn't track it (`with` skipped the
+      // store entirely), so dep matching would never wake it up
+      if (isNewKey || Array.from(effect.deps).some(dep => pathsOverlap(dep, dotKey))) effect.run()
     })
   }
 
@@ -187,8 +190,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         if (value && typeof value === "object" && isPlainData(value)) {
           value = makeReactive(value, dotKey)
         }
+        const isNewKey = !Object.prototype.hasOwnProperty.call(target, key)
         target[key] = value
-        notify(dotKey, value)
+        notify(dotKey, value, isNewKey)
         return true
       }
     })
@@ -420,6 +424,22 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   if (componentKey) return renderNestedComponent(componentKey, node, scope, fx)
 
   const el = document.createElement(node.tag)
+
+  // a tag that isn't standard HTML but has no matching scope key *yet* may be
+  // a component that arrives later (e.g. an async factory script exposing an
+  // imported component after `await`). Watch for the key: the effect tracks
+  // no deps, so it only re-runs on the store's new-key sweep, and swaps the
+  // placeholder element for the component exactly once
+  if (el instanceof HTMLUnknownElement || node.tag.includes("-")) {
+    let upgraded = false
+    fx.effect(() => {
+      if (upgraded) return
+      const key = findComponentKey(scope, node.tag)
+      if (!key) return
+      upgraded = true
+      el.replaceWith(renderNestedComponent(key, node, scope, fx))
+    })
+  }
 
   Object.entries(node.attrs).forEach(([key, value]) => {
     if (key.startsWith("@")) bindEvent(el, key, value, scope)
@@ -831,6 +851,142 @@ const transformSetupScript = (src: string): SetupTransform => {
   return { vars, code: out }
 }
 
+// ---------------------------------------------------------------------------
+// factory scripts - a <script> whose top level has `export default` runs as a
+// plain lexical module instead of a `with`-scoped setup script: no implicit
+// reactivity, no `$:` labels - standard JS that editors and type-checkers
+// understand. The default export is called with the instance context
+// ({ $data, $effect, $emit, $mounted, $self, $$self }) and a returned object
+// is merged into the reactive store for the template to use.
+// Detection is backwards-safe: `export default` is a SyntaxError inside a
+// setup script, so no previously-working component can change behavior.
+// The same scanner rewrites the module-only syntax into a Function body:
+// - `export default X`      -> `$__exports.default = X`
+// - `import d from "m"`     -> `const d = $__default(await $__import("m"))`
+//   (and the other static clause forms), so imports resolve through the same
+//   $__import as setup scripts: bundler map first, then fetch/native import
+// ---------------------------------------------------------------------------
+
+const EXPORT_DEFAULT_RE = /export\s+default(?![\w$])/y
+// clause (default/namespace/named, no quotes or parens) + specifier; the
+// no-clause alternative requires the specifier right away, so dynamic
+// `import(...)` and `import.meta` never match
+const STATIC_IMPORT_RE = /import\s*(?:([\w$\s,{}*]+?)\s*from\s*)?(["'])([^"'\n]+)\2/y
+
+// splits an import clause on top-level commas: `d, { a, b as c }` keeps the
+// braced group together
+const splitImportClause = (clause: string): string[] => {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i <= clause.length; i++) {
+    const ch = clause[i]
+    if (ch === "{") depth++
+    else if (ch === "}") depth--
+    else if (i === clause.length || (ch === "," && depth === 0)) {
+      const part = clause.slice(start, i).trim()
+      if (part) parts.push(part)
+      start = i + 1
+    }
+  }
+  return parts
+}
+
+// one static import statement -> const bindings from the awaited module
+const staticImportToAwait = (clause: string | undefined, spec: string, n: number): string => {
+  const source = `await $__import(${JSON.stringify(spec)})`
+  if (clause === undefined) return source // side-effect import
+  const parts = splitImportClause(clause)
+  const bindings: string[] = []
+  let ref = source
+  if (parts.length > 1) {
+    const tmp = `$__mod${n}`
+    bindings.push(`${tmp} = ${source}`)
+    ref = tmp
+  }
+  for (const part of parts) {
+    if (part.startsWith("{")) bindings.push(`${part.replace(/\s+as\s+/g, ": ")} = ${ref}`)
+    else if (part.startsWith("*")) bindings.push(`${part.replace(/^\*\s*as\s+/, "")} = ${ref}`)
+    else bindings.push(`${part} = $__default(${ref})`)
+  }
+  return `const ${bindings.join(", ")}`
+}
+
+// rewrites a factory script into a Function body, or returns null when the
+// script has no top-level `export default` (i.e. it's a regular setup script)
+const transformFactoryScript = (src: string): string | null => {
+  let out = ""
+  let i = 0
+  let depth = 0
+  let atStatementStart = true
+  let isFactory = false
+  let modCount = 0
+
+  while (i < src.length) {
+    const ch = src[i]
+    const next = src[i + 1]
+    const atWordBoundary = i === 0 || !/[\w$.]/.test(src[i - 1])
+
+    if (ch === "'" || ch === '"' || ch === "`") {
+      const end = skipString(src, i)
+      out += src.slice(i, end)
+      i = end
+      atStatementStart = false
+      continue
+    }
+    if (ch === "/" && (next === "/" || next === "*")) {
+      const end = next === "/" ? skipLineComment(src, i) : skipBlockComment(src, i)
+      out += src.slice(i, end)
+      i = end
+      continue
+    }
+
+    if (ch === "i" && atWordBoundary) {
+      // dynamic import() -> $__import, same rewrite as setup scripts
+      IMPORT_CALL_RE.lastIndex = i
+      if (IMPORT_CALL_RE.test(src)) {
+        out += "$__import"
+        i += "import".length
+        atStatementStart = false
+        continue
+      }
+      if (depth === 0 && atStatementStart) {
+        STATIC_IMPORT_RE.lastIndex = i
+        const staticImport = STATIC_IMPORT_RE.exec(src)
+        if (staticImport) {
+          out += staticImportToAwait(staticImport[1], staticImport[3], modCount++)
+          i += staticImport[0].length
+          atStatementStart = false
+          continue
+        }
+      }
+    }
+
+    if (ch === "e" && atWordBoundary && depth === 0 && atStatementStart) {
+      EXPORT_DEFAULT_RE.lastIndex = i
+      const exportDefault = EXPORT_DEFAULT_RE.exec(src)
+      if (exportDefault) {
+        isFactory = true
+        out += "$__exports.default ="
+        i += exportDefault[0].length
+        atStatementStart = false
+        continue
+      }
+    }
+
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch)) depth = Math.max(0, depth - 1)
+
+    if (ch === "\n" || ch === ";" || ch === "}") atStatementStart = true
+    else if (!/\s/.test(ch)) atStatementStart = false
+
+    out += ch
+    i++
+  }
+
+  return isFactory ? out : null
+}
+
 // loads .html URLs as components, delegating anything else to native import()
 const importResource = (url: string): Promise<any> =>
   /\.html?([?#]|$)/.test(url) ? Component79.fetch(url) : import(url)
@@ -890,6 +1046,44 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
     `return (async () => { with ($scope) { ${code} } })()`
   )(scriptScope, effect, importer, ...Object.values(helpers))
   result.catch(error => console.error("jq79: error in :setup script", error))
+}
+
+// default-import interop for factory scripts: real modules expose .default,
+// while importing an .html component resolves to the Component79 itself
+const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.default : mod)
+
+// runs a factory script: the (rewritten) module body executes in plain
+// lexical strict-mode scope - no `with`, no implicit reactivity - with the
+// library helpers as parameters, then the default export is called with the
+// instance context and a returned object is merged into the store. A fully
+// synchronous body invokes the factory before the first render, matching
+// setup-script timing; bodies with top-level await (static imports included)
+// resolve later and the template updates reactively
+const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource) => {
+  const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
+  const $__exports: { default?: (ctx: Record<string, any>) => any; done?: boolean } = {}
+  const result: Promise<void> = new Function(
+    "$__exports", "$__default", "$__import", ...Object.keys(helpers),
+    `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()`
+  )($__exports, interopDefault, importer, ...Object.values(helpers))
+
+  const logError = (error: any) => console.error("jq79: error in factory script", error)
+  let invoked = false
+  const invoke = () => {
+    if (invoked) return
+    invoked = true
+    const factory = $__exports.default
+    if (typeof factory !== "function") return
+    const merge = (bindings: any) => {
+      if (bindings && typeof bindings === "object") Object.assign(scope, bindings)
+    }
+    const returned = factory({ $data: scope, $effect: effect, ...instanceHelpers })
+    if (returned instanceof Promise) returned.then(merge).catch(logError)
+    else merge(returned)
+  }
+
+  result.then(invoke, logError)
+  if ($__exports.done) invoke() // fully-sync body: factory runs before first render
 }
 
 type EmitListener = (event: CustomEvent, payload: any) => void
@@ -1037,14 +1231,22 @@ export class Component79 {
       modules && url in modules ? Promise.resolve(modules[url]) : importResource(url)
 
     // scripts run before the template renders so `$:` values are initialized;
-    // a `:mounted` script defers entirely until mount() instead
+    // a `:mounted` script defers entirely until mount() instead. A top-level
+    // `export default` switches the script to factory mode (plain lexical JS)
     this.scripts.forEach(script => {
+      const instanceHelpers = { $emit, $mounted, $self, $$self }
+      const factoryCode = transformFactoryScript(script.content)
+      if (factoryCode !== null) {
+        const body = ":mounted" in script.attrs ? `await $mounted();\n${factoryCode}` : factoryCode
+        runFactoryScript(body, store, fx.effect, instanceHelpers, $import)
+        return
+      }
       const { vars, code } = transformSetupScript(script.content)
       // pre-declare script vars on the store so `with` resolves assignments
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
       const body = ":mounted" in script.attrs ? `await $mounted();\n${code}` : code
-      runSetupScript(body, store, fx.effect, { $emit, $mounted, $self, $$self }, $import)
+      runSetupScript(body, store, fx.effect, instanceHelpers, $import)
     })
 
     const content = document.createDocumentFragment()

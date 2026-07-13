@@ -78,6 +78,14 @@ describe("jq79 vite plugin", () => {
       expect(code).not.toContain("/cards/remote.html\": ")
     })
 
+    it("hoists static imports from factory scripts", async () => {
+      const file = fixture("factory-card.html")
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain('import __jq79_0 from "./user-card.html"')
+      expect(code).toContain('"./user-card.html": __jq79_0')
+    })
+
     it("hoists non-html imports as namespaces, skips URLs and dynamic specifiers", async () => {
       const dir = resolve("node_modules/.cache/jq79-tests")
       await mkdir(dir, { recursive: true })
@@ -227,6 +235,44 @@ describe("jq79 vite plugin", () => {
         expect(container.querySelector(".parent .greeting")?.textContent).toBe("Hello, Ada!")
         expect(fetchSpy).not.toHaveBeenCalled()
         Parent.destroy()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it("bundles a factory-script component with a static child import", async () => {
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        plugins: [jq79()],
+        resolve: { alias: { jq79: runtimePath } },
+        build: {
+          write: false,
+          minify: false,
+          lib: { entry: fixture("factory-app.js"), formats: ["es"], fileName: "factory-app" },
+        },
+      })
+      const { code } = (Array.isArray(result) ? result[0] : result).output[0]
+
+      expect(code).toContain("Hello, ${name}!") // the child travels inside the bundle
+
+      const dir = resolve("node_modules/.cache/jq79-tests")
+      await mkdir(dir, { recursive: true })
+      const bundlePath = join(dir, "factory-app.mjs")
+      await writeFile(bundlePath, code)
+      const { FactoryCard } = await import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+
+      const fetchSpy = vi.fn(() => { throw new Error("no fetch expected") })
+      vi.stubGlobal("fetch", fetchSpy)
+      try {
+        const container = document.createElement("div")
+        FactoryCard.mount(container)
+        await new Promise(resolve => setTimeout(resolve))
+
+        expect(container.querySelector(".factory h2")?.textContent).toBe("Factory 4")
+        expect(container.querySelector(".factory .greeting")?.textContent).toBe("Hello, Ada!")
+        expect(fetchSpy).not.toHaveBeenCalled()
+        FactoryCard.destroy()
       } finally {
         vi.unstubAllGlobals()
       }

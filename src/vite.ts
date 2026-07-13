@@ -31,19 +31,28 @@ const SCRIPT_BLOCK_RE = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi
 // import("...") with a literal specifier; the lookbehind skips $__import and
 // property accesses like foo.import(...)
 const IMPORT_LITERAL_RE = /(?<![\w$.])import\s*\(\s*(["'])([^"'\n]+?)\1\s*\)/g
+// static import statements (factory scripts): optional clause + literal
+// specifier. The clause can't contain parens/quotes, so dynamic import()
+// and import.meta never match
+const STATIC_IMPORT_LITERAL_RE = /(?<![\w$.])import\s*(?:[\w$\s,{}*]+?\s*from\s*)?(["'])([^"'\n]+)\1/g
 
 const isHtmlUrl = (spec: string) => /\.html?([?#]|$)/.test(spec)
 const isRelative = (spec: string) => spec.startsWith("./") || spec.startsWith("../")
 const isExternalUrl = (spec: string) => /^[a-z][a-z0-9+.-]*:/i.test(spec) || spec.startsWith("/")
 
-// literal `import("...")` specifiers in the component's script blocks that
-// should resolve from the bundle instead of at runtime. Absolute paths and
-// full URLs are left alone (they point at served files, e.g. public/), and
-// so are .html specifiers the plugin wouldn't claim as components
+// literal import specifiers in the component's script blocks - dynamic
+// `import("...")` calls and static factory-script imports - that should
+// resolve from the bundle instead of at runtime. Absolute paths and full
+// URLs are left alone (they point at served files, e.g. public/), and so
+// are .html specifiers the plugin wouldn't claim as components
 const hoistableImports = (source: string, include: RegExp): string[] => {
   const specifiers = new Set<string>()
   for (const [, script] of source.matchAll(SCRIPT_BLOCK_RE)) {
-    for (const [, , spec] of script.matchAll(IMPORT_LITERAL_RE)) {
+    const specs = [
+      ...[...script.matchAll(IMPORT_LITERAL_RE)].map(match => match[2]),
+      ...[...script.matchAll(STATIC_IMPORT_LITERAL_RE)].map(match => match[2]),
+    ]
+    for (const spec of specs) {
       if (isExternalUrl(spec)) continue
       if (isHtmlUrl(spec) && !include.test(spec)) continue // html left to runtime fetch
       specifiers.add(spec) // a claimed component, a source file or an npm package

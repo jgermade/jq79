@@ -84,15 +84,24 @@ jq79({
 })
 ```
 
-## Imports inside setup scripts
+## Imports inside component scripts
 
-`import(...)` calls in a component's scripts with a **literal specifier** are
-hoisted into real module imports and bundled along with the component:
+Imports with a **literal specifier** — dynamic `import(...)` in setup scripts
+and static `import` statements in [factory scripts](setup-scripts.md#factory-scripts-export-default) —
+are hoisted into real module imports and bundled along with the component:
 
 ```html
 <script :setup>
   const UserCard = await import("./UserCard.html")  // bundled component
   const { format } = await import("date-fns")       // bundled npm package
+</script>
+
+<!-- or, factory style -->
+<script>
+import UserCard from "./UserCard.html"
+import { format } from "date-fns"
+
+export default () => ({ UserCard, today: format(new Date(), "PPP") })
 </script>
 ```
 

@@ -72,3 +72,56 @@ new Component79(src)
 - `$self(selector)` and `$$self(selector)` are component-scoped versions of [`$` / `$$`](dom-helpers.md): they only search this component instance's own rendered nodes, so they can't accidentally match another component (or anything else in the page). They work even while the component is rendered but not yet mounted — but remember the template renders *after* the synchronous part of the script, so call them from post-`await $mounted()` code or from handlers/callbacks.
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. `let a = 1, b = 2` multi-declarators are not supported — one declaration per statement.
+
+## Factory scripts (`export default`)
+
+A `<script>` whose top level has an `export default` runs as a **plain
+lexical module** instead of a setup script — for when you want standard JS
+that editors, linters and type-checkers understand with no configuration:
+
+```html
+<script>
+import UserCard from "./UserCard.html"
+
+export default ({ $data, $effect, $emit }) => {
+  $data.count = 0
+  $effect(() => { $data.double = $data.count * 2 })
+
+  const inc = () => { $data.count++ }
+
+  return { UserCard, inc }
+}
+</script>
+
+<button @click="inc">{{ count }} / {{ double }}</button>
+<UserCard></UserCard>
+```
+
+The default export is called with the instance context and may be `async`:
+
+- `$data` — the reactive store (props included). **Reactivity is explicit
+  here**: there's no `with` magic and no `$:` labels, so a local `count++`
+  changes nothing — write `$data.count++`.
+- `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
+  disposed with the component.
+- `$emit`, `$mounted`, `$self`, `$$self` — same as in setup scripts. `$`,
+  `$$`, `$create` and `$reactive` are available lexically in the module body.
+- The **returned object is merged into the store**, making its entries
+  visible to the template — that's how imported components and methods are
+  exposed (`return { UserCard, inc }`).
+
+Details worth knowing:
+
+- **Imports are real**: static `import` statements work (rewritten at runtime
+  to awaited dynamic imports — `.html` files resolve to components via fetch,
+  everything else via native `import()`; under the [Vite plugin](vite-plugin.md)
+  they're bundled). Only `export default` is supported — no named exports.
+- Import bindings are lexical, not scope vars: to use an imported component
+  in the template, expose it via the return value or `$data`.
+- A fully synchronous module body runs before the first render, like a setup
+  script. Static imports and top-level `await` make it async — the template
+  renders first and updates when the factory's result lands.
+- `:mounted` on the tag works the same way: the whole script waits for mount.
+- Detection is backwards-safe: `export default` was a syntax error in setup
+  scripts, so no existing component changes behavior. `:setup` isn't going
+  anywhere — the two styles coexist, even within one component.
