@@ -1,0 +1,21 @@
+{
+  "name": "jq79",
+  "short_name": "jq79",
+  "icons": [
+    {
+      "src": "/assets/web-app-manifest-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/assets/web-app-manifest-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "theme_color": "#4169E1",
+  "background_color": "#4169E1",
+  "display": "standalone"
+}
