@@ -1,0 +1,19 @@
+<script :setup="{ title }">
+  const TodoItem = await import("./todo-item.html")
+
+  let items = ["water the plants", "read the source"]
+
+  $: heading = `${title} — ${items.length} left`
+</script>
+
+<h1 class="heading">{{ heading }}</h1>
+
+<ul class="todos">
+  <li :each="item in items">
+    <TodoItem :label="item"></TodoItem>
+  </li>
+</ul>
+
+<style>
+  .todos { list-style: none; }
+</style>

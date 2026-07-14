@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>jq79 — no build step</title>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <script type="module">
+      import { Component79 } from "https://esm.sh/jq79"
+
+      const app = await Component79.fetch("/todo-app.html")
+      app.mount("#app", { title: "Today" })
+    </script>
+  </body>
+</html>

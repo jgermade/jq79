@@ -1,0 +1,9 @@
+<script :setup="{ label }">
+  $: shout = label.toUpperCase()
+</script>
+
+<span class="todo" :attrs="{ title: shout }">{{ label }}</span>
+
+<style scoped>
+  .todo { color: rebeccapurple; }
+</style>

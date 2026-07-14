@@ -19,6 +19,22 @@ npm run site
 npm run site.dev
 ```
 
+## The no-bundle path
+
+Every other test imports from `src/`, so nothing would notice if the artifacts a
+CDN actually serves stopped working. [`tests/no-bundle.test.ts`](../tests/no-bundle.test.ts)
+covers the delivery mode that has no build step at all: it loads `dist/jq79.global.js`
+as a classic script and `dist/jq79.js` as a native ES module, serves the fixture
+components in [`tests/fixtures/no-bundle/`](../tests/fixtures/no-bundle/) from a real
+HTTP server, and mounts them through `Component79.fetch()` — including a nested
+component that a setup script's `await import("./todo-item.html")` fetches at runtime,
+with no bundler having resolved the specifier. The last test runs the fixture's
+`index.html` as written, with only its `https://esm.sh/jq79` import pointed at the
+local build.
+
+It builds `dist/` itself when it's missing or older than `src/` (~0.5s), since `npm
+test` runs before `npm run build`.
+
 ## Load-bearing invariants
 
 Things that look like implementation details but aren't — each one is held up by
