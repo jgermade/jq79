@@ -52,11 +52,14 @@
   "files": [
     "dist",
     "src",
+    "dev",
     "assets"
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup && tsc src/jq79.ts src/vite.ts src/dev.ts --declaration --emitDeclarationOnly --strict --skipLibCheck --lib dom,es2021 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
+    "build": "tsup && npm run types.lib && npm run types.dev",
+    "types.lib": "tsc src/jq79.ts --rootDir src --declaration --emitDeclarationOnly --strict --skipLibCheck --lib dom,es2021 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
+    "types.dev": "tsc dev/vite.ts dev/dev.ts --rootDir dev --declaration --emitDeclarationOnly --strict --skipLibCheck --lib dom,es2021 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "site": "node scripts/build-site.mjs",

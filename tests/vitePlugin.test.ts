@@ -4,7 +4,7 @@ import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { describe, it, expect, vi } from "vitest"
 import { build } from "vite"
-import { jq79 } from "../src/vite"
+import { jq79 } from "../dev/vite"
 import { Component79 } from "../src/jq79"
 
 // vitest runs from the repo root

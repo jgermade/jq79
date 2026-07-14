@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 
-import { devServer, type DevServer } from "../src/dev"
+import { devServer, type DevServer } from "../dev/dev"
 import { Component79, enableHotReload, hotUpdate } from "../src/jq79"
 
 // ---------------------------------------------------------------------------

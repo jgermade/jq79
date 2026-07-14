@@ -10,6 +10,11 @@ the core (parsing, rendering, components), with three leaf modules —
 [`transform.ts`](src/transform.ts). Read the code before changing it; it's shorter
 than the docs.
 
+`src/` is the library and nothing else — it ships to the browser. The build-time
+tooling lives in [`dev/`](dev/), and runs on node: the
+[Vite plugin](dev/vite.ts), the [dev server](dev/dev.ts) behind `npx jq79 dev`,
+and its [CLI](dev/cli.ts). Nothing in `src/` may import from `dev/`.
+
 ## Commands
 
 ```sh

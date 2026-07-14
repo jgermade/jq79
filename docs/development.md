@@ -36,7 +36,7 @@ It builds `dist/` itself when it's missing or older than `src/` (~0.5s), since `
 test` runs before `npm run build`.
 
 The [dev server](dev-server.md) that serves that path — `npx jq79 dev`, in
-[`src/dev.ts`](../src/dev.ts) — is covered by
+[`dev/dev.ts`](../dev/dev.ts) — is covered by
 [`tests/devServer.test.ts`](../tests/devServer.test.ts), which runs a real server
 over a real directory and asserts both ends of the seam a browser sits in: the
 `{ url, src }` an SSE frame carries, and the swap the runtime makes of it. The
