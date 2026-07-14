@@ -1,0 +1,25 @@
+<!--
+  The other component served from /tutorial/examples/, for the exercise that
+  only fetches it once the user asks for it. It stands in for the heavy pane an
+  app would rather not ship on first paint - here, a bar chart of whatever
+  { label, value } list it's handed.
+-->
+<script :setup="{ data }">
+  $: top = Math.max(...data.map(point => point.value))
+</script>
+
+<ul class="chart">
+  <li :each="point in data" :key="point.label">
+    <span class="label">{{ point.label }}</span>
+    <span class="bar" :attrs="{ style: `width: ${(point.value / top) * 100}%` }"></span>
+    <span class="value">{{ point.value }}</span>
+  </li>
+</ul>
+
+<style scoped>
+  .chart { list-style: none; margin: 0; padding: 0; font: 0.85rem/1.6 system-ui, sans-serif; }
+  .chart li { display: grid; grid-template-columns: 3em 1fr 2.5em; align-items: center; gap: 0.6em; }
+  .label { color: #59636e; }
+  .bar { height: 0.7em; border-radius: 999px; background: rebeccapurple; min-width: 2px; }
+  .value { text-align: right; font-variant-numeric: tabular-nums; }
+</style>

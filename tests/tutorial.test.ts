@@ -1,6 +1,6 @@
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { readdirSync, readFileSync } from "node:fs"
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Component79 } from "../src/jq79"
 // the highlighter the tutorial page loads (build-site.mjs bundles this very
@@ -69,6 +69,29 @@ const mount = (files: Record<string, string>, host: HTMLElement): Component79 =>
 // setup scripts that `await` (the nested-components exercise) render on a
 // microtask, so the DOM settles a tick after mount
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
+
+// The no-bundle exercises import a component the editor doesn't hold - it sits
+// on the host that serves the tutorial, at /tutorial/examples/. A specifier
+// that isn't in the pre-resolved `modules` map above falls through to the
+// runtime, which fetches it; in a browser that's a real request to the page's
+// own origin, and here the same files answer it off disk. Mocking the network
+// is the only stand-in: what's under test is that the import reaches for it
+const EXAMPLES = join(TUTORIAL, "_app", "examples")
+
+beforeAll(() => {
+  vi.stubGlobal("fetch", async (url: string) => {
+    const requested = String(url)
+    const file = join(EXAMPLES, requested.split("/").pop() ?? "")
+    const served = requested.includes("/examples/") && existsSync(file)
+    // Component79.fetch() only reads .ok and .text(), and throws on a 404 the
+    // way it would against a host that doesn't have the file
+    return served
+      ? { ok: true, text: async () => readFileSync(file, "utf8") }
+      : { ok: false, status: 404, text: async () => "not found" }
+  })
+})
+
+afterAll(() => vi.unstubAllGlobals())
 
 describe("tutorial", () => {
   let host: HTMLDivElement
@@ -248,6 +271,42 @@ describe("tutorial", () => {
     expect(readout()).toBe("last value emitted: 1")
   })
 
+  it("04-no-bundle/01: renders a component no bundler resolved, fetched from the host", async () => {
+    mount(solutionOf("04-no-bundle/01-no-build-step"), host)
+
+    // the template is up before the request is: the <Sticker> tags render
+    // nothing while the import is in flight, and fill in when it lands
+    expect(host.shadowRoot?.querySelectorAll("li").length).toBe(3)
+    expect(host.shadowRoot?.querySelector(".sticker")).toBeFalsy()
+
+    await vi.waitFor(() =>
+      expect([...host.shadowRoot!.querySelectorAll(".sticker")].map(el => el.textContent)).toEqual([
+        "NO COMPILER",
+        "NO BUNDLER",
+        "NO CONFIG",
+      ])
+    )
+  })
+
+  it("04-no-bundle/02: fetches the chart on the first click, and not before", async () => {
+    mount(solutionOf("04-no-bundle/02-loading-on-demand"), host)
+    await tick()
+
+    // nothing asked for it, so it isn't there
+    expect(host.shadowRoot?.querySelector(".chart")).toBeFalsy()
+    expect(host.shadowRoot?.querySelector(".loading")).toBeFalsy()
+    ;(host.shadowRoot!.querySelector(".show") as HTMLButtonElement).click()
+
+    // the gap the exercise is about: the request is out, and the component says so
+    expect(host.shadowRoot?.querySelector(".loading")?.textContent).toBe("loading…")
+
+    await vi.waitFor(() => expect(host.shadowRoot!.querySelectorAll(".chart li").length).toBe(4))
+
+    expect(host.shadowRoot?.querySelector(".loading")).toBeFalsy()
+    expect(host.shadowRoot?.querySelector(".show")).toBeFalsy()
+    expect(host.shadowRoot?.querySelector(".chart .value")?.textContent).toBe("32")
+  })
+
   it("03-scripts/01: focuses its own search box once mounted", async () => {
     mount(solutionOf("03-scripts/01-reaching-the-dom"), host)
     await tick()
@@ -370,6 +429,20 @@ describe("the tutorial app", () => {
 
     expect(previewRoot(host).querySelector("h1")?.textContent).toBe("Hello jq79!")
     expect(host.querySelector(".error")).toBeFalsy()
+  })
+
+  it("empties the preview the moment another exercise is opened", async () => {
+    expect(previewRoot(host).querySelector("h1")?.textContent).toBe("Hello world!")
+
+    linkTo(host, "01-basics/02-reactive-state").click()
+
+    // no settle(): the recompile is debounced, and until it runs there is
+    // nothing to show - what was on screen belonged to the exercise just closed
+    expect(host.querySelector(".stage")).toBeFalsy()
+
+    await settle()
+
+    expect(previewRoot(host).querySelector("button")?.textContent).toContain("clicked")
   })
 
   it("reports a broken component instead of taking the page down with it", async () => {

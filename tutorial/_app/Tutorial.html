@@ -150,7 +150,10 @@
       <Diff :if="proposal" :files :after="proposal" :highlight :language-of="languageOf" />
     </div>
 
-    <Preview :files :compile />
+    <!-- `exercise` isn't rendered: it's how the preview tells "the user typed"
+         (recompile, debounced) from "the user went somewhere else" (drop what's
+         on screen now, it belongs to the last exercise) -->
+    <Preview :files :compile :exercise="current.path" />
   </section>
 </div>
 
@@ -166,8 +169,24 @@
   }
 
   /* the panes: <Toc>, <Lesson> and the .work column (a component renders its
-     content between two comment markers, which are no grid items of their own) */
-  .tutorial-container > * { background: var(--bg); overflow-y: auto; }
+     content between two comment markers, which are no grid items of their own).
+     They are fetched, so each lands whenever its request comes back and used to
+     pop onto the page as it did - the fade is the same 250ms the preview takes,
+     so a loading tutorial arrives rather than flashing into place */
+  .tutorial-container > * {
+    background: var(--bg);
+    overflow-y: auto;
+    animation: pane-in 250ms ease-out;
+  }
+
+  @keyframes pane-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tutorial-container > * { animation: none; }
+  }
 
   /* the work column: tabs, the editor pane, the preview under it */
 

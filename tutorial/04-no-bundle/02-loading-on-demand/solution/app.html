@@ -1,0 +1,33 @@
+<script :setup>
+  let loading = false
+  let Chart = null
+
+  const sales = [
+    { label: "jan", value: 32 },
+    { label: "feb", value: 58 },
+    { label: "mar", value: 41 },
+    { label: "apr", value: 74 },
+  ]
+
+  // the request the page didn't make on load: ./examples/Chart.html is fetched
+  // here, on the first click, and the assignment is what renders it. The button
+  // is gone by then (:if="!Chart"), so there's no second fetch to guard against
+  const show = async () => {
+    loading = true
+    Chart = await import("./examples/Chart.html")
+    loading = false
+  }
+</script>
+
+<h2>Sales</h2>
+
+<button class="show" :if="!Chart" @click="show">show the chart</button>
+<p class="loading" :if="loading">loading…</p>
+
+<Chart :data="sales" />
+
+<style>
+  h2 { font: bold 1.2rem system-ui, sans-serif; margin: 0 0 0.6em; }
+  .show { font: inherit; padding: 0.4em 0.9em; border: 1px solid #d0d7de; border-radius: 6px; background: none; cursor: pointer; }
+  .loading { color: #59636e; font: 0.9rem system-ui, sans-serif; }
+</style>

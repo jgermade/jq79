@@ -1,0 +1,24 @@
+<!--
+  A component the tutorial's own host serves, at /tutorial/examples/Sticker.html
+  (this folder rides along with the app when build-site.mjs copies _app/ into
+  site/tutorial/). It is in no editor tab, and no bundler has ever seen it: the
+  no-bundle exercises import it by URL, and the runtime fetches it - which is
+  the whole point of them.
+-->
+<script :setup="{ label }">
+  $: text = String(label).toUpperCase()
+</script>
+
+<span class="sticker">{{ text }}</span>
+
+<style scoped>
+  .sticker {
+    display: inline-block;
+    padding: 0.25em 0.7em;
+    border-radius: 999px;
+    background: #efe6ff;
+    color: rebeccapurple;
+    font: 600 0.75rem/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
+  }
+</style>

@@ -1,0 +1,24 @@
+<script :setup>
+  // declared before the await, so the list is on screen while the request is
+  // still in flight (everything below an await is undefined until it resolves)
+  let stamps = ["no compiler", "no bundler", "no config"]
+
+  // no bundler resolved this specifier: the runtime fetched ./examples/Sticker.html
+  // from the host serving this page, parsed it, and handed it back as a component.
+  // A <Sticker> whose variable isn't a component yet renders nothing, so the
+  // stamps show up bare and grow their sticker when the file lands
+  const Sticker = await import("./examples/Sticker.html")
+</script>
+
+<h2>Shipped as files</h2>
+
+<ul class="stamps">
+  <li :each="stamp in stamps" :key="stamp">
+    <Sticker :label="stamp" />
+  </li>
+</ul>
+
+<style>
+  h2 { font: bold 1.2rem system-ui, sans-serif; margin: 0 0 0.6em; }
+  .stamps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5em; }
+</style>

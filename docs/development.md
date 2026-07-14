@@ -112,6 +112,14 @@ Extra files alongside `app.html` become editable tabs *and* its importable modul
 `await import("./Greeting.html")` inside an exercise resolves to the file in the next
 tab rather than hitting the network. A `solution/` only needs the files it changes.
 
+A specifier that *isn't* one of those tabs falls through to the runtime, which fetches
+it — which is what the `04-no-bundle` exercises are about, and why
+[`tutorial/_app/examples/`](../tutorial/_app/examples) exists: it rides along into
+`site/tutorial/examples/`, so `await import("./examples/Sticker.html")` in an exercise
+is a real request to the host serving the page, for a component no bundler ever saw.
+Those exercises are the only ones that touch the network, and their tests serve the
+same files off disk.
+
 Exercises are tested like any other component ([`tests/tutorial.test.ts`](../tests/tutorial.test.ts)):
 every starting file must mount without throwing, and every solution must actually do what
 its README claims — so a library change that breaks an exercise fails the build.
