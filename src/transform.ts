@@ -60,6 +60,78 @@ const skipToToken = (src: string, start: number): number => {
   return i
 }
 
+// ---------------------------------------------------------------------------
+// regex literals. The scanners walk the source counting bracket depth, and a
+// regex walked as if it were code poisons that count: `split(/\//)` puts two
+// slashes side by side (a line comment, as far as a scanner knows) and the
+// `)` after them is skipped uncounted; `/[(]/` inflates the depth for good.
+// So a `/` that opens a regex is consumed whole - and whether it opens one is
+// the classic lexer call, made the way every tokenizer makes it: by what came
+// before. Division needs a completed expression on its left; everywhere else
+// a `/` can only be a regex.
+// ---------------------------------------------------------------------------
+
+// reserved words a regex can follow. Reserved only - `of` is not (`const of
+// = 4; of / 2` is legal division), so `for (x of /re/)` stays unrescued
+// rather than risking real code
+const REGEX_AFTER_WORD = new Set([
+  "return", "typeof", "case", "in", "instanceof", "new", "delete", "void", "do", "else", "yield", "await",
+])
+
+// whether a `/` at `at` opens a regex literal rather than a division: looks
+// backward past whitespace and block comments for the last meaningful thing.
+// A completed expression - identifier, number, closing quote or bracket,
+// postfix ++/-- - takes division; a reserved word or any other punctuator
+// admits a regex. Only consulted for the rare `/` that is neither `//` nor
+// `/*`, so the scanners pay nothing on the common path
+const regexAllowed = (src: string, at: number): boolean => {
+  let i = at - 1
+  while (i >= 0) {
+    const ch = src[i]
+    if (/\s/.test(ch)) { i--; continue }
+    if (ch === "/" && src[i - 1] === "*") {
+      const open = src.lastIndexOf("/*", i - 2)
+      if (open === -1) return true // an unopened comment tail: malformed input
+      i = open - 1
+      continue
+    }
+    break
+  }
+  if (i < 0) return true // the start of the source starts an expression
+  const ch = src[i]
+  if (/[\w$]/.test(ch)) {
+    let start = i
+    while (start > 0 && /[\w$]/.test(src[start - 1])) start--
+    return REGEX_AFTER_WORD.has(src.slice(start, i + 1))
+  }
+  if ((ch === "+" || ch === "-") && src[i - 1] === ch) return false // postfix ++/--
+  return !")]}\"'`.".includes(ch)
+}
+
+// consumes a regex literal (with its flags): backslash escapes, and character
+// classes, where an unescaped `/` doesn't close the literal (`/[/]/` is one
+// regex). A literal can't contain an unescaped newline, so hitting one means
+// the classification was wrong or the input malformed - stop there, bounding
+// any damage to a single line
+const skipRegex = (src: string, start: number): number => {
+  let i = start + 1
+  let inClass = false
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === "\\") { i += 2; continue }
+    if (ch === "\n") return i
+    if (ch === "[") inClass = true
+    else if (ch === "]") inClass = false
+    else if (ch === "/" && !inClass) {
+      i++
+      while (i < src.length && /[a-z]/i.test(src[i])) i++ // flags
+      return i
+    }
+    i++
+  }
+  return src.length
+}
+
 // tokens that can't *start* a statement, so a line beginning with one is
 // continuing the previous expression rather than opening a new statement -
 // the same call JS's automatic semicolon insertion makes. Unary-only forms
@@ -83,6 +155,7 @@ const findStatementEnd = (src: string, start: number): number => {
     if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); continue }
     if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
     if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if (ch === "/" && regexAllowed(src, i)) { i = skipRegex(src, i); continue }
     if ("([{".includes(ch)) depth++
     else if (")]}".includes(ch)) depth--
     else if (depth <= 0 && ch === ";") return i
@@ -119,6 +192,13 @@ export const transformSetupScript = (src: string): SetupTransform => {
       const end = next === "/" ? skipLineComment(src, i) : skipBlockComment(src, i)
       out += src.slice(i, end)
       i = end
+      continue
+    }
+    if (ch === "/" && regexAllowed(src, i)) {
+      const end = skipRegex(src, i)
+      out += src.slice(i, end)
+      i = end
+      atStatementStart = false
       continue
     }
 
@@ -266,6 +346,7 @@ const indexOfTopLevel = (src: string, ch: string): number => {
     if (c === "'" || c === '"' || c === "`") { i = skipString(src, i); continue }
     if (c === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
     if (c === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if (c === "/" && c !== ch && regexAllowed(src, i)) { i = skipRegex(src, i); continue }
     if ("([{".includes(c)) depth++
     else if (")]}".includes(c)) depth--
     else if (depth === 0 && c === ch) return i
@@ -284,6 +365,7 @@ const splitTopLevel = (src: string): string[] => {
     if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); continue }
     if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
     if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if (ch === "/" && regexAllowed(src, i)) { i = skipRegex(src, i); continue }
     if (ch !== undefined && "([{".includes(ch)) depth++
     else if (ch !== undefined && ")]}".includes(ch)) depth--
     else if (i === src.length || (ch === "," && depth === 0)) {
@@ -325,6 +407,7 @@ export const parsePropsPattern = (pattern: string | undefined): PropDecl[] | nul
   while (close < src.length) {
     const ch = src[close]
     if (ch === "'" || ch === '"' || ch === "`") { close = skipString(src, close); continue }
+    if (ch === "/" && regexAllowed(src, close)) { close = skipRegex(src, close); continue }
     if ("([{".includes(ch)) depth++
     else if (")]}".includes(ch) && --depth === 0) break
     close++
@@ -357,6 +440,7 @@ const findExportDefault = (src: string): number => {
     if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); atStatementStart = false; continue }
     if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
     if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if (ch === "/" && regexAllowed(src, i)) { i = skipRegex(src, i); atStatementStart = false; continue }
 
     if (ch === "e" && depth === 0 && atStatementStart && (i === 0 || !/[\w$.]/.test(src[i - 1]))) {
       EXPORT_DEFAULT_RE.lastIndex = i
@@ -396,6 +480,7 @@ const firstParameterSource = (src: string): string | null => {
   while (end < src.length) {
     const ch = src[end]
     if (ch === "'" || ch === '"' || ch === "`") { end = skipString(src, end); continue }
+    if (ch === "/" && regexAllowed(src, end)) { end = skipRegex(src, end); continue }
     if ("([{".includes(ch)) depth++
     else if (")]}".includes(ch) && --depth === 0) break
     end++
@@ -448,6 +533,13 @@ export const transformFactoryScript = (src: string): string | null => {
       const end = next === "/" ? skipLineComment(src, i) : skipBlockComment(src, i)
       out += src.slice(i, end)
       i = end
+      continue
+    }
+    if (ch === "/" && regexAllowed(src, i)) {
+      const end = skipRegex(src, i)
+      out += src.slice(i, end)
+      i = end
+      atStatementStart = false
       continue
     }
 
