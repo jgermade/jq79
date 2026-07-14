@@ -89,7 +89,7 @@ const ROOT_CSS = `
 // the background/font are set on the header itself rather than inherited
 const HEADER_CSS = `
 header { background: var(--body-bg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-header nav { max-width: 860px; margin: 0 auto; padding: 0.7rem 1.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
+header nav { max-width: 860px; margin: 0 auto; padding: 0 1.5rem; height: 2.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
 /* 1.5rem is the tallest nav item (the logos), so the wordmark matches it: the
    header keeps its height whether .start is text or the GitHub image */
 header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; line-height: 1.5rem; }
