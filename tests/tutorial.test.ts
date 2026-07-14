@@ -3,6 +3,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Component79 } from "../src/jq79"
+// the highlighter the tutorial page loads (build-site.mjs bundles this very
+// entry into site/assets/hljs.js), so the app is mounted here with the same
+// render data the shell hands it
+import hljs from "../scripts/hljs-browser.js"
 
 // The tutorial's exercises are real components, so they're tested like any
 // other: every starting file must parse and mount (a broken starting point is
@@ -245,10 +249,19 @@ describe("the tutorial app", () => {
 
   const previewRoot = (host: HTMLElement) => host.querySelector(".stage")!.shadowRoot!
 
-  const solutionButton = (host: HTMLElement) =>
+  const ghostButton = (host: HTMLElement, label: string) =>
     [...host.querySelectorAll(".ghost")].find(
-      button => button.textContent === "solution"
+      button => button.textContent === label
     ) as HTMLButtonElement
+
+  // the solution is proposed as a diff and only lands once it's accepted, so
+  // most of these want both halves of it
+  const solve = async (host: HTMLElement) => {
+    ghostButton(host, "solution").click()
+    await settle()
+    ;(host.querySelector(".accept") as HTMLButtonElement).click()
+    await settle()
+  }
 
   let host: HTMLDivElement
   let instance: Component79
@@ -260,7 +273,7 @@ describe("the tutorial app", () => {
     // the same `sections` object, mount after mount: each store keeps its own
     // view of it rather than rewriting it in place (see the sharing tests in
     // reactive.test.ts - this used to compound until it hung)
-    instance = new Component79(app).mount(host, { sections, Component79 })
+    instance = new Component79(app).mount(host, { sections, Component79, hljs })
     await settle()
   })
 
@@ -301,8 +314,7 @@ describe("the tutorial app", () => {
 
     expect([...host.querySelectorAll(".tab")].map(tab => tab.textContent)).toEqual([ENTRY, "Greeting.html"])
 
-    solutionButton(host).click()
-    await settle()
+    await solve(host)
 
     const names = [...previewRoot(host).querySelectorAll("article strong")].map(node => node.textContent)
 
@@ -312,18 +324,88 @@ describe("the tutorial app", () => {
   it("switches the editor between an exercise's files, and resets them", async () => {
     linkTo(host, "02-components/01-nested-components").click()
     await settle()
-    solutionButton(host).click()
-    await settle()
+    await solve(host)
 
     ;(host.querySelectorAll(".tab")[1] as HTMLButtonElement).click()
     await settle()
 
     expect((host.querySelector("textarea") as HTMLTextAreaElement).value).toContain("user.name")
 
-    const reset = [...host.querySelectorAll(".ghost")].find(button => button.textContent === "reset")
-    ;(reset as HTMLButtonElement).click()
+    ghostButton(host, "reset").click()
     await settle()
 
     expect((host.querySelector("textarea") as HTMLTextAreaElement).value).not.toContain("user.name")
+  })
+
+  it("keeps a highlight layer in step with what the editor holds", async () => {
+    type(host, `<script :setup>\n  const name = "jq79"\n</script>\n<h1>Hello {{ name }}!</h1>`)
+    await settle()
+
+    const shadow = host.querySelector(".editor-highlight") as HTMLElement
+
+    // same text as the textarea (that's what makes the two layers line up), and
+    // colored: the <script> block comes out as javascript, the markup as tags
+    expect(shadow.textContent?.trim()).toBe(
+      (host.querySelector("textarea") as HTMLTextAreaElement).value.trim()
+    )
+    expect(shadow.querySelector(".hljs-keyword")?.textContent).toBe("const")
+    expect(shadow.querySelector(".hljs-name")?.textContent).toBe("script")
+  })
+
+  it("proposes the solution as a diff, and touches nothing until it's accepted", async () => {
+    const before = (host.querySelector("textarea") as HTMLTextAreaElement).value
+
+    ghostButton(host, "solution").click()
+    await settle()
+
+    // the added lines are there to read, highlighted like the editor is
+    const added = [...host.querySelectorAll(".row.add")]
+    expect(added.length).toBeGreaterThan(0)
+    expect(host.querySelector(".row.add .hljs-name")).toBeTruthy()
+    expect(host.querySelector(".diff-name")?.textContent).toBe(ENTRY)
+
+    // but the editor still holds the user's code, and can't be typed into behind
+    // the overlay
+    const editor = host.querySelector("textarea") as HTMLTextAreaElement
+    expect(editor.value).toBe(before)
+    expect(editor.readOnly).toBe(true)
+
+    ghostButton(host, "cancel").click()
+    await settle()
+
+    expect(host.querySelector(".diff")).toBeFalsy()
+    expect((host.querySelector("textarea") as HTMLTextAreaElement).value).toBe(before)
+    expect(editor.readOnly).toBe(false)
+  })
+
+  it("applies the solution once it's accepted, and re-renders the preview", async () => {
+    linkTo(host, "01-basics/02-reactive-state").click()
+    await settle()
+
+    await solve(host)
+
+    expect(host.querySelector(".diff")).toBeFalsy()
+
+    const editor = host.querySelector("textarea") as HTMLTextAreaElement
+    expect(editor.value).toBe(exercises[1].solution[ENTRY])
+    expect(editor.readOnly).toBe(false)
+
+    // and the preview is running the solution: its button counts clicks
+    const button = previewRoot(host).querySelector("button") as HTMLButtonElement
+    button.click()
+    await settle()
+
+    expect(previewRoot(host).textContent).toContain("1")
+  })
+
+  it("says so when the code already matches the solution", async () => {
+    await solve(host)
+    ghostButton(host, "solution").click()
+    await settle()
+
+    expect(host.querySelectorAll(".row").length).toBe(0)
+    expect(host.querySelector(".diff-title")?.textContent).toContain("already matches")
+    // nothing to accept, so the only way out is dismissing it
+    expect(host.querySelector(".accept")).toBeFalsy()
   })
 })

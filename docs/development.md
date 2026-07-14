@@ -79,6 +79,30 @@ Exercises are tested like any other component ([`tests/tutorial.test.ts`](../tes
 every starting file must mount without throwing, and every solution must actually do what
 its README claims — so a library change that breaks an exercise fails the build.
 
+The "solution" button doesn't swap the files in: it diffs them against whatever the editor
+holds and shows that, over the editor, until the user accepts it. So an exercise's
+`solution/` is read twice — once to render the diff, once to apply it — and both go through
+the same merge over the starting files, which is why applying one also reverts edits made to
+files the solution doesn't mention.
+
+### Highlighting
+
+Snippets in an exercise's prose are highlighted at build time (marked-highlight), and the
+editor and the diff are highlighted in the browser as you type — by the same library, with
+the same `hljs-*` class names, off the one palette the shell page carries (`HLJS_CSS` in
+[`build-site.mjs`](../scripts/build-site.mjs), shared with the docs pages). highlight.js
+ships as CommonJS, so the copy the tutorial loads is bundled from
+[`scripts/hljs-browser.js`](../scripts/hljs-browser.js) into `site/assets/hljs.js` and handed
+to the component as render data, the same way `Component79` is. That bundle is cached under
+`node_modules/.cache/jq79/` and only rebuilt when the dependency's version changes — the
+watch loop would otherwise pay for it on every rebuild.
+
+The editor itself is a textarea with transparent text sitting exactly on top of a `<pre>`
+holding the same text, highlighted; only the caret and the selection show through. The two
+layers only line up while they wrap identically, so their font, padding and wrapping are set
+together in one rule — and the `<pre>` is the one in flow, so it sizes the pane and there is
+no scroll position to keep in sync.
+
 ## Publishing
 
 Releases are automated via GitHub Actions ([release.yml](../.github/workflows/release.yml)): run the **Release** workflow from the Actions tab (workflow dispatch, choosing the patch/minor/major bump). It tests, builds, bumps the version, publishes to npm with provenance, pushes the commit + tag, and creates the GitHub release with the `dist/` files attached. Requires an `NPM_TOKEN` repository secret (npm automation token). CDNs (unpkg, jsDelivr, esm.sh) pick the new version up from npm automatically.

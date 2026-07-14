@@ -114,6 +114,39 @@ body { background: #fff; }
 body > .wrapper { max-width: 860px; margin: 0 auto; }
 `
 
+// the token palette, shared by every surface that shows code: the markdown pages
+// (highlighted here by marked-highlight) and the tutorial's prose, editor and
+// solution diff (highlighted in the browser by site/assets/hljs.js). Same class
+// names on all of them, so one stylesheet dresses the lot
+const HLJS_CSS = `
+.hljs { color: var(--fg); }
+.hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type, .hljs-tag, .hljs-name { color: #d6285f; }
+.hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition { color: #8f6100; }
+.hljs-number, .hljs-symbol, .hljs-link, .hljs-bullet { color: #7c3aed; }
+.hljs-title, .hljs-function, .hljs-title.function_ { color: #4f7d0f; }
+.hljs-variable, .hljs-template-variable, .hljs-attribute { color: #b35900; }
+.hljs-built_in, .hljs-class .hljs-title { color: #0b7285; }
+.hljs-deletion { color: #d6285f; background: #ffeef0; }
+.hljs-addition { color: #4f7d0f; background: #e6f4ea; }
+.hljs-section, .hljs-meta { color: var(--muted); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }
+@media (prefers-color-scheme: dark) {
+  .hljs { color: #f8f8f2; }
+  .hljs-comment, .hljs-quote { color: #727072; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type, .hljs-tag, .hljs-name { color: #ff6188; }
+  .hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition { color: #ffd866; }
+  .hljs-number, .hljs-symbol, .hljs-link, .hljs-bullet { color: #ab9df2; }
+  .hljs-title, .hljs-function, .hljs-title.function_ { color: #a9dc76; }
+  .hljs-variable, .hljs-template-variable, .hljs-attribute { color: #fc9867; }
+  .hljs-built_in, .hljs-class .hljs-title { color: #78dce8; }
+  .hljs-deletion { color: #ff6188; background: #2d2a2e; }
+  .hljs-addition { color: #a9dc76; background: #2d2a2e; }
+  .hljs-section, .hljs-meta { color: #727072; }
+}
+`
+
 const PAGE_CSS = `
 ${ROOT_CSS}
 * { box-sizing: border-box; }
@@ -130,32 +163,11 @@ h2 { border-bottom: 1px solid var(--line); padding-bottom: 0.3em; margin-top: 1.
 code { font: 85%/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px; }
 pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
 pre code { background: none; padding: 0; }
-.hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
-.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type, .hljs-tag, .hljs-name { color: #d6285f; }
-.hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition { color: #8f6100; }
-.hljs-number, .hljs-symbol, .hljs-link, .hljs-bullet { color: #7c3aed; }
-.hljs-title, .hljs-function, .hljs-title.function_ { color: #4f7d0f; }
-.hljs-variable, .hljs-template-variable, .hljs-attribute { color: #b35900; }
-.hljs-built_in, .hljs-class .hljs-title { color: #0b7285; }
-.hljs-deletion { color: #d6285f; background: #ffeef0; }
-.hljs-addition { color: #4f7d0f; background: #e6f4ea; }
-.hljs-section, .hljs-meta { color: var(--muted); }
-.hljs-emphasis { font-style: italic; }
-.hljs-strong { font-weight: bold; }
+${HLJS_CSS}
 @media (prefers-color-scheme: dark) {
   pre, code { color: #f8f8f2; }
   pre { background: #2d2a2e; }
   code { background: #363437; }
-  .hljs-comment, .hljs-quote { color: #727072; }
-  .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type, .hljs-tag, .hljs-name { color: #ff6188; }
-  .hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition { color: #ffd866; }
-  .hljs-number, .hljs-symbol, .hljs-link, .hljs-bullet { color: #ab9df2; }
-  .hljs-title, .hljs-function, .hljs-title.function_ { color: #a9dc76; }
-  .hljs-variable, .hljs-template-variable, .hljs-attribute { color: #fc9867; }
-  .hljs-built_in, .hljs-class .hljs-title { color: #78dce8; }
-  .hljs-deletion { color: #ff6188; background: #2d2a2e; }
-  .hljs-addition { color: #a9dc76; background: #2d2a2e; }
-  .hljs-section, .hljs-meta { color: #727072; }
 }
 table { border-collapse: collapse; display: block; overflow-x: auto; }
 th, td { border: 1px solid var(--line); padding: 0.4em 0.8em; }
@@ -298,11 +310,38 @@ const buildTutorial = async () => {
   return sections
 }
 
+// highlight.js ships as CommonJS, so the copy the tutorial page loads has to be
+// bundled. It only changes when the dependency does, so it's cached outside
+// site/ (which is wiped on every build, watch loop included) and keyed by version
+const HLJS_BUNDLE = "assets/hljs.js"
+
+const bundleHljs = async () => {
+  const version = JSON.parse(await readFile("node_modules/highlight.js/package.json", "utf8")).version
+  const cached = `node_modules/.cache/jq79/hljs-${version}.js`
+
+  if (!(await stat(cached).catch(() => null))) {
+    const { build } = await import("vite")
+    await build({
+      configFile: false,
+      logLevel: "warn",
+      build: {
+        lib: { entry: "scripts/hljs-browser.js", formats: ["es"], fileName: () => posix.basename(cached) },
+        outDir: posix.dirname(cached),
+        emptyOutDir: true,
+        minify: true,
+      },
+    })
+  }
+
+  await cp(cached, posix.join(SITE, HLJS_BUNDLE))
+}
+
 const TUTORIAL_CSS = `
 ${ROOT_CSS}
 * { box-sizing: border-box; }
 body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--body-bg); color: var(--fg); }
 ${HEADER_CSS}
+${HLJS_CSS}
 #app { flex: 1; min-height: 0; }
 #app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; color: #fff; }
 `
@@ -310,7 +349,8 @@ ${HEADER_CSS}
 // the app shell: everything else (layout, editor, preview) is Tutorial.html,
 // a jq79 component fetched at runtime - the tutorial runs on the library it
 // teaches, and the exercise the user is editing is compiled by the very same
-// Component79 the page imports
+// Component79 the page imports. hljs rides along the same way, as render data:
+// the component uses it to color the editor and the solution diff
 const tutorialPage = () => `<!doctype html>
 <html lang="en">
 <head>
@@ -331,11 +371,12 @@ ${siteHeader("../")}
 import { Component79 } from "../jq79.js"
 
 try {
-  const [sections, app] = await Promise.all([
+  const [sections, app, hljs] = await Promise.all([
     fetch("./tutorial.json").then(response => response.json()),
     Component79.fetch("./Tutorial.html"),
+    import("../${HLJS_BUNDLE}").then(module => module.default),
   ])
-  app.mount("#app", { sections, Component79 })
+  app.mount("#app", { sections, Component79, hljs })
 } catch (failure) {
   document.querySelector("#app").innerHTML =
     '<p class="failed">the tutorial failed to load: ' + failure.message + '</p>'
@@ -360,8 +401,10 @@ for (const file of await readdir("docs")) {
   if (file.endsWith(".md")) await renderPage(`docs/${file}`, `docs/${file.replace(/\.md$/, ".html")}`, "../")
 }
 
-// tutorial: the exercise manifest, the app component itself, and its shell
+// tutorial: the exercise manifest, the app component itself, its shell, and the
+// highlighter it colors the editor with
 const tutorial = await buildTutorial()
+await bundleHljs()
 await mkdir(posix.join(SITE, TUTORIAL), { recursive: true })
 await cp(posix.join(TUTORIAL, "_app"), posix.join(SITE, TUTORIAL), { recursive: true })
 await writeFile(posix.join(SITE, TUTORIAL, "tutorial.json"), JSON.stringify(tutorial))
