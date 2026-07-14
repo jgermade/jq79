@@ -1,0 +1,25 @@
+<script>
+export default ({ $data, $effect }) => {
+  $data.count = 0
+
+  // $effect(...) goes here: keep `double` at twice `count`
+
+  const inc = () => {
+    // remember: a plain local wouldn't be reactive
+  }
+
+  const reset = () => {
+  }
+
+  return { inc, reset }
+}
+</script>
+
+<button @click="inc">clicked {{ count }} times</button>
+<button @click="reset">reset</button>
+<p>double: {{ double }}</p>
+
+<style>
+  button { font: inherit; padding: 0.4em 1em; border-radius: 6px; cursor: pointer; }
+  p { color: #59636e; }
+</style>

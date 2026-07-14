@@ -1,0 +1,26 @@
+<script>
+export default ({ $data, $effect }) => {
+  $data.count = 0
+
+  $effect(() => { $data.double = $data.count * 2 })
+
+  const inc = () => {
+    $data.count++
+  }
+
+  const reset = () => {
+    $data.count = 0
+  }
+
+  return { inc, reset }
+}
+</script>
+
+<button @click="inc">clicked {{ count }} times</button>
+<button @click="reset">reset</button>
+<p>double: {{ double }}</p>
+
+<style>
+  button { font: inherit; padding: 0.4em 1em; border-radius: 6px; cursor: pointer; }
+  p { color: #59636e; }
+</style>

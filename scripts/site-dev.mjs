@@ -13,7 +13,7 @@ import { watch } from "chokidar"
 import { createServer } from "vite"
 
 const PORT = Number(process.env.PORT ?? 4179)
-const WATCHED = ["README.md", "docs", "assets", "scripts/build-site.mjs"]
+const WATCHED = ["README.md", "docs", "tutorial", "assets", "scripts/build-site.mjs"]
 
 // `mpa` serves docs/*.html at their own paths instead of falling back to a
 // single index; vite injects its own hmr client into every page it serves,

@@ -1,0 +1,13 @@
+<script :setup>
+  let value = 0
+
+  const bump = () => {
+    value = value + 1
+  }
+</script>
+
+<button @click="bump">+1 (this one: {{ value }})</button>
+
+<style>
+  button { font: inherit; padding: 0.3em 0.9em; border-radius: 6px; cursor: pointer; }
+</style>

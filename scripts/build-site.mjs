@@ -156,6 +156,7 @@ const homeLink = root =>
 
 const siteHeader = root => `<header><nav>
   ${homeLink(root)}
+  <a href="${root}tutorial/" class="tutorial">tutorial</a>
   <a href="${root}coverage/" class="coverage">
     <img src="${root}assets/code-coverage.svg" alt="coverage" />
   </a>
@@ -190,13 +191,18 @@ ${body}
 
 // rewrites relative links from the markdown sources to their site/GitHub
 // homes: .md files become site pages, assets stay relative, and anything
-// else (source files, workflows, ...) points at the GitHub repo
-const rewriteLinks = (html, srcDir) =>
+// else (source files, workflows, ...) points at the GitHub repo.
+//
+// `srcDir` is where the markdown lives (what its links are relative *to*);
+// `outDir` is where the rendered HTML is served from (what the rewritten links
+// must be relative *from*). They differ for the tutorial, whose per-exercise
+// READMEs all end up inside the single /tutorial/ page
+const rewriteLinks = (html, srcDir, outDir = srcDir) =>
   html.replace(/(href|src)="([^"]+)"/g, (match, attr, url) => {
     if (/^(https?:|mailto:|data:|#)/.test(url)) return match
     const [path, hash = ""] = url.split(/(?=#)/)
     const repoPath = posix.normalize(posix.join(srcDir, path))
-    const relativeTo = target => posix.relative(srcDir, target) || "."
+    const relativeTo = target => posix.relative(outDir, target) || "."
     if (repoPath.toLowerCase() === "readme.md") return `${attr}="${relativeTo("index.html")}${hash}"`
     if (repoPath.endsWith(".md")) return `${attr}="${relativeTo(repoPath.replace(/\.md$/, ".html"))}${hash}"`
     if (repoPath.startsWith("assets/")) return `${attr}="${relativeTo(repoPath)}"`
@@ -210,6 +216,116 @@ const renderPage = async (mdPath, outPath, root) => {
   await mkdir(posix.dirname(posix.join(SITE, outPath)), { recursive: true })
   await writeFile(posix.join(SITE, outPath), page(title === "jq79" ? "jq79" : `${title} · jq79`, body, root))
 }
+
+// --- tutorial ----------------------------------------------------------------
+
+// tutorial/<NN-section>/<NN-exercise>/ holds a README.md (the prose), the files
+// the editor starts with, and a solution/ with the files the "solution" button
+// swaps in. The whole thing is emitted as one JSON manifest that the tutorial
+// page (itself a jq79 component) renders - so adding an exercise is adding a
+// folder, no code change anywhere
+const TUTORIAL = "tutorial"
+const EDITABLE = /\.(html|js|css|json)$/
+// the file the exercise is mounted from; the rest are its importable modules.
+// Listed first, so it's the tab the editor opens on
+const ENTRY = "app.html"
+
+const titleFromSlug = slug =>
+  slug.replace(/^\d+-/, "").replace(/-/g, " ").replace(/^./, char => char.toUpperCase())
+
+const subdirs = async dir =>
+  (await readdir(dir, { withFileTypes: true }))
+    .filter(entry => entry.isDirectory() && !entry.name.startsWith("_"))
+    .map(entry => entry.name)
+    .sort()
+
+// the editable files sitting directly in `dir` (missing dir → {}, for the
+// exercises that have no solution/ of their own)
+const sourceFiles = async dir => {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+  const files = entries.filter(entry => entry.isFile() && EDITABLE.test(entry.name)).map(entry => entry.name)
+  const ordered = files.sort((a, b) => (a === ENTRY ? -1 : b === ENTRY ? 1 : a.localeCompare(b)))
+  return Object.fromEntries(
+    await Promise.all(ordered.map(async name => [name, await readFile(posix.join(dir, name), "utf8")]))
+  )
+}
+
+const buildTutorial = async () => {
+  const sections = []
+  let position = 0
+
+  for (const sectionSlug of await subdirs(TUTORIAL)) {
+    const sectionDir = posix.join(TUTORIAL, sectionSlug)
+    const exercises = []
+
+    for (const slug of await subdirs(sectionDir)) {
+      const dir = posix.join(sectionDir, slug)
+      const md = await readFile(posix.join(dir, "README.md"), "utf8")
+      exercises.push({
+        slug,
+        path: `${sectionSlug}/${slug}`,
+        // the flat position, so the table of contents can jump straight to it
+        index: position++,
+        title: md.match(/^#\s+(.+)$/m)?.[1] ?? titleFromSlug(slug),
+        // rendered from the exercise dir, but displayed from /tutorial/
+        html: rewriteLinks(await marked.parse(md), dir, TUTORIAL),
+        files: await sourceFiles(dir),
+        solution: await sourceFiles(posix.join(dir, "solution")),
+      })
+    }
+
+    sections.push({ slug: sectionSlug, title: titleFromSlug(sectionSlug), exercises })
+  }
+
+  return sections
+}
+
+const TUTORIAL_CSS = `
+${ROOT_CSS}
+* { box-sizing: border-box; }
+body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--body-bg); color: var(--fg); }
+${HEADER_CSS}
+#app { flex: 1; min-height: 0; }
+#app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; color: #fff; }
+`
+
+// the app shell: everything else (layout, editor, preview) is Tutorial.html,
+// a jq79 component fetched at runtime - the tutorial runs on the library it
+// teaches, and the exercise the user is editing is compiled by the very same
+// Component79 the page imports
+const tutorialPage = () => `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tutorial · jq79</title>
+<link rel="icon" type="image/png" href="../assets/favicon-96x96.png" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
+<link rel="shortcut icon" href="../assets/favicon.ico" />
+<link rel="apple-touch-icon" sizes="180x180" href="../assets/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-title" content="jq79" />
+<style>${TUTORIAL_CSS}</style>
+</head>
+<body>
+${siteHeader("../")}
+<div id="app"></div>
+<script type="module">
+import { Component79 } from "../jq79.js"
+
+try {
+  const [sections, app] = await Promise.all([
+    fetch("./tutorial.json").then(response => response.json()),
+    Component79.fetch("./Tutorial.html"),
+  ])
+  app.mount("#app", { sections, Component79 })
+} catch (failure) {
+  document.querySelector("#app").innerHTML =
+    '<p class="failed">the tutorial failed to load: ' + failure.message + '</p>'
+}
+</script>
+</body>
+</html>
+`
 
 // --- assemble ----------------------------------------------------------------
 
@@ -225,6 +341,13 @@ await renderPage("README.md", "index.html", "./")
 for (const file of await readdir("docs")) {
   if (file.endsWith(".md")) await renderPage(`docs/${file}`, `docs/${file.replace(/\.md$/, ".html")}`, "../")
 }
+
+// tutorial: the exercise manifest, the app component itself, and its shell
+const tutorial = await buildTutorial()
+await mkdir(posix.join(SITE, TUTORIAL), { recursive: true })
+await cp(posix.join(TUTORIAL, "_app"), posix.join(SITE, TUTORIAL), { recursive: true })
+await writeFile(posix.join(SITE, TUTORIAL, "tutorial.json"), JSON.stringify(tutorial))
+await writeFile(posix.join(SITE, TUTORIAL, "index.html"), tutorialPage())
 
 // coverage report + badges
 const summary = JSON.parse(await readFile("coverage/coverage-summary.json", "utf8"))
@@ -306,4 +429,7 @@ const sizeBadge = async (label, file, c2, c4) => {
 await sizeBadge("esm", "dist/jq79.js", "goldenrod", "#778899")
 await sizeBadge("cjs", "dist/jq79.global.js", "#6495ed", "#778899")
 
-console.log(`site/ built: v${pkg.version}, coverage ${pct.toFixed(1)}%`)
+const exercises = tutorial.reduce((total, section) => total + section.exercises.length, 0)
+console.log(
+  `site/ built: v${pkg.version}, coverage ${pct.toFixed(1)}%, ${exercises} tutorial exercises`
+)

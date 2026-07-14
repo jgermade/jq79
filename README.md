@@ -14,6 +14,8 @@ A mini reactive component library that ships as a single file. Svelte-style reac
 
 > no compiler required, no virtual DOM, no dependencies.
 
+**[Take the tutorial →](https://jgermade.github.io/jq79/tutorial/)** — a handful of exercises you edit in the browser, with a live preview. Because there's no compiler, the tutorial runs the real library: the component you write is the component that mounts.
+
 ## Installation
 
 ### npm
@@ -105,6 +107,7 @@ When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$
 
 ## Documentation
 
+- [Tutorial](https://jgermade.github.io/jq79/tutorial/) — learn it by doing, in the browser.
 - [Components](docs/components.md) — lifecycle (`mount`, `mountShadow`, `detach`, `destroy`), instance events (`on`/`off`), `<style scoped>`, loading remote components with `Component79.fetch`.
 - [Template syntax](docs/template-syntax.md) — `{{ }}` interpolation, `:attrs`, `:text`/`:html`, `:if`/`:elseif`/`:else`, `:each`/`:key`, `:with`, `@event` listeners and modifiers, nested components.
 - [Setup scripts](docs/setup-scripts.md) — `<script :setup>` reactive scripts, `$:` declarations, `$emit`, `await $mounted()`, `$self`/`$$self`, and `export default` factory scripts (plain-JS alternative).

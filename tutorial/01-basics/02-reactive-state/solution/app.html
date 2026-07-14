@@ -1,0 +1,12 @@
+<script :setup>
+  let count = 0
+
+  $: doubled = count * 2
+</script>
+
+<button @click="count = count + 1">clicked {{ count }} times</button>
+<p>doubled: {{ doubled }}</p>
+
+<style>
+  button { font: inherit; padding: 0.4em 1em; border-radius: 6px; cursor: pointer; }
+</style>

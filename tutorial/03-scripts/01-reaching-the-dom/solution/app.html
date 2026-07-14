@@ -1,0 +1,22 @@
+<script :setup>
+  const fruits = ["apple", "apricot", "banana", "cherry"]
+
+  let query = ""
+
+  $: matches = fruits.filter(fruit => fruit.startsWith(query))
+
+  await $mounted()
+
+  $self(".search").focus()
+</script>
+
+<input class="search" placeholder="type to filter" @input="query = $event.target.value" />
+
+<ul>
+  <li :each="fruit in matches" :key="fruit">{{ fruit }}</li>
+</ul>
+
+<style>
+  .search { font: inherit; padding: 0.4em 0.6em; border: 1px solid #d1d9e0; border-radius: 6px; }
+  ul { list-style: none; padding: 0; }
+</style>

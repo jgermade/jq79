@@ -1,0 +1,22 @@
+<script :setup>
+  let saving = false
+
+  const save = () => {
+    saving = true
+    setTimeout(() => { saving = false }, 1500)
+  }
+
+  $: status = saving ? "saving…" : "idle"
+</script>
+
+<button
+  :attrs="{ disabled: saving, title: saving ? 'a save is already in flight' : 'save your work' }"
+  @click="save"
+>Save</button>
+<p class="status" :text="status"></p>
+
+<style>
+  button { font: inherit; padding: 0.4em 1em; border-radius: 6px; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { color: #59636e; }
+</style>

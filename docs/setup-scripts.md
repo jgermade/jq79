@@ -85,6 +85,88 @@ $: total = subtotal
   - discount
 ```
 
+## Keeping something out of the store
+
+An effect tracks every scope variable it *reads*, and re-runs when one of them
+changes — so an effect that both reads and writes the same variable wakes itself
+up, forever:
+
+```js
+let timer = null                       // top-level → a reactive scope var
+
+const schedule = () => {
+  clearTimeout(timer)                  // reads `timer`…
+  timer = setTimeout(save, 250)        // …and writes it: the effect below loops
+}
+
+$: schedule(draft)
+```
+
+Worth knowing how this one fails, because it doesn't fail where you'd look: an
+effect's dependencies are recorded *after* its first run, so that first pass —
+the one during render — writes `timer` while the effect is still tracking
+nothing, and everything looks fine. It's the **next** change to `draft` that
+finds `timer` in the dependency list and recurses until the stack blows. A
+component that renders perfectly can still be carrying this.
+
+Bookkeeping like a timer handle, a cached instance or a "did I already run this"
+flag isn't state the template renders — it has no business in the store. Since
+only *top-level* declarations are rewritten, a closure keeps it plain JS:
+
+```js
+const schedule = (() => {
+  let timer = null                     // inside a function → not reactive
+
+  return () => {
+    clearTimeout(timer)
+    timer = setTimeout(save, 250)
+  }
+})()
+
+$: schedule(draft)                     // re-runs when `draft` changes. Only `draft`
+```
+
+## Effects run before the template exists
+
+`$:` declarations run where they sit, during the script — which is *before* the
+component has rendered any DOM. An effect that reaches for an element gets
+nothing on that first pass, and if none of its dependencies change afterwards it
+never runs again:
+
+```html
+<script :setup>
+  let query = ""
+
+  // runs once, immediately, with no DOM to find - and `query` never changes on
+  // its own, so this is the only time it ever runs
+  $: $self(".search")?.focus()
+</script>
+```
+
+The fix is to do the first pass yourself, after the DOM is there:
+
+```html
+<script :setup>
+  let query = ""
+
+  const highlight = () => {
+    const box = $self(".search")
+    if (!box) return                 // the setup-time pass, before there's any DOM
+    box.classList.toggle("filled", query.length > 0)
+  }
+
+  $: highlight(query)                // keeps it in sync from here on
+
+  await $mounted()
+
+  highlight()                        // the first pass that can actually see the DOM
+</script>
+```
+
+`:mounted` on the tag does the same for a whole script (it behaves as if
+`await $mounted()` were its first line), which is simpler when *nothing* in the
+script needs to run before render.
+
 ## Debugging a script
 
 Setup scripts are compiled with `new Function` — they need `with`, which is a `SyntaxError` inside an ES module — so they aren't part of any bundle and no bundler source map reaches them. To keep them debuggable, each compiled script is named after the component it came from:

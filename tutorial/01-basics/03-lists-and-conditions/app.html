@@ -1,0 +1,22 @@
+<script :setup>
+  let todos = [
+    { id: 1, text: "read the docs", done: true },
+    { id: 2, text: "try the tutorial", done: false },
+    { id: 3, text: "build something", done: false },
+  ]
+
+  $: remaining = todos.filter(todo => !todo.done).length
+</script>
+
+<ul>
+  <li>{{ todo.text }}</li>
+</ul>
+
+<p>...</p>
+
+<style>
+  ul { list-style: none; padding: 0; }
+  li { padding: 0.3em 0; cursor: pointer; user-select: none; }
+  li.done { text-decoration: line-through; opacity: 0.5; }
+  p { color: #59636e; }
+</style>

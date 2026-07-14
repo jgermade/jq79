@@ -1,0 +1,16 @@
+<script :setup>
+  const Stepper = await import("./Stepper.html")
+
+  let last = 0
+</script>
+
+<div class="panel" @changed="last = $event.detail">
+  <Stepper />
+  <Stepper />
+  <p>last value emitted: {{ last }}</p>
+</div>
+
+<style>
+  .panel { display: grid; gap: 0.5em; justify-items: start; }
+  p { margin: 0; color: #59636e; }
+</style>
