@@ -333,6 +333,22 @@ describe("the tutorial app", () => {
     expect(names).toEqual(["Ada", "Linus"])
   })
 
+  it("keeps an exercise's styles inside the preview, nested components included", async () => {
+    const headBefore = document.head.querySelectorAll("style").length
+
+    linkTo(host, "02-components/01-nested-components").click()
+    await settle()
+    await solve(host)
+
+    // the exercise mounts into a shadow root, and so does everything it renders:
+    // Greeting.html's <style> would otherwise land in document.head, where it
+    // can't reach the component it belongs to but can restyle the tutorial
+    const shadowCss = [...previewRoot(host).querySelectorAll("style")].map(el => el.textContent).join("\n")
+
+    expect(shadowCss).toContain("article {")
+    expect(document.head.querySelectorAll("style").length).toBe(headBefore)
+  })
+
   it("switches the editor between an exercise's files, and resets them", async () => {
     linkTo(host, "02-components/01-nested-components").click()
     await settle()

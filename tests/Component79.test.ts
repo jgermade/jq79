@@ -139,6 +139,28 @@ describe("Component79", () => {
     jq79.destroy()
   })
 
+  it("keeps a nested component's styles inside the shadow root its parent rendered into", () => {
+    const child = new Component79(`<b class="c">child</b><style>.c { color: green; }</style>`)
+    const parent = new Component79(
+      `<div class="p"><Child /></div><style>.p { color: blue; }</style>`,
+      { modules: {} }
+    )
+    const stylesBefore = document.head.querySelectorAll("style").length
+
+    parent.mountShadow(host, { Child: child })
+
+    // document.head can't reach into a shadow root: a child's <style> left there
+    // would never style the child, and would restyle the page around it instead
+    expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+
+    const shadowStyles = [...host.shadowRoot!.querySelectorAll("style")].map(el => el.textContent)
+    expect(shadowStyles.some(css => css?.includes(".c { color: green; }"))).toBe(true)
+    expect(host.shadowRoot!.querySelector(".c")?.textContent).toBe("child")
+
+    parent.destroy()
+    expect(host.shadowRoot!.querySelector("style")).toBeNull()
+  })
+
   it("detach() detaches but keeps state, and mount() re-attaches with pending updates applied", () => {
     const jq79 = new Component79(`<div class="m">{{ n }}</div>`).render({ n: 1 }).mount(host)
 

@@ -119,8 +119,13 @@ const findComponentKey = (scope: Record<string, any>, tag: string): string | nul
 // become camelCase. Props stay live: a parent effect re-evaluates each
 // expression and writes it into the child's store. The component variable is
 // reactive too - while it's undefined (e.g. an `await import(...)` still in
-// flight) nothing renders, and the child appears when it resolves
-const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<string, any>, fx: EffectScope): Node => {
+// flight) nothing renders, and the child appears when it resolves.
+// `shadow` is the parent's style mode, carried down the whole render: a child
+// of a shadow-rendered component renders inside that shadow root, so its
+// <style> has to go in there with it - document.head can't reach into a shadow
+// tree, and a style that never applies to its own component would still be
+// restyling the page around it
+const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const anchor = document.createComment(key)
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
@@ -166,8 +171,11 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     const seed = untracked(() =>
       Object.fromEntries(Object.entries(props).map(([name, expr]) => [name, evalExpr(expr, scope)]))
     )
+    // mounting into a fragment attaches no shadow root of its own: a
+    // shadow-rendered child keeps its <style> elements inline, next to the DOM
+    // they style, and the parent's shadow root is what scopes both
     const holder = document.createDocumentFragment()
-    instance.render(seed).mount(holder)
+    ;(shadow ? instance.renderShadow(seed) : instance.render(seed)).mount(holder)
     anchor.parentNode!.insertBefore(holder, anchor.nextSibling)
 
     const syncFx = createEffectScope(scope)
@@ -228,7 +236,7 @@ const createWithScope = (expr: string, scope: Record<string, any>): Record<strin
 // normally. :if/:elseif/:else/:each are handled by renderNodes, which decides
 // *whether*/*how many times* a node is rendered before calling this. Tags
 // matching a PascalCase scope variable render as nested components instead
-const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope): Node => {
+const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   // :with applies to the element's own bindings (@events, :attrs) and its
   // whole subtree. On a :each element the item scope is already in place, so
   // :with="item" works
@@ -236,7 +244,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   const scope = withExpr !== undefined ? createWithScope(withExpr, outerScope) : outerScope
 
   const componentKey = findComponentKey(scope, node.tag)
-  if (componentKey) return renderNestedComponent(componentKey, node, scope, fx)
+  if (componentKey) return renderNestedComponent(componentKey, node, scope, fx, shadow)
 
   const el = document.createElement(node.tag)
 
@@ -252,7 +260,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       const key = findComponentKey(scope, node.tag)
       if (!key) return
       upgraded = true
-      el.replaceWith(renderNestedComponent(key, node, scope, fx))
+      el.replaceWith(renderNestedComponent(key, node, scope, fx, shadow))
     })
   }
 
@@ -287,7 +295,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   } else if (htmlExpr !== undefined) {
     fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(htmlExpr, scope) ?? "")) })
   } else {
-    el.appendChild(renderNodes(node.children, scope, fx))
+    el.appendChild(renderNodes(node.children, scope, fx, shadow))
   }
 
   return el
@@ -297,7 +305,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
 // can be swapped in place without disturbing sibling positions. Only depends
 // on whatever the branch expressions read (e.g. "score"), and skips
 // rebuilding entirely when the active branch hasn't actually changed
-const renderConditional = (branches: ConditionalBranch[], scope: Record<string, any>, fx: EffectScope): Node => {
+const renderConditional = (branches: ConditionalBranch[], scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const anchor = document.createComment("if")
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
@@ -317,7 +325,7 @@ const renderConditional = (branches: ConditionalBranch[], scope: Record<string, 
     if (!next) return
 
     branchFx = createEffectScope(scope)
-    current = renderNode(next.node, scope, branchFx)
+    current = renderNode(next.node, scope, branchFx, shadow)
     anchor.parentNode!.insertBefore(current, anchor.nextSibling)
   })
 
@@ -346,7 +354,7 @@ type EachEntry = { key: any; item: any; scope: Record<string, any>; node: Node; 
 // the first change - add :key for anything that gets reordered or filtered.
 // Each item gets its own scope via Object.create(scope), so `item`/`$index`
 // shadow same-named outer bindings without copying the parent scope's keys
-const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope): Node => {
+const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const match = node.attrs[":each"].match(EACH_PATTERN)
   if (!match) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
 
@@ -382,7 +390,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       existing?.node.parentNode?.removeChild(existing.node)
 
       const itemFx = createEffectScope(scope)
-      return { key, item, scope: itemScope, fx: itemFx, node: renderNode(itemNode, itemScope, itemFx) }
+      return { key, item, scope: itemScope, fx: itemFx, node: renderNode(itemNode, itemScope, itemFx, shadow) }
     })
 
     const nextKeys = new Set(nextEntries.map(entry => entry.key))
@@ -407,7 +415,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
 // renders a list of sibling template nodes (text + elements), grouping
 // consecutive :if/:elseif/:else nodes into a single conditional block
-const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any>, fx: EffectScope): DocumentFragment => {
+const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any>, fx: EffectScope, shadow = false): DocumentFragment => {
   const fragment = document.createDocumentFragment()
   let i = 0
 
@@ -425,7 +433,7 @@ const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any
     }
 
     if (":each" in node.attrs) {
-      fragment.appendChild(renderEach(node, scope, fx))
+      fragment.appendChild(renderEach(node, scope, fx, shadow))
       i++
       continue
     }
@@ -455,19 +463,19 @@ const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any
       const elseNode = nextBranch(":else")
       if (elseNode) branches.push({ node: elseNode })
 
-      fragment.appendChild(renderConditional(branches, scope, fx))
+      fragment.appendChild(renderConditional(branches, scope, fx, shadow))
       continue
     }
 
-    fragment.appendChild(renderNode(node, scope, fx))
+    fragment.appendChild(renderNode(node, scope, fx, shadow))
     i++
   }
 
   return fragment
 }
 
-export const renderComponent = (component: Component79, data: ReactiveDeepData<Record<string, any>>): Node =>
-  renderNodes(component.template, data, createEffectScope(data))
+export const renderComponent = (component: Component79, data: ReactiveDeepData<Record<string, any>>, shadow = false): Node =>
+  renderNodes(component.template, data, createEffectScope(data), shadow)
 
 type ComponentParts = {
   template: TemplateNode[]
@@ -950,7 +958,7 @@ export class Component79 {
     })
 
     const content = document.createDocumentFragment()
-    content.append(this.startMarker, renderNodes(this.template, store, fx), this.endMarker)
+    content.append(this.startMarker, renderNodes(this.template, store, fx, shadow), this.endMarker)
     this.content = content
 
     if (shadow) {

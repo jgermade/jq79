@@ -86,24 +86,28 @@ const ROOT_CSS = `
 `
 
 // shared by the markdown pages and the (istanbul-generated) coverage report, so
-// the background/font are set on the header itself rather than inherited
+// the background/font are set on the header itself rather than inherited.
+// Every selector is anchored at `body > header` - the page's own chrome, always
+// the first child of <body>. A bare `header` would reach into whatever the page
+// mounts below it: the tutorial's tab bar is a <header> too, and used to come out
+// wearing the site header's dark background
 const HEADER_CSS = `
-header { background: var(--body-bg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-header nav { max-width: 860px; margin: 0 auto; padding: 0 1.5rem; height: 2.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
+body > header { background: var(--body-bg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+body > header nav { max-width: 860px; margin: 0 auto; padding: 0 1.5rem; height: 2.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
 /* 1.5rem is the tallest nav item (the logos), so the wordmark matches it: the
    header keeps its height whether .start is text or the GitHub image */
-header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; line-height: 1.5rem; }
-header nav .github { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
-header nav .github:hover { opacity: 1; }
-header nav .github img { height: 100%; display: block; }
-header nav .coverage { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
-header nav .coverage:hover { opacity: 1; }
-header nav .coverage img { height: 100%; display: block; }
-header nav .npm { display: inline-block; height: 1.2rem; opacity: 0.8; transition: opacity 0.1s; }
-header nav .npm:hover { opacity: 1; }
-header nav .npm img { height: 100%; display: block; }
-header a { color: white; text-decoration: none; }
-header a:hover { text-decoration: underline; }
+body > header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; line-height: 1.5rem; }
+body > header nav .github { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
+body > header nav .github:hover { opacity: 1; }
+body > header nav .github img { height: 100%; display: block; }
+body > header nav .coverage { display: inline-block; height: 1.5rem; opacity: 0.8; transition: opacity 0.1s; }
+body > header nav .coverage:hover { opacity: 1; }
+body > header nav .coverage img { height: 100%; display: block; }
+body > header nav .npm { display: inline-block; height: 1.2rem; opacity: 0.8; transition: opacity 0.1s; }
+body > header nav .npm:hover { opacity: 1; }
+body > header nav .npm img { height: 100%; display: block; }
+body > header a { color: white; text-decoration: none; }
+body > header a:hover { text-decoration: underline; }
 `
 
 // the istanbul report only ships light styles, so pin the page to the light

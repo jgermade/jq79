@@ -188,14 +188,18 @@
     border: 0;
     border-radius: 6px;
     background: none;
-    color: var(--muted);
     font: inherit;
     font-size: 0.85rem;
     cursor: pointer;
   }
-  .tab:hover, .ghost:hover { background: var(--code-bg); color: var(--fg); }
-  .tab.active { background: var(--code-bg); color: var(--fg); font-weight: 600; }
+  /* a tab names a file the user is about to read, so it stays legible: --muted
+     is dim enough on the editor's chrome that the file you aren't in reads as
+     disabled rather than merely inactive */
+  .tab { color: var(--fg); opacity: 0.65; }
+  .tab:hover { background: var(--code-bg); opacity: 1; }
+  .tab.active { background: var(--code-bg); opacity: 1; font-weight: 600; }
   .ghost { color: var(--accent); }
+  .ghost:hover { background: var(--code-bg); }
 
   .pane {
     position: relative;
