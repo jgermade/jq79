@@ -29,6 +29,24 @@ marked.use(
   })
 )
 
+// marked emits headings with no id, so the cross-document anchor links the docs
+// already use (components.md#styles, vite-plugin.md#style-lang--css-preprocessors)
+// landed nowhere once rendered - they only worked on GitHub, which slugs headings
+// itself. Same rules as GitHub's: lowercase, drop anything that isn't a word
+// character/space/hyphen, then one hyphen per remaining space (an em dash leaves
+// the spaces on either side of it behind, hence the double hyphens)
+const slug = text =>
+  text.toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s/g, "-")
+
+marked.use({
+  renderer: {
+    heading(token) {
+      const content = this.parser.parseInline(token.tokens)
+      return `<h${token.depth} id="${slug(token.text)}">${content}</h${token.depth}>\n`
+    },
+  },
+})
+
 const SITE = "site"
 const REPO_URL = "https://github.com/jgermade/jq79"
 const NPM_URL = "https://www.npmjs.com/package/jq79"
@@ -71,7 +89,7 @@ const ROOT_CSS = `
 // the background/font are set on the header itself rather than inherited
 const HEADER_CSS = `
 header { background: var(--body-bg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-header nav { max-width: 860px; margin: 0 auto; padding: 0.7rem 1.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
+header nav { max-width: 860px; margin: 0 auto; padding: 0 1.5rem; height: 2.5rem; display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; }
 /* 1.5rem is the tallest nav item (the logos), so the wordmark matches it: the
    header keeps its height whether .start is text or the GitHub image */
 header nav .start { margin-right: auto; font-weight: bold; font-size: 1.2rem; line-height: 1.5rem; }
