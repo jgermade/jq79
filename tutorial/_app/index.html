@@ -1,0 +1,54 @@
+<!--
+  The tutorial's shell page - the only page of the site that isn't rendered from
+  markdown, so it's the only one written by hand. It holds nothing but the mount:
+  everything on screen is Tutorial.html, a jq79 component fetched at runtime, and
+  the exercise the user is editing is compiled by the very same Component79 this
+  page imports. hljs rides along as render data - the component colors the editor
+  and the solution diff with it.
+
+  The `{{...}}` holes are filled by scripts/build-site.mjs with what this page
+  shares with the generated ones (the palette, the header nav, the favicons, the
+  path of the bundled highlighter), so the shared chrome is written once. The
+  file is a template, not a page: it is *not* copied to site/ as-is.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tutorial · jq79</title>
+{{icons}}
+<style>
+/* the site's palette, its header chrome, and the code-token colors the markdown
+   pages are highlighted with - the same classes hljs emits in the browser, so
+   the prose, the editor and the diff are dressed by one stylesheet */
+{{styles}}
+
+* { box-sizing: border-box; }
+body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--body-bg); color: var(--fg); }
+/* the tutorial lays itself out against the viewport minus the header, so #app is
+   the flex-grown remainder rather than a height of its own */
+#app { flex: 1; min-height: 0; }
+#app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; color: #fff; }
+</style>
+</head>
+<body>
+{{header}}
+<div id="app"></div>
+<script type="module">
+import { Component79 } from "../jq79.js"
+
+try {
+  const [sections, app, hljs] = await Promise.all([
+    fetch("./tutorial.json").then(response => response.json()),
+    Component79.fetch("./Tutorial.html"),
+    import("../{{hljs}}").then(module => module.default),
+  ])
+  app.mount("#app", { sections, Component79, hljs })
+} catch (failure) {
+  document.querySelector("#app").innerHTML =
+    '<p class="failed">the tutorial failed to load: ' + failure.message + '</p>'
+}
+</script>
+</body>
+</html>

@@ -199,18 +199,20 @@ const siteHeader = root => `<header><nav>
   </a>
 </nav></header>`
 
+const siteIcons = root => `<link rel="icon" type="image/png" href="${root}assets/favicon-96x96.png" sizes="96x96" />
+<link rel="icon" type="image/svg+xml" href="${root}assets/favicon.svg" />
+<link rel="shortcut icon" href="${root}assets/favicon.ico" />
+<link rel="apple-touch-icon" sizes="180x180" href="${root}assets/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-title" content="jq79" />
+<!--<link rel="manifest" href="${root}assets/site.webmanifest" />-->`
+
 const page = (title, body, root) => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
-<link rel="icon" type="image/png" href="${root}assets/favicon-96x96.png" sizes="96x96" />
-<link rel="icon" type="image/svg+xml" href="${root}assets/favicon.svg" />
-<link rel="shortcut icon" href="${root}assets/favicon.ico" />
-<link rel="apple-touch-icon" sizes="180x180" href="${root}assets/apple-touch-icon.png" />
-<meta name="apple-mobile-web-app-title" content="jq79" />
-<!--<link rel="manifest" href="${root}assets/site.webmanifest" />-->
+${siteIcons(root)}
 <style>${PAGE_CSS}</style>
 </head>
 <body>
@@ -340,55 +342,27 @@ const bundleHljs = async () => {
   await cp(cached, posix.join(SITE, HLJS_BUNDLE))
 }
 
-const TUTORIAL_CSS = `
-${ROOT_CSS}
-* { box-sizing: border-box; }
-body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--body-bg); color: var(--fg); }
-${HEADER_CSS}
-${HLJS_CSS}
-#app { flex: 1; min-height: 0; }
-#app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; color: #fff; }
-`
+// The shell the tutorial mounts into is a file, tutorial/_app/index.html, rather
+// than a template literal here: it's a page, so it's written as one. What it
+// shares with the pages this script generates - the palette, the header nav, the
+// favicons, the path the bundled highlighter lands on - it leaves as `{{holes}}`
+// for us to fill, and its leading comment (addressed to whoever edits it) is
+// dropped on the way out
+const SHELL = posix.join(TUTORIAL, "_app", "index.html")
 
-// the app shell: everything else (layout, editor, preview) is Tutorial.html,
-// a jq79 component fetched at runtime - the tutorial runs on the library it
-// teaches, and the exercise the user is editing is compiled by the very same
-// Component79 the page imports. hljs rides along the same way, as render data:
-// the component uses it to color the editor and the solution diff
-const tutorialPage = () => `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tutorial · jq79</title>
-<link rel="icon" type="image/png" href="../assets/favicon-96x96.png" sizes="96x96" />
-<link rel="icon" type="image/svg+xml" href="../assets/favicon.svg" />
-<link rel="shortcut icon" href="../assets/favicon.ico" />
-<link rel="apple-touch-icon" sizes="180x180" href="../assets/apple-touch-icon.png" />
-<meta name="apple-mobile-web-app-title" content="jq79" />
-<style>${TUTORIAL_CSS}</style>
-</head>
-<body>
-${siteHeader("../")}
-<div id="app"></div>
-<script type="module">
-import { Component79 } from "../jq79.js"
-
-try {
-  const [sections, app, hljs] = await Promise.all([
-    fetch("./tutorial.json").then(response => response.json()),
-    Component79.fetch("./Tutorial.html"),
-    import("../${HLJS_BUNDLE}").then(module => module.default),
-  ])
-  app.mount("#app", { sections, Component79, hljs })
-} catch (failure) {
-  document.querySelector("#app").innerHTML =
-    '<p class="failed">the tutorial failed to load: ' + failure.message + '</p>'
+const tutorialPage = async () => {
+  const template = (await readFile(SHELL, "utf8")).replace(/^<!--[\s\S]*?-->\n/, "")
+  const holes = {
+    icons: siteIcons("../"),
+    styles: `${ROOT_CSS}${HEADER_CSS}${HLJS_CSS}`,
+    header: siteHeader("../"),
+    hljs: HLJS_BUNDLE,
+  }
+  return template.replace(/\{\{(\w+)\}\}/g, (match, name) => {
+    if (!(name in holes)) throw new Error(`${SHELL}: no such hole as ${match}`)
+    return holes[name]
+  })
 }
-</script>
-</body>
-</html>
-`
 
 // --- assemble ----------------------------------------------------------------
 
@@ -410,9 +384,13 @@ for (const file of await readdir("docs")) {
 const tutorial = await buildTutorial()
 await bundleHljs()
 await mkdir(posix.join(SITE, TUTORIAL), { recursive: true })
-await cp(posix.join(TUTORIAL, "_app"), posix.join(SITE, TUTORIAL), { recursive: true })
+await cp(posix.join(TUTORIAL, "_app"), posix.join(SITE, TUTORIAL), {
+  recursive: true,
+  // the shell is a template, not a page: it goes out filled in, below
+  filter: source => !/[\\/]_app[\\/]index\.html$/.test(source),
+})
 await writeFile(posix.join(SITE, TUTORIAL, "tutorial.json"), JSON.stringify(tutorial))
-await writeFile(posix.join(SITE, TUTORIAL, "index.html"), tutorialPage())
+await writeFile(posix.join(SITE, TUTORIAL, "index.html"), await tutorialPage())
 
 // coverage report + badges
 const summary = JSON.parse(await readFile("coverage/coverage-summary.json", "utf8"))
