@@ -51,12 +51,35 @@ const elementToAST = (el: Element): TemplateNode => ({
 // precise instead of "read everything up front". `extras` are passed as
 // function parameters (outside the `with`), so scope keys still win but names
 // like $event resolve when the scope doesn't shadow them
+//
+// Compiled functions are cached: an expression is re-evaluated on every effect
+// run - once per interpolation, once per :each item - while the set of distinct
+// expressions is fixed by the source. The `extras` names are part of the key,
+// not just the expression: they become the function's parameters, so the same
+// expression compiled with and without $event is two different functions. A
+// syntactically invalid expression caches its failure (null) so it isn't
+// recompiled, and rethrown as undefined, exactly as before
+const compiled = new Map<string, Function | null>()
+
+const compileExpr = (expr: string, params: string[]): Function | null => {
+  const key = `${params.join(",")}|${expr}`
+  let fn = compiled.get(key)
+  if (fn === undefined) {
+    try {
+      fn = new Function("$scope", ...params, `with ($scope) { return (${expr}); }`)
+    } catch {
+      fn = null // a syntax error: it will never compile, so don't try again
+    }
+    compiled.set(key, fn)
+  }
+  return fn
+}
+
 const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
+  const fn = compileExpr(expr, extras ? Object.keys(extras) : [])
+  if (!fn) return undefined
   try {
-    return new Function("$scope", ...Object.keys(extras ?? {}), `with ($scope) { return (${expr}); }`)(
-      scope,
-      ...Object.values(extras ?? {})
-    )
+    return fn(scope, ...(extras ? Object.values(extras) : []))
   } catch {
     return undefined
   }
