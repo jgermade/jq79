@@ -235,6 +235,193 @@ const staticImportToAwait = (clause: string | undefined, spec: string, n: number
   return `const ${bindings.join(", ")}`
 }
 
+// ---------------------------------------------------------------------------
+// the component's prop signature
+//
+// A component declares the props it takes as a destructuring pattern, in the
+// place each script mode already puts its inputs: the `:setup` attribute's
+// value, or the factory's *first* parameter (the ctx moved to the second).
+// Position is fixed, so the signature is read straight from the source string -
+// no parser, no execution - and the runtime can seed the defaults on the store
+// before the first render, which is what makes them reach the template even in
+// factory mode (where JS would only apply them inside the function body).
+//
+//   <script :setup="{ label = 'Total', step = 1 }">
+//   export default ({ label = "Total" }, { $data }) => {}
+//
+// An object pattern *is* the declaration; anything else (`_`, a plain
+// identifier, no attribute at all) declares nothing and stays permissive.
+// ---------------------------------------------------------------------------
+
+export type PropDecl = { name: string; default?: string }
+
+const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
+
+// index of the first `ch` at bracket depth 0, skipping strings and comments
+const indexOfTopLevel = (src: string, ch: string): number => {
+  let depth = 0
+  let i = 0
+  while (i < src.length) {
+    const c = src[i]
+    if (c === "'" || c === '"' || c === "`") { i = skipString(src, i); continue }
+    if (c === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
+    if (c === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if ("([{".includes(c)) depth++
+    else if (")]}".includes(c)) depth--
+    else if (depth === 0 && c === ch) return i
+    i++
+  }
+  return -1
+}
+
+const splitTopLevel = (src: string): string[] => {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  let i = 0
+  while (i <= src.length) {
+    const ch = src[i]
+    if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); continue }
+    if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
+    if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if (ch !== undefined && "([{".includes(ch)) depth++
+    else if (ch !== undefined && ")]}".includes(ch)) depth--
+    else if (i === src.length || (ch === "," && depth === 0)) {
+      const part = src.slice(start, i).trim()
+      if (part) parts.push(part)
+      start = i + 1
+    }
+    i++
+  }
+  return parts
+}
+
+// the `=` that opens a default value: the first one at depth 0 that isn't part
+// of `==`/`===` or an arrow's `=>` (so `{ format = a => a }` keeps its default)
+const defaultAssignIndex = (src: string): number => {
+  let from = 0
+  while (from < src.length) {
+    const at = indexOfTopLevel(src.slice(from), "=")
+    if (at === -1) return -1
+    const i = from + at
+    if (src[i + 1] !== "=" && src[i + 1] !== ">" && src[i - 1] !== "=" && src[i - 1] !== "!") return i
+    from = i + 1
+  }
+  return -1
+}
+
+// a destructuring pattern -> the props it declares. null means "no signature":
+// the pattern isn't an object one (`_`, `props`, nothing at all), so the
+// component declares nothing and keeps the permissive, undeclared behavior.
+// `{}` parses to [] - a closed signature that declares zero props
+export const parsePropsPattern = (pattern: string | undefined): PropDecl[] | null => {
+  const src = (pattern ?? "").trim()
+  if (!src.startsWith("{")) return null
+
+  // to the `}` that closes the pattern, so a parameter's own default value
+  // (`({ label } = {})`) is left out of it
+  let depth = 0
+  let close = 0
+  while (close < src.length) {
+    const ch = src[close]
+    if (ch === "'" || ch === '"' || ch === "`") { close = skipString(src, close); continue }
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch) && --depth === 0) break
+    close++
+  }
+  if (close >= src.length) return null // unbalanced: not a pattern we can read
+
+  const props: PropDecl[] = []
+  for (const part of splitTopLevel(src.slice(1, close))) {
+    if (part.startsWith("...")) continue // a rest element names no prop
+    const assign = defaultAssignIndex(part)
+    const named = assign === -1 ? part : part.slice(0, assign)
+    const fallback = assign === -1 ? undefined : part.slice(assign + 1).trim()
+    // `{ user: { id } }` and `{ user: renamed }` both declare `user`: what the
+    // store holds is the key, whatever the pattern binds it to
+    const colon = indexOfTopLevel(named, ":")
+    const name = (colon === -1 ? named : named.slice(0, colon)).trim()
+    if (!IDENTIFIER_RE.test(name)) continue
+    props.push(fallback === undefined ? { name } : { name, default: fallback })
+  }
+  return props
+}
+
+// index just past a top-level `export default`, or -1
+const findExportDefault = (src: string): number => {
+  let i = 0
+  let depth = 0
+  let atStatementStart = true
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); atStatementStart = false; continue }
+    if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
+    if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+
+    if (ch === "e" && depth === 0 && atStatementStart && (i === 0 || !/[\w$.]/.test(src[i - 1]))) {
+      EXPORT_DEFAULT_RE.lastIndex = i
+      const found = EXPORT_DEFAULT_RE.exec(src)
+      if (found) return i + found[0].length
+    }
+
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch)) depth = Math.max(0, depth - 1)
+    if (ch === "\n" || ch === ";" || ch === "}") atStatementStart = true
+    else if (!/\s/.test(ch)) atStatementStart = false
+    i++
+  }
+  return -1
+}
+
+const ASYNC_RE = /^async(?![\w$])/
+const FUNCTION_RE = /^function(?![\w$])\s*\*?\s*[A-Za-z_$][\w$]*|^function(?![\w$])\s*\*?/
+
+// source text of the exported function's first parameter, or null when there
+// is no parameter list to read (`export default Factory`, `export default
+// props => ...`, an exported object) - all of which declare nothing
+const firstParameterSource = (src: string): string | null => {
+  const start = findExportDefault(src)
+  if (start === -1) return null
+
+  let i = skipToToken(src, start)
+  const rest = src.slice(i)
+  if (ASYNC_RE.test(rest)) i = skipToToken(src, i + "async".length)
+  const fn = FUNCTION_RE.exec(src.slice(i))
+  if (fn) i = skipToToken(src, i + fn[0].length)
+  if (src[i] !== "(") return null
+
+  // the parameter list runs to the `)` that closes this `(`
+  let depth = 0
+  let end = i
+  while (end < src.length) {
+    const ch = src[end]
+    if (ch === "'" || ch === '"' || ch === "`") { end = skipString(src, end); continue }
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch) && --depth === 0) break
+    end++
+  }
+  return splitTopLevel(src.slice(i + 1, end))[0] ?? ""
+}
+
+// the props declared by a factory script's first parameter. Throws the
+// migration error when it finds the pre-0.4 signature there - the ctx used to
+// be the first parameter, and the change is silent otherwise ($data would just
+// come back undefined). `$` is what tells them apart: what carries one comes
+// from the library, what doesn't comes from the parent, everywhere in jq79
+export const parseFactoryProps = (src: string): PropDecl[] | null => {
+  const first = firstParameterSource(src)
+  if (first === null) return null
+  const props = parsePropsPattern(first)
+  const ctxName = props?.find(prop => prop.name.startsWith("$"))?.name
+  if (ctxName) {
+    throw new Error(
+      `jq79: the factory signature is (props, ctx), so \`${ctxName}\` can't be destructured from the first parameter. ` +
+      `Write \`export default (props, { ${ctxName} }) => …\`, or \`_\` in place of props if the component takes none.`
+    )
+  }
+  return props
+}
+
 // rewrites a factory script into a Function body, or returns null when the
 // script has no top-level `export default` (i.e. it's a regular setup script)
 export const transformFactoryScript = (src: string): string | null => {

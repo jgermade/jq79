@@ -8,7 +8,7 @@ describe("factory scripts (<script> with export default)", () => {
   it("a synchronous factory runs before the first render", () => {
     const component = new Component79(`
       <script>
-        export default ({ $data }) => {
+        export default (_, { $data }) => {
           $data.count = 1
           return { label: "hi" }
         }
@@ -25,7 +25,7 @@ describe("factory scripts (<script> with export default)", () => {
   it("mutations through $data update the DOM reactively", async () => {
     const component = new Component79(`
       <script>
-        export default ({ $data }) => {
+        export default (_, { $data }) => {
           $data.n = 1
           setTimeout(() => { $data.n = 2 })
         }
@@ -44,7 +44,7 @@ describe("factory scripts (<script> with export default)", () => {
   it("$effect recomputes derived values", async () => {
     const component = new Component79(`
       <script>
-        export default ({ $data, $effect }) => {
+        export default (_, { $data, $effect }) => {
           $data.count = 2
           $effect(() => { $data.double = $data.count * 2 })
           setTimeout(() => { $data.count = 5 })
@@ -83,7 +83,7 @@ describe("factory scripts (<script> with export default)", () => {
     const heard: any[] = []
     const component = new Component79(`
       <script>
-        export default ({ $emit }) => { $emit("ready", 42) }
+        export default (_, { $emit }) => { $emit("ready", 42) }
       </script>
       <p></p>
     `)
@@ -98,7 +98,7 @@ describe("factory scripts (<script> with export default)", () => {
   it("a :mounted factory runs after attach and can reach its own DOM", async () => {
     const component = new Component79(`
       <script :mounted>
-        export default ({ $self }) => { $self(".target").textContent = "mounted!" }
+        export default (_, { $self }) => { $self(".target").textContent = "mounted!" }
       </script>
       <p class="target">waiting</p>
     `)

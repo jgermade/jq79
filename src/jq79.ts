@@ -2,7 +2,7 @@
 import { $, $$, $create, sanitizeHTML } from "./dom"
 import { $reactive, untracked, createEffectScope } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
-import { transformSetupScript, transformFactoryScript } from "./transform"
+import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
 
 export { $, $$, $create } from "./dom"
 export { $reactive } from "./reactive"
@@ -763,6 +763,25 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
   result.catch(error => console.error("jq79: error in :setup script", error))
 }
 
+// puts a component's declared props on the store, before any script runs and
+// before the first render: the names, so the template can bind to them even
+// when the parent passes nothing, and the defaults, so it binds to something.
+//
+// A prop the parent *did* pass is already on the store (render() seeds it), so
+// a default only fills an `undefined` - which is also what JS destructuring
+// does with the same pattern, so both modes agree. It happens once, at setup:
+// re-applying a default later would need an effect that reads and writes the
+// same key, and that effect would wake itself forever.
+//
+// `null` props means the component declared no signature at all, which is not
+// the same as declaring an empty one: it keeps today's permissive behavior
+const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
+  props?.forEach(({ name, default: expr }) => {
+    if (store[name] !== undefined) return
+    store[name] = expr === undefined ? undefined : evalExpr(expr, store)
+  })
+}
+
 // default-import interop for factory scripts: real modules expose .default,
 // while importing an .html component resolves to the Component79 itself
 const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.default : mod)
@@ -776,7 +795,7 @@ const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.def
 // resolve later and the template updates reactively
 const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}) => {
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
-  const $__exports: { default?: (ctx: Record<string, any>) => any; done?: boolean } = {}
+  const $__exports: { default?: (props: Record<string, any>, ctx: Record<string, any>) => any; done?: boolean } = {}
   const result: Promise<void> = new Function(
     "$__exports", "$__default", "$__import", ...Object.keys(helpers),
     `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()${sourceUrlComment(at.filename, at.index ?? 0)}`
@@ -795,7 +814,10 @@ const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run
     // the sync path is invoked straight from render(), so a throwing factory
     // must be caught here too - not just by the `result` rejection handler
     try {
-      const returned = factory({ $data: scope, $effect: effect, ...instanceHelpers })
+      // props first, ctx second. Both are the store: the pattern destructures
+      // the props it declared (copying, as destructuring does - $props is the
+      // live view for a primitive the parent reassigns later)
+      const returned = factory(scope, { $data: scope, $props: scope, $effect: effect, ...instanceHelpers })
       if (returned instanceof Promise) returned.then(merge).catch(logError)
       else merge(returned)
     } catch (error) {
@@ -1100,11 +1122,13 @@ export class Component79 {
       const at: ScriptLocation = { filename: this.filename, index }
       const factoryCode = transformFactoryScript(script.content)
       if (factoryCode !== null) {
+        declareProps(store, parseFactoryProps(script.content))
         const body = ":mounted" in script.attrs ? defer(factoryCode) : factoryCode
         runFactoryScript(body, store, fx.effect, instanceHelpers, $import, at)
         return
       }
       const { vars, code } = transformSetupScript(script.content)
+      declareProps(store, parsePropsPattern(script.attrs[":setup"]))
       // pre-declare script vars on the store so `with` resolves assignments
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })

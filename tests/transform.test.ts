@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { transformSetupScript, transformFactoryScript } from "../src/transform"
+import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps } from "../src/transform"
 
 // the scanner is not a parser: on malformed input it must still terminate and
 // hand the (broken) source to the JS engine, which reports the real SyntaxError
@@ -127,5 +127,70 @@ describe("transformFactoryScript", () => {
 
     expect(code).toContain(`await $__import("./styles.css")`)
     expect(code).not.toContain("const  =")
+  })
+})
+
+describe("parsePropsPattern", () => {
+  it("reads names and defaults", () => {
+    expect(parsePropsPattern("{ label = 'Total', step = 1, user }")).toEqual([
+      { name: "label", default: "'Total'" },
+      { name: "step", default: "1" },
+      { name: "user" },
+    ])
+  })
+
+  it("declares nothing when the pattern isn't an object one", () => {
+    expect(parsePropsPattern("_")).toBeNull()
+    expect(parsePropsPattern("props")).toBeNull()
+    expect(parsePropsPattern(undefined)).toBeNull()
+    expect(parsePropsPattern("")).toBeNull()
+  })
+
+  it("reads `{}` as a closed signature: zero props, not an absent one", () => {
+    expect(parsePropsPattern("{}")).toEqual([])
+  })
+
+  it("splits on commas the default values own", () => {
+    expect(parsePropsPattern("{ items = [1, 2], fn = (a, b) => a + b, text = 'a, b' }")).toEqual([
+      { name: "items", default: "[1, 2]" },
+      { name: "fn", default: "(a, b) => a + b" },
+      { name: "text", default: "'a, b'" },
+    ])
+  })
+
+  it("stops at the pattern's own brace, ignoring a parameter default", () => {
+    expect(parsePropsPattern("{ label = 'Total' } = {}")).toEqual([{ name: "label", default: "'Total'" }])
+  })
+
+  it("names the key, whatever the pattern binds it to", () => {
+    expect(parsePropsPattern("{ user: renamed, config: { theme }, ...rest }")).toEqual([
+      { name: "user" },
+      { name: "config" },
+    ])
+  })
+})
+
+describe("parseFactoryProps", () => {
+  it("reads the first parameter, not the ctx", () => {
+    expect(parseFactoryProps(`export default ({ label = "Total" }, { $data }) => {}`)).toEqual([
+      { name: "label", default: '"Total"' },
+    ])
+  })
+
+  it("reads an async factory, and a function-expression one", () => {
+    expect(parseFactoryProps(`export default async ({ user }) => {}`)).toEqual([{ name: "user" }])
+    expect(parseFactoryProps(`export default function ({ user }, ctx) {}`)).toEqual([{ name: "user" }])
+  })
+
+  it("declares nothing when the first parameter isn't a pattern", () => {
+    expect(parseFactoryProps(`export default (_, { $data }) => {}`)).toBeNull()
+    expect(parseFactoryProps(`export default () => ({})`)).toBeNull()
+    expect(parseFactoryProps(`const f = () => {}\nexport default f`)).toBeNull()
+    expect(parseFactoryProps(`let count = 1`)).toBeNull()
+  })
+
+  it("throws the migration error when the ctx is destructured as the first parameter", () => {
+    expect(() => parseFactoryProps(`export default ({ $data, $effect }) => {}`))
+      .toThrow(/the factory signature is \(props, ctx\)/)
   })
 })

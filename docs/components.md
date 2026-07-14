@@ -26,6 +26,65 @@ jq79.detach()
 - `jq79.data` is the live reactive store — mutate it from outside and the DOM follows.
 - `on(eventName, (event, payload) => …)` hears the events the component emits with `$emit` — see [setup scripts](setup-scripts.md).
 
+## Props
+
+A component declares the props it takes as a destructuring pattern, written where each script mode already puts its inputs — the `:setup` attribute's value, or the factory's **first parameter**:
+
+```html
+<!-- setup mode -->
+<script :setup="{ label = 'Total', step = 1 }">
+  let count = 0
+  const inc = () => { count += step }
+</script>
+```
+
+```html
+<!-- factory mode: props first, context second -->
+<script>
+export default ({ label = "Total", step = 1 }, { $data }) => {
+  $data.count = 0
+  const inc = () => { $data.count += step }
+  return { inc }
+}
+</script>
+```
+
+One rule explains where any name comes from, and the codebase follows it without exception: **what carries a `$` comes from the library; what doesn't comes from the parent.**
+
+The signature declares the prop names, pre-declares them on the store (so the template can bind to them even when the parent passes nothing), and seeds their defaults **before the first render**. That last part is why the runtime reads the pattern from the source rather than leaving it to JS: in factory mode a default JS applies would only exist inside the function body, and the template would still see `undefined`.
+
+A default fills a prop that is `undefined` — the parent's value always wins — and it is applied **once, at setup**. If the parent later sets the prop to `undefined`, the default does not come back.
+
+### The empty slot is part of the declaration
+
+Position is fixed, so a factory that takes no props still leaves the hole — and which hole it leaves means something:
+
+```js
+export default (_,  { $effect }) => {}   // declares nothing: permissive, takes whatever the parent passes
+export default ({}, { $effect }) => {}   // a closed signature: this component has no props
+export default ({ user })        => {}   // only props — don't write a ctx you don't use
+```
+
+Same distinction in setup mode: `<script :setup>` declares nothing, `<script :setup="{}">` declares zero props. A component with no signature behaves exactly as it always has.
+
+### Destructuring copies (the one asymmetry)
+
+In setup mode a prop name is never a lexical binding — it's a store entry, and `with` re-resolves it on every read, so it stays live.
+
+In factory mode the pattern creates **real JS bindings**, and destructuring copies:
+
+```js
+export default ({ cart, discount = 0 }, { $props, $effect }) => {
+  cart.items.push(item)                 // ✅ live: you copied a reference to the proxy
+  $effect(() => log(discount))          // ❌ frozen: you copied a number
+  $effect(() => log($props.discount))   // ✅ live: read through the object
+}
+```
+
+Objects survive it (every read of `cart.x` still goes through the proxy). Only a **primitive the parent reassigns** goes stale — the parent writes the store key, and your local copy never hears about it. `$props` is the same store under a different name: the live view, for when you need one.
+
+Making the destructured names themselves reactive is what Svelte 5 and Vue 3.5 do, and it needs what they have — a compiler. jq79 doesn't ship a JS parser to the browser, so it doesn't pretend to.
+
 ## Styles
 
 A `<style>` block goes into `document.head` as-is, shared globally. Add `scoped` and its rules only reach the elements this component rendered:

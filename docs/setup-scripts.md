@@ -13,6 +13,7 @@
 </script>
 ```
 
+- The `:setup` attribute's value is the component's **prop signature**: `:setup="{ fname, lname = 'Lovelace' }"` declares the props the parent passes, with optional defaults, and the defaults are on the store before the first render. It's a declaration, not a comment — see [props](components.md#props).
 - Top-level `let` / `var` / `const` declarations become properties of the reactive store (also reachable from outside via `jq79.data`).
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
@@ -189,11 +190,11 @@ that editors, linters and type-checkers understand with no configuration:
 <script>
 import UserCard from "./UserCard.html"
 
-export default ({ $data, $effect, $emit }) => {
+export default ({ step = 1 }, { $data, $effect, $emit }) => {
   $data.count = 0
   $effect(() => { $data.double = $data.count * 2 })
 
-  const inc = () => { $data.count++ }
+  const inc = () => { $data.count += step }
 
   return { UserCard, inc }
 }
@@ -203,11 +204,16 @@ export default ({ $data, $effect, $emit }) => {
 <UserCard></UserCard>
 ```
 
-The default export is called with the instance context and may be `async`:
+The default export is called with **the props first and the instance context second**, and may be `async`. The first parameter is the component's [prop signature](components.md#props) — the runtime reads it from the source, so its defaults reach the template even before an async factory has run. A factory that takes no props writes `_` (permissive) or `{}` (a closed signature) in its place; the slot is where the tooling looks.
+
+The context is everything the library provides — the `$` is what says so:
 
 - `$data` — the reactive store (props included). **Reactivity is explicit
   here**: there's no `with` magic and no `$:` labels, so a local `count++`
   changes nothing — write `$data.count++`.
+- `$props` — the same store, under the name that says what you're reading.
+  Destructuring copies, so a **primitive the parent reassigns** goes stale in
+  your local binding; read it through `$props` when you need the live value.
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
 - `$emit`, `$mounted`, `$self`, `$$self` — same as in setup scripts. `$`,
@@ -228,6 +234,13 @@ Details worth knowing:
   script. Static imports and top-level `await` make it async — the template
   renders first and updates when the factory's result lands.
 - `:mounted` on the tag works the same way: the whole script waits for mount.
-- Detection is backwards-safe: `export default` was a syntax error in setup
-  scripts, so no existing component changes behavior. `:setup` isn't going
+- Mode detection is backwards-safe: `export default` was a syntax error in setup
+  scripts, so no setup script can turn into a factory. `:setup` isn't going
   anywhere — the two styles coexist, even within one component.
+- **Breaking change (0.4):** the ctx used to be the factory's *first* parameter.
+  It's now the second, and props are the first. Arity can't tell the two apart
+  (`({ user })` is a valid signature under either), so the runtime looks at the
+  pattern instead: a `$`-prefixed name destructured from the first parameter
+  throws an explicit migration error rather than handing you an `undefined`
+  `$data`. Rewrite `({ $data }) => …` as `(_, { $data }) => …`, or name the props
+  the component actually takes.

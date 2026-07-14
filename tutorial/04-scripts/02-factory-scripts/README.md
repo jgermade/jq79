@@ -5,11 +5,13 @@ module** instead of a setup script — standard JavaScript that editors, linters
 and type-checkers understand with no configuration. No `with`, no `$:` labels,
 no rewriting.
 
-The default export is called with the instance context:
+The default export is called with **the props first and the instance context
+second** — what carries a `$` comes from the library, what doesn't comes from the
+parent. A factory that takes no props leaves `_` in the slot:
 
 ```html
 <script>
-export default ({ $data, $effect }) => {
+export default (_, { $data, $effect }) => {
   $data.count = 0
 
   $effect(() => { $data.double = $data.count * 2 })

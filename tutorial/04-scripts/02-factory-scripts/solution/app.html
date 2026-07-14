@@ -1,5 +1,5 @@
 <script>
-export default ({ $data, $effect }) => {
+export default (_, { $data, $effect }) => {
   $data.count = 0
 
   $effect(() => { $data.double = $data.count * 2 })
