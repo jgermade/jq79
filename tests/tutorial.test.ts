@@ -162,8 +162,8 @@ describe("tutorial", () => {
     expect(host.shadowRoot?.querySelector("p")?.textContent).toBe("all done!")
   })
 
-  it("02-components/01: renders one child component per user, with its props", async () => {
-    mount(solutionOf("02-components/01-nested-components"), host)
+  it("03-components/01: renders one child component per user, with its props", async () => {
+    mount(solutionOf("03-components/01-nested-components"), host)
     await tick()
 
     const cards = host.shadowRoot!.querySelectorAll("article")
@@ -213,8 +213,8 @@ describe("tutorial", () => {
     expect(root.querySelector(".saved")?.textContent).toBe("saved: Ada (ada@lovelace.dev)")
   })
 
-  it("03-scripts/03: renders a loading state, then the users it fetched", async () => {
-    mount(solutionOf("03-scripts/03-loading-data"), host)
+  it("04-scripts/03: renders a loading state, then the users it fetched", async () => {
+    mount(solutionOf("04-scripts/03-loading-data"), host)
 
     // the point of the exercise: there is DOM before the request resolves
     expect(host.shadowRoot?.querySelector(".loading")?.textContent).toBe("loading…")
@@ -230,8 +230,8 @@ describe("tutorial", () => {
     ])
   })
 
-  it("03-scripts/04: debounces the search - one run for a burst of keystrokes", async () => {
-    mount(solutionOf("03-scripts/04-keeping-state-out-of-the-store"), host)
+  it("04-scripts/04: debounces the search - one run for a burst of keystrokes", async () => {
+    mount(solutionOf("04-scripts/04-keeping-state-out-of-the-store"), host)
     const input = host.shadowRoot!.querySelector(".search") as HTMLInputElement
 
     // with `timer` still in the store, the second of these would re-enter the
@@ -250,8 +250,8 @@ describe("tutorial", () => {
     ])
   })
 
-  it("02-components/02: bubbles each child's $emit payload up to the parent", async () => {
-    mount(solutionOf("02-components/02-component-events"), host)
+  it("03-components/02: bubbles each child's $emit payload up to the parent", async () => {
+    mount(solutionOf("03-components/02-component-events"), host)
     await tick()
 
     const steppers = host.shadowRoot!.querySelectorAll("button")
@@ -271,8 +271,8 @@ describe("tutorial", () => {
     expect(readout()).toBe("last value emitted: 1")
   })
 
-  it("04-no-bundle/01: renders a component no bundler resolved, fetched from the host", async () => {
-    mount(solutionOf("04-no-bundle/01-no-build-step"), host)
+  it("02-no-bundle/01: renders a component no bundler resolved, fetched from the host", async () => {
+    mount(solutionOf("02-no-bundle/01-no-build-step"), host)
 
     // the template is up before the request is: the <Sticker> tags render
     // nothing while the import is in flight, and fill in when it lands
@@ -288,8 +288,8 @@ describe("tutorial", () => {
     )
   })
 
-  it("04-no-bundle/02: fetches the chart on the first click, and not before", async () => {
-    mount(solutionOf("04-no-bundle/02-loading-on-demand"), host)
+  it("02-no-bundle/02: fetches the chart on the first click, and not before", async () => {
+    mount(solutionOf("02-no-bundle/02-loading-on-demand"), host)
     await tick()
 
     // nothing asked for it, so it isn't there
@@ -307,15 +307,15 @@ describe("tutorial", () => {
     expect(host.shadowRoot?.querySelector(".chart .value")?.textContent).toBe("32")
   })
 
-  it("03-scripts/01: focuses its own search box once mounted", async () => {
-    mount(solutionOf("03-scripts/01-reaching-the-dom"), host)
+  it("04-scripts/01: focuses its own search box once mounted", async () => {
+    mount(solutionOf("04-scripts/01-reaching-the-dom"), host)
     await tick()
 
     expect(host.shadowRoot!.activeElement).toBe(host.shadowRoot!.querySelector(".search"))
   })
 
-  it("03-scripts/02: wires the factory's methods and $effect", () => {
-    mount(solutionOf("03-scripts/02-factory-scripts"), host)
+  it("04-scripts/02: wires the factory's methods and $effect", () => {
+    mount(solutionOf("04-scripts/02-factory-scripts"), host)
     const [inc, reset] = [...host.shadowRoot!.querySelectorAll("button")]
     const readout = () => host.shadowRoot!.querySelector("p")?.textContent
 
@@ -470,7 +470,7 @@ describe("the tutorial app", () => {
   })
 
   it("mounts a multi-file exercise's solution, wiring the imported component", async () => {
-    linkTo(host, "02-components/01-nested-components").click()
+    linkTo(host, "03-components/01-nested-components").click()
     await settle()
 
     expect([...host.querySelectorAll(".tab")].map(tab => tab.textContent)).toEqual([ENTRY, "Greeting.html"])
@@ -485,7 +485,7 @@ describe("the tutorial app", () => {
   it("keeps an exercise's styles inside the preview, nested components included", async () => {
     const headBefore = document.head.querySelectorAll("style").length
 
-    linkTo(host, "02-components/01-nested-components").click()
+    linkTo(host, "03-components/01-nested-components").click()
     await settle()
     await solve(host)
 
@@ -499,7 +499,7 @@ describe("the tutorial app", () => {
   })
 
   it("switches the editor between an exercise's files, and resets them", async () => {
-    linkTo(host, "02-components/01-nested-components").click()
+    linkTo(host, "03-components/01-nested-components").click()
     await settle()
     await solve(host)
 

@@ -1,7 +1,8 @@
 # Nested components
 
-A tag that matches a **PascalCase name in scope** renders as a child component.
-The usual way to get one into scope is to import it from the setup script:
+A tag that matches a **PascalCase name in scope** renders as a child component —
+the `<Sticker>` you fetched off the host was one. The usual way to get one into
+scope is to import it from the setup script:
 
 ```html
 <script :setup>

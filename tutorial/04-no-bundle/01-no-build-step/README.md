@@ -33,16 +33,28 @@ in arrived over the network as a `.html` file.
 
 ## The same is true inside a component
 
-`await import("./Card.html")` in a setup script is not a bundler instruction —
-it's resolved when it runs. Under the [Vite plugin](../../../docs/vite-plugin.md)
-the specifier is pre-resolved at build time and the import costs nothing at
-runtime; with no bundler, the runtime fetches the URL. Same line, same component,
-either way.
+A component uses another one by importing it from its setup script. The next
+section is about that — here, all that matters is where the file comes from:
 
-The tutorial's preview is the pre-resolved case: it hands the entry file the
-*other tabs* as its modules, which is why `./Greeting.html` found the file next
-door two sections ago. But a specifier it doesn't recognise falls through to the
-runtime, and the runtime goes to the network.
+```html
+<script :setup>
+  const Card = await import("./Card.html")
+</script>
+
+<Card :title="'Today'" />
+```
+
+The import binds a PascalCase variable, and a tag with that name renders the
+component; `:title="expr"` passes a prop down. What it does *not* do is instruct
+a bundler: the specifier is resolved when the line runs. Under the
+[Vite plugin](../../../docs/vite-plugin.md) it's pre-resolved at build time and
+the import costs nothing at runtime; with no bundler, the runtime fetches the URL.
+Same line, same component, either way.
+
+The tutorial's preview pre-resolves the same way the plugin does: it hands the
+entry file the *other tabs* as its modules, so `./Greeting.html` finds the file
+next door. But a specifier it doesn't recognise falls through to the runtime, and
+the runtime goes to the network.
 
 So there is a component sitting on this tutorial's own host that is in none of
 your tabs:

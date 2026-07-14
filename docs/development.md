@@ -133,7 +133,7 @@ Extra files alongside `app.html` become editable tabs *and* its importable modul
 tab rather than hitting the network. A `solution/` only needs the files it changes.
 
 A specifier that *isn't* one of those tabs falls through to the runtime, which fetches
-it — which is what the `04-no-bundle` exercises are about, and why
+it — which is what the `02-no-bundle` exercises are about, and why
 [`tutorial/_app/examples/`](../tutorial/_app/examples) exists: it rides along into
 `site/tutorial/examples/`, so `await import("./examples/Sticker.html")` in an exercise
 is a real request to the host serving the page, for a component no bundler ever saw.
