@@ -1,0 +1,105 @@
+<!--
+  The editor: the source of the file the tab bar has open, highlighted, typed
+  into. It never writes to `files` - the app owns them, and a keystroke is
+  reported as `tutorial:edit` with the new source - so the text arrives back as
+  a prop, which is what keeps the editor and the preview showing the same thing.
+
+  `highlight` and `languageOf` come from the app too: one highlighter, colored
+  the same way here, in the diff and in the prose.
+-->
+<script :setup="{ files, active, readonly, highlight, languageOf }">
+  const onInput = $event => $emit("tutorial:edit", $event.target.value)
+
+  // The textarea is transparent, laid over a <pre> holding the same text
+  // highlighted - so both have to be written imperatively and kept in step.
+  // Binding either in the template would rewrite it on every keystroke and reset
+  // the caret; guarding on inequality means typing is a no-op for the textarea,
+  // while switching file/exercise (or applying a solution) still refreshes it.
+  const sync = () => {
+    const editor = $self(".editor")
+    const shadow = $self(".editor-highlight")
+    if (!editor || !shadow) return
+
+    const source = files[active]?.source ?? ""
+    if (editor.value !== source) editor.value = source
+
+    // a <pre> swallows one trailing newline, so the text is fed an extra one:
+    // without it the highlight layer comes up a line short of the textarea
+    // whenever the file ends in a blank line, and the two drift apart
+    shadow.innerHTML = highlight(`${source}\n`, languageOf(files[active]?.name))
+  }
+
+  $: sync(active, files[active]?.source)
+
+  // the diff overlay covers the textarea, but covering it doesn't take the caret
+  // out of it - keystrokes would still land in a file the user can't see
+  $: if (readonly) $self(".editor")?.blur()
+
+  await $mounted()
+
+  // the effect above ran during setup, before the template had produced any DOM
+  // to reach for, and nothing has changed since to re-trigger it - so the first
+  // fill of the editor happens here
+  sync()
+</script>
+
+<div class="code">
+  <div class="code-layers">
+    <pre class="code-shadow" aria-hidden="true"><code class="hljs editor-highlight"></code></pre>
+    <textarea
+      class="editor"
+      spellcheck="false"
+      autocomplete="off"
+      :attrs="{ readonly }"
+      @input="onInput"
+    ></textarea>
+  </div>
+</div>
+
+<style>
+  /* The editor is a textarea with its text made invisible, sitting exactly on
+     top of a <pre> holding the same text, highlighted. Only the caret and the
+     selection show through, so what the user reads is the highlighted layer
+     while what they type into is still a plain textarea.
+
+     The two only stay aligned if they wrap identically, hence the shared metrics
+     below: same font, same padding, same wrapping. The <pre> is the one in flow,
+     so it sizes the pane's scroll height and the textarea stretches to match -
+     which means neither ever scrolls on its own and there's no scroll to sync. */
+  .code { height: 100%; overflow: auto; background: var(--code-bg); }
+  .code-layers { position: relative; min-height: 100%; }
+
+  .code-shadow,
+  .editor {
+    margin: 0;
+    padding: 1rem;
+    border: 0;
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    tab-size: 2;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+
+  .code-shadow {
+    position: relative;
+    min-height: 100%;
+    background: none;
+    pointer-events: none;
+  }
+
+  .editor {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    color: transparent;
+    caret-color: var(--fg);
+    resize: none;
+    overflow: hidden;
+  }
+  .editor:focus { outline: 0; }
+  /* the text is transparent, so the selection has to be the thing you can see */
+  .editor::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+</style>

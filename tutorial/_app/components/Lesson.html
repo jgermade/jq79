@@ -1,0 +1,57 @@
+<!--
+  The exercise's prose, plus the previous/next steps. `content` is the README
+  rendered to HTML at build time (snippets already highlighted), so it goes in
+  with :html; `index` and `total` are only here to say which step this is and to
+  stop the arrows at the ends.
+-->
+<script :setup="{ content, index, total }">
+  const go = position => $emit("tutorial:go", position)
+</script>
+
+<section class="text">
+  <div class="readme" :html="content"></div>
+  <nav class="steps">
+    <button :attrs="{ disabled: index === 0 }" @click="go(index - 1)">← previous</button>
+    <span>{{ index + 1 }} / {{ total }}</span>
+    <button :attrs="{ disabled: index === total - 1 }" @click="go(index + 1)">next →</button>
+  </nav>
+</section>
+
+<style>
+  .text { padding: 1.5rem; }
+  .readme :first-child { margin-top: 0; }
+  .readme h1 { font-size: 1.5rem; line-height: 1.25; border-bottom: 1px solid var(--line); padding-bottom: 0.3em; }
+  .readme code { font: 85%/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px; }
+  .readme pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .readme pre code { background: none; padding: 0; }
+  .readme blockquote {
+    margin: 1.2em 0;
+    padding: 0.8em 1em;
+    border-left: 0.25em solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    background: var(--code-bg);
+  }
+  .readme blockquote :last-child { margin-bottom: 0; }
+
+  .steps {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+  }
+  .steps span { margin-left: auto; color: var(--muted); font-size: 0.85rem; }
+  .steps button {
+    padding: 0.4em 0.9em;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+  }
+  .steps button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .steps button:disabled { opacity: 0.4; cursor: default; }
+  .steps span + button { margin-left: 0; }
+</style>

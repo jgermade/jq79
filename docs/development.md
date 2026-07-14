@@ -58,6 +58,16 @@ compiles whatever is in its editor with `new Component79(...)` and mounts it int
 shadow root — no compiler to ship, and an exercise's `<style>` can't leak into the
 page around it.
 
+`Tutorial.html` is only the shell: the state (which exercise, which file, whether a
+solution is being reviewed), the navigation and the layout. The panes are components
+under [`tutorial/_app/components/`](../tutorial/_app/components) — `Toc`, `Lesson`,
+`Editor`, `Diff`, `Preview` — imported at runtime with `await import(...)`, so the
+tutorial is itself a multi-component jq79 app. None of them writes to the state it
+renders: props go down, and what the user did comes back up as a `tutorial:*` `$emit`
+the shell's container element listens for. The two panes that need the highlighter get
+`highlight`/`languageOf` from the shell, and the preview gets a `compile` function, so
+`hljs` and `Component79` stay in one file.
+
 Adding an exercise is adding a folder — [`build-site.mjs`](../scripts/build-site.mjs) walks
 `tutorial/` and emits the whole thing as one JSON manifest:
 

@@ -1,0 +1,168 @@
+<!--
+  The solution, proposed rather than applied: what the editor holds now (`files`)
+  against what it would hold after (`after`), line by line, until the user
+  accepts it (`tutorial:apply`) or doesn't (`tutorial:dismiss`). It renders over
+  the editor, so the editor keeps its state - and the preview keeps its last good
+  render - while the diff is being read.
+-->
+<script :setup="{ files, after, highlight, languageOf }">
+  // a plain LCS line diff: the table is O(lines²), which for an exercise file is
+  // nothing, and it keeps the common lines aligned so the change reads as a change
+  const diffLines = (before, after) => {
+    const a = before.split("\n")
+    const b = after.split("\n")
+
+    const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0))
+    for (let i = a.length - 1; i >= 0; i--) {
+      for (let j = b.length - 1; j >= 0; j--) {
+        lcs[i][j] = a[i] === b[j]
+          ? lcs[i + 1][j + 1] + 1
+          : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+      }
+    }
+
+    const rows = []
+    let i = 0
+    let j = 0
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) {
+        rows.push({ type: "same", text: a[i] })
+        i++
+        j++
+      } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+        rows.push({ type: "del", text: a[i++] })
+      } else {
+        rows.push({ type: "add", text: b[j++] })
+      }
+    }
+    while (i < a.length) rows.push({ type: "del", text: a[i++] })
+    while (j < b.length) rows.push({ type: "add", text: b[j++] })
+
+    return rows
+  }
+
+  // hljs colors a file in one pass; a diff is a stack of single lines, so the
+  // language each one is in has to be carried across them by hand - otherwise
+  // every line inside a <script> would come out as flat, uncolored markup
+  const highlightRows = (rows, language) => {
+    let inside = language
+    return rows.map(({ type, text }) => {
+      const opens = /<(script|style)\b/i.exec(text)
+      const closes = /<\/(script|style)/i.test(text)
+      // the tag line itself is markup; only what sits between the tags isn't
+      const lineLanguage = opens || closes ? "xml" : inside
+      if (opens) inside = opens[1].toLowerCase() === "script" ? "javascript" : "css"
+      if (closes) inside = "xml"
+      // an empty line has no highlighted output, and an empty row has no height:
+      // the newline gives it one back (the rows are white-space: pre-wrap)
+      return { type, html: highlight(text, lineLanguage) || "\n" }
+    })
+  }
+
+  const sourceOf = name => files.find(file => file.name === name)?.source
+
+  // only the files the solution would actually change: the rest of `after` is
+  // what the editor already holds
+  $: changes = Object.entries(after)
+    .filter(([name, source]) => sourceOf(name) !== source)
+    .map(([name, source]) => ({
+      name,
+      rows: highlightRows(diffLines(sourceOf(name) ?? "", source), languageOf(name)),
+    }))
+
+  const apply = () => $emit("tutorial:apply")
+  const dismiss = () => $emit("tutorial:dismiss")
+</script>
+
+<div class="diff">
+  <header class="diff-bar">
+    <span class="diff-title" :if="changes.length">the solution changes:</span>
+    <span class="diff-title" :else>no changes — your code already matches the solution</span>
+    <span class="spacer"></span>
+    <button class="ghost" @click="dismiss">cancel</button>
+    <button class="accept" :if="changes.length" @click="apply">apply</button>
+  </header>
+
+  <div class="diff-body">
+    <div class="diff-file" :each="file in changes" :key="file.name">
+      <div class="diff-name">{{ file.name }}</div>
+      <div class="diff-rows hljs">
+        <div
+          :each="row in file.rows"
+          :key="$index"
+          :attrs="{ class: `row ${row.type}` }"
+          :html="row.html"
+        ></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* the app's own .ghost button styles the cancel button: the tutorial mounts
+     into the page, not a shadow root, so its chrome is one stylesheet */
+  .diff {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+
+  .diff-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .diff-bar .spacer { flex: 1; }
+  .diff-title { color: var(--muted); font-size: 0.85rem; }
+  .accept {
+    padding: 0.3em 0.9em;
+    border: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .accept:hover { filter: brightness(1.1); }
+
+  .diff-body { flex: 1; overflow: auto; background: var(--code-bg); }
+  .diff-file + .diff-file { border-top: 1px solid var(--line); }
+  .diff-name {
+    padding: 0.4rem 1rem;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .diff-rows { padding: 0.5rem 0; }
+  .row {
+    padding: 0 1rem 0 2rem;
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    tab-size: 2;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    min-height: 1.6em;
+  }
+  /* the marker sits in the padding, so it can't push the code out of alignment
+     with the same code one row above or below */
+  .row::before {
+    display: inline-block;
+    width: 1rem;
+    margin-left: -1.5rem;
+    opacity: 0.7;
+    content: " ";
+  }
+  .row.add { background: color-mix(in srgb, #2da44e 16%, transparent); }
+  .row.add::before { content: "+"; }
+  .row.del { background: color-mix(in srgb, #cf222e 14%, transparent); }
+  .row.del::before { content: "−"; }
+  .row.same { opacity: 0.6; }
+</style>

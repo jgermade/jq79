@@ -1,0 +1,48 @@
+<!--
+  The table of contents: every section's exercises, with the one being read
+  marked. It owns no state - which exercise is open is the app's business, so a
+  click is reported as `tutorial:go` with the exercise's flat index.
+-->
+<script :setup="{ sections, path }">
+  const go = index => $emit("tutorial:go", index)
+</script>
+
+<aside class="toc">
+  <div class="chapter" :each="section in sections" :key="section.slug">
+    <h3>{{ section.title }}</h3>
+    <button
+      :each="exercise in section.exercises"
+      :key="exercise.path"
+      :attrs="{ class: exercise.path === path ? 'link active' : 'link' }"
+      @click="go(exercise.index)"
+    >{{ exercise.title }}</button>
+  </div>
+</aside>
+
+<style>
+  .toc { padding: 1.2rem 0.8rem; }
+  .chapter h3 {
+    margin: 0 0 0.4em;
+    padding: 0 0.6rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+  .chapter + .chapter { margin-top: 1.4rem; }
+  .link {
+    display: block;
+    width: 100%;
+    padding: 0.4em 0.6rem;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.95rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .link:hover { background: var(--code-bg); }
+  .link.active { background: var(--accent); color: #fff; }
+</style>

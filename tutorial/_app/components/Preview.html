@@ -1,0 +1,98 @@
+<!--
+  The preview: whatever the editor holds, compiled and mounted into a shadow root
+  (so an exercise's <style> can't leak into the tutorial's own UI) and recompiled,
+  debounced, as the sources change. `compile` is the app's Component79 - the
+  tutorial runs the exercise on the very library it teaches - and a component that
+  refuses to parse or mount is reported below the stage instead of taking the page
+  down with it.
+-->
+<script :setup="{ files, compile }">
+  const ENTRY = "app.html"
+
+  let error = ""
+
+  // The mounted instance and the debounce timer are deliberately *not* top-level
+  // declarations: those become reactive store vars, and `schedule` both reads
+  // and writes the timer - inside the $: effect below that would make the effect
+  // re-trigger itself forever. Declarations inside a function are plain JS, so
+  // the closure keeps them out of the store entirely.
+  const preview = (() => {
+    let instance = null
+    let timer = null
+
+    // never called from inside an effect (only from the debounce and from
+    // $mounted), so reading `files` and writing `error` here tracks nothing
+    const run = () => {
+      const host = $self(".preview")
+      if (!host) return
+
+      instance?.destroy()
+      instance = null
+      error = ""
+
+      // a fresh host each run: attachShadow is one-shot per element, so reusing
+      // the node would keep the previous exercise's shadow root
+      const stage = $create("div", { class: "stage" })
+      host.replaceChildren(stage)
+
+      const entry = files.find(file => file.name === ENTRY)
+      if (!entry) return
+
+      try {
+        // the other files become the entry's modules, which is what lets
+        // `await import("./Greeting.html")` resolve to the file in the next tab
+        const modules = {}
+        files
+          .filter(file => file.name !== ENTRY)
+          .forEach(file => { modules[`./${file.name}`] = compile(file.source) })
+
+        instance = compile(entry.source, modules)
+        instance.mountShadow(stage)
+      } catch (failure) {
+        error = failure.message ?? String(failure)
+      }
+    }
+
+    return {
+      run,
+      schedule: () => {
+        clearTimeout(timer)
+        timer = setTimeout(run, 250)
+      },
+    }
+  })()
+
+  // re-runs whenever any file's source changes (reading them here is what
+  // registers the dependency), debounced so a burst of keystrokes compiles once
+  $: preview.schedule(files.map(file => file.source).join("\n"))
+
+  await $mounted()
+
+  // the effect above ran during setup, before the template had produced any DOM
+  // to mount into, and nothing has changed since to re-trigger it - so the first
+  // render happens here
+  preview.run()
+</script>
+
+<div class="output">
+  <div class="preview"></div>
+  <pre class="error" :if="error">{{ error }}</pre>
+</div>
+
+<style>
+  .output { flex: 1 1 45%; overflow: auto; }
+  .preview { padding: 1rem; }
+
+  .error {
+    margin: 0;
+    padding: 0.8rem 1rem;
+    background: #ffeef0;
+    color: #b3202d;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .error { background: #3b1219; color: #ff8a9b; }
+  }
+</style>

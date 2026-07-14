@@ -219,6 +219,18 @@ describe("tutorial", () => {
 describe("the tutorial app", () => {
   const app = readFileSync(join(TUTORIAL, "_app", "Tutorial.html"), "utf8")
 
+  // the app's panes: on the site they are fetched (the app is served next to
+  // them), here they are pre-resolved the same way an exercise's sibling files
+  // are - `await import("./components/Editor.html")` finds the file on disk
+  const panes = Object.fromEntries(
+    readdirSync(join(TUTORIAL, "_app", "components"))
+      .filter(name => name.endsWith(".html"))
+      .map(name => [
+        `./components/${name}`,
+        new Component79(readFileSync(join(TUTORIAL, "_app", "components", name), "utf8")),
+      ])
+  )
+
   // the manifest, grouped the way build-site.mjs groups it: `index` is the flat
   // position across all sections, and the title is the path so a test can find
   // an exercise's entry in the table of contents by name
@@ -273,7 +285,7 @@ describe("the tutorial app", () => {
     // the same `sections` object, mount after mount: each store keeps its own
     // view of it rather than rewriting it in place (see the sharing tests in
     // reactive.test.ts - this used to compound until it hung)
-    instance = new Component79(app).mount(host, { sections, Component79, hljs })
+    instance = new Component79(app, { modules: panes }).mount(host, { sections, Component79, hljs })
     await settle()
   })
 

@@ -4,19 +4,23 @@
 
     app.mount("#app", { sections, Component79, hljs })
 
-  Each exercise's files live in the store as { name, source }; whatever the
-  editor holds is compiled with `new Component79(...)` and mounted into a
-  shadow root, so an exercise's <style> can't leak into the tutorial's own UI.
-  Non-entry files are handed to the entry as its `modules` map, which is what
-  lets `await import("./Greeting.html")` resolve to the file in the next tab.
+  This file is the shell: the state (which exercise is open, which file is being
+  edited, whether a solution is being reviewed), the navigation, and the layout.
+  The four panes are components under ./components/, imported at runtime the way
+  any jq79 component imports another - the tutorial runs on the library it
+  teaches, and the exercise the user is editing is compiled by the very same
+  Component79 the page imports.
+
+  None of the panes writes to the state it renders: props go down, and what the
+  user did comes back up as a `tutorial:*` event, caught on the container below.
+  Each exercise's files live in the store as { name, source }.
 
   `hljs` is the same highlighter the site build runs over the markdown, so the
   editor, the solution diff and the snippets in the prose are colored by one
-  library off one stylesheet (the .hljs-* rules the shell page carries).
+  library off one stylesheet (the .hljs-* rules the shell page carries). The
+  panes get the two functions they need rather than the library itself.
 -->
 <script :setup="{ sections, Component79, hljs }">
-  const ENTRY = "app.html"
-
   const flat = sections.flatMap(section =>
     section.exercises.map(exercise => ({ ...exercise, section: section.title }))
   )
@@ -27,74 +31,23 @@
   let index = 0
   let files = []
   let active = 0
-  let error = ""
-  // the solution, diffed against what's in the editor and waiting to be applied
-  // (or dismissed); null the rest of the time
-  let pending = null
+  // the files the editor would hold if the solution were applied - diffed
+  // against what it holds now, and waiting to be accepted; null the rest of the time
+  let proposal = null
 
   $: current = flat[index]
 
-  // --- the preview -----------------------------------------------------------
+  // --- what the panes are handed ---------------------------------------------
 
-  // The mounted instance and the debounce timer are deliberately *not* top-level
-  // declarations: those become reactive store vars, and `schedule` both reads
-  // and writes the timer - inside the $: effect below that would make the effect
-  // re-trigger itself forever. Declarations inside a function are plain JS, so
-  // the closure keeps them out of the store entirely.
-  const preview = (() => {
-    let instance = null
-    let timer = null
-
-    // never called from inside an effect (only from the debounce and from
-    // $mounted), so reading `files` and writing `error` here tracks nothing
-    const run = () => {
-      const host = $self(".preview")
-      if (!host) return
-
-      instance?.destroy()
-      instance = null
-      error = ""
-
-      // a fresh host each run: attachShadow is one-shot per element, so reusing
-      // the node would keep the previous exercise's shadow root
-      const stage = $create("div", { class: "stage" })
-      host.replaceChildren(stage)
-
-      const entry = files.find(file => file.name === ENTRY)
-      if (!entry) return
-
-      try {
-        const modules = {}
-        files
-          .filter(file => file.name !== ENTRY)
-          .forEach(file => { modules[`./${file.name}`] = new Component79(file.source) })
-
-        instance = new Component79(entry.source, { modules })
-        instance.mountShadow(stage)
-      } catch (failure) {
-        error = failure.message ?? String(failure)
-      }
-    }
-
-    return {
-      run,
-      schedule: () => {
-        clearTimeout(timer)
-        timer = setTimeout(run, 250)
-      },
-    }
-  })()
-
-  // re-runs whenever any file's source changes (reading them here is what
-  // registers the dependency), debounced so a burst of keystrokes compiles once
-  $: preview.schedule(files.map(file => file.source).join("\n"))
-
-  // --- highlighting ----------------------------------------------------------
+  // the preview compiles a file with the page's own Component79; non-entry files
+  // are handed to the entry as its `modules` map
+  const compile = (source, modules) => new Component79(source, { modules })
 
   // an exercise is html unless its tab says otherwise; xml is what hljs calls
   // html, and it highlights a component's <script>/<style> blocks as js/css
   const languageOf = name =>
-    name.endsWith(".js") ? "javascript"
+    !name ? "xml"
+    : name.endsWith(".js") ? "javascript"
     : name.endsWith(".css") ? "css"
     : name.endsWith(".json") ? "json"
     : "xml"
@@ -104,124 +57,29 @@
   const highlight = (code, language) =>
     hljs.highlight(code, { language, ignoreIllegals: true }).value
 
-  // --- the editor ------------------------------------------------------------
+  // --- what the panes report back ---------------------------------------------
 
-  const onInput = $event => { files[active].source = $event.target.value }
-
-  // The textarea is transparent, laid over a <pre> holding the same text
-  // highlighted - so both have to be written imperatively and kept in step.
-  // Binding either in the template would rewrite it on every keystroke and reset
-  // the caret; guarding on inequality means typing is a no-op for the textarea,
-  // while switching file/exercise (or applying a solution) still refreshes it.
-  const syncEditor = () => {
-    const editor = $self(".editor")
-    const shadow = $self(".editor-highlight")
-    if (!editor || !shadow) return
-
-    const source = files[active]?.source ?? ""
-    if (editor.value !== source) editor.value = source
-
-    // a <pre> swallows one trailing newline, so the text is fed an extra one:
-    // without it the highlight layer comes up a line short of the textarea
-    // whenever the file ends in a blank line, and the two drift apart
-    shadow.innerHTML = highlight(`${source}\n`, languageOf(files[active]?.name ?? ENTRY))
-  }
-
-  $: syncEditor(active, files[active]?.source)
-
-  // --- the solution ----------------------------------------------------------
-
-  // a plain LCS line diff: the table is O(lines²), which for an exercise file is
-  // nothing, and it keeps the common lines aligned so the change reads as a change
-  const diffLines = (before, after) => {
-    const a = before.split("\n")
-    const b = after.split("\n")
-
-    const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0))
-    for (let i = a.length - 1; i >= 0; i--) {
-      for (let j = b.length - 1; j >= 0; j--) {
-        lcs[i][j] = a[i] === b[j]
-          ? lcs[i + 1][j + 1] + 1
-          : Math.max(lcs[i + 1][j], lcs[i][j + 1])
-      }
-    }
-
-    const rows = []
-    let i = 0
-    let j = 0
-    while (i < a.length && j < b.length) {
-      if (a[i] === b[j]) {
-        rows.push({ type: "same", text: a[i] })
-        i++
-        j++
-      } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
-        rows.push({ type: "del", text: a[i++] })
-      } else {
-        rows.push({ type: "add", text: b[j++] })
-      }
-    }
-    while (i < a.length) rows.push({ type: "del", text: a[i++] })
-    while (j < b.length) rows.push({ type: "add", text: b[j++] })
-
-    return rows
-  }
-
-  // hljs colors a file in one pass; a diff is a stack of single lines, so the
-  // language each one is in has to be carried across them by hand - otherwise
-  // every line inside a <script> would come out as flat, uncolored markup
-  const highlightRows = (rows, language) => {
-    let inside = language
-    return rows.map(({ type, text }) => {
-      const opens = /<(script|style)\b/i.exec(text)
-      const closes = /<\/(script|style)/i.test(text)
-      // the tag line itself is markup; only what sits between the tags isn't
-      const lineLanguage = opens || closes ? "xml" : inside
-      if (opens) inside = opens[1].toLowerCase() === "script" ? "javascript" : "css"
-      if (closes) inside = "xml"
-      // an empty line has no highlighted output, and an empty row has no height:
-      // the newline gives it one back (the rows are white-space: pre-wrap)
-      return { type, html: highlight(text, lineLanguage) || "\n" }
-    })
-  }
+  const edit = source => { files[active].source = source }
 
   // solutions only list the files they change, so the rest carry over as-is -
   // which also means applying one reverts any edits the user made elsewhere.
   // That's the diff: what the editor holds now against what it would hold after
-  const solution = () => ({ ...flat[index].files, ...flat[index].solution })
-
-  const review = () => {
-    const after = solution()
-    const changes = Object.entries(after)
-      .filter(([name, source]) => files.find(file => file.name === name)?.source !== source)
-      .map(([name, source]) => ({
-        name,
-        rows: highlightRows(
-          diffLines(files.find(file => file.name === name)?.source ?? "", source),
-          languageOf(name)
-        ),
-      }))
-
-    pending = { changes }
-    // the overlay covers the textarea, but covering it doesn't take the caret
-    // out of it - keystrokes would still land in a file the user can't see
-    $self(".editor")?.blur()
-  }
+  const review = () => { proposal = { ...flat[index].files, ...flat[index].solution } }
 
   const apply = () => {
-    files = toFiles(solution())
-    pending = null
+    files = toFiles(proposal)
+    proposal = null
   }
 
-  const dismiss = () => { pending = null }
+  const dismiss = () => { proposal = null }
 
-  // --- navigation ------------------------------------------------------------
+  // --- navigation --------------------------------------------------------------
 
   const load = position => {
     index = Math.min(Math.max(position, 0), flat.length - 1)
     files = toFiles(flat[index].files)
     active = 0
-    error = ""
-    pending = null
+    proposal = null
   }
 
   const go = position => {
@@ -237,7 +95,7 @@
 
   const reset = () => {
     files = toFiles(flat[index].files)
-    pending = null
+    proposal = null
   }
 
   // a setup script has no teardown hook, so this listener outlives the instance
@@ -250,36 +108,26 @@
 
   fromHash()
 
-  await $mounted()
-
-  // both effects above ran during setup, before the template had produced any
-  // DOM to reach for, and nothing has changed since to re-trigger them - so the
-  // first fill of the editor and the first preview happen here
-  syncEditor()
-  preview.run()
+  // the panes. They are fetched, so they arrive after the template has rendered:
+  // a tag whose component variable is still undefined renders nothing, and the
+  // pane appears where it stands once its import resolves
+  const Toc = await import("./components/Toc.html")
+  const Lesson = await import("./components/Lesson.html")
+  const Editor = await import("./components/Editor.html")
+  const Diff = await import("./components/Diff.html")
+  const Preview = await import("./components/Preview.html")
 </script>
 
-<div class="tutorial-container">
-  <aside class="toc">
-    <div class="chapter" :each="section in sections" :key="section.slug">
-      <h3>{{ section.title }}</h3>
-      <button
-        :each="exercise in section.exercises"
-        :key="exercise.path"
-        :attrs="{ class: exercise.path === current.path ? 'link active' : 'link' }"
-        @click="go(exercise.index)"
-      >{{ exercise.title }}</button>
-    </div>
-  </aside>
+<div
+  class="tutorial-container"
+  @tutorial:go="go($event.detail)"
+  @tutorial:edit="edit($event.detail)"
+  @tutorial:apply="apply"
+  @tutorial:dismiss="dismiss"
+>
+  <Toc :sections :path="current.path" />
 
-  <section class="text">
-    <div class="readme" :html="current.html"></div>
-    <nav class="steps">
-      <button :attrs="{ disabled: index === 0 }" @click="go(index - 1)">← previous</button>
-      <span>{{ index + 1 }} / {{ flat.length }}</span>
-      <button :attrs="{ disabled: index === flat.length - 1 }" @click="go(index + 1)">next →</button>
-    </nav>
-  </section>
+  <Lesson :content="current.html" :index :total="flat.length" />
 
   <section class="work">
     <header class="tabs">
@@ -298,48 +146,11 @@
          editor keeps its state (and the preview keeps its last good render)
          while a solution is being reviewed -->
     <div class="pane">
-      <div class="code">
-        <div class="code-layers">
-          <pre class="code-shadow" aria-hidden="true"><code class="hljs editor-highlight"></code></pre>
-          <textarea
-            class="editor"
-            spellcheck="false"
-            autocomplete="off"
-            :attrs="{ readonly: !!pending }"
-            @input="onInput"
-          ></textarea>
-        </div>
-      </div>
-
-      <div class="diff" :if="pending">
-        <header class="diff-bar">
-          <span class="diff-title" :if="pending.changes.length">the solution changes:</span>
-          <span class="diff-title" :else>no changes — your code already matches the solution</span>
-          <span class="spacer"></span>
-          <button class="ghost" @click="dismiss">cancel</button>
-          <button class="accept" :if="pending.changes.length" @click="apply">apply</button>
-        </header>
-
-        <div class="diff-body">
-          <div class="diff-file" :each="file in pending.changes" :key="file.name">
-            <div class="diff-name">{{ file.name }}</div>
-            <div class="diff-rows hljs">
-              <div
-                :each="row in file.rows"
-                :key="$index"
-                :attrs="{ class: `row ${row.type}` }"
-                :html="row.html"
-              ></div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <Editor :files :active :readonly="!!proposal" :highlight :language-of="languageOf" />
+      <Diff :if="proposal" :files :after="proposal" :highlight :language-of="languageOf" />
     </div>
 
-    <div class="output">
-      <div class="preview"></div>
-      <pre class="error" :if="error">{{ error }}</pre>
-    </div>
+    <Preview :files :compile />
   </section>
 </div>
 
@@ -354,76 +165,11 @@
     height: calc(100dvh - 2.5rem);
   }
 
+  /* the panes: <Toc>, <Lesson> and the .work column (a component renders its
+     content between two comment markers, which are no grid items of their own) */
   .tutorial-container > * { background: var(--bg); overflow-y: auto; }
 
-  /* table of contents */
-
-  .toc { padding: 1.2rem 0.8rem; }
-  .chapter h3 {
-    margin: 0 0 0.4em;
-    padding: 0 0.6rem;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-  }
-  .chapter + .chapter { margin-top: 1.4rem; }
-  .link {
-    display: block;
-    width: 100%;
-    padding: 0.4em 0.6rem;
-    border: 0;
-    border-radius: 6px;
-    background: none;
-    color: var(--fg);
-    font: inherit;
-    font-size: 0.95rem;
-    text-align: left;
-    cursor: pointer;
-  }
-  .link:hover { background: var(--code-bg); }
-  .link.active { background: var(--accent); color: #fff; }
-
-  /* prose */
-
-  .text { padding: 1.5rem; }
-  .readme :first-child { margin-top: 0; }
-  .readme h1 { font-size: 1.5rem; line-height: 1.25; border-bottom: 1px solid var(--line); padding-bottom: 0.3em; }
-  .readme code { font: 85%/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code-bg); padding: 0.2em 0.4em; border-radius: 6px; }
-  .readme pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
-  .readme pre code { background: none; padding: 0; }
-  .readme blockquote {
-    margin: 1.2em 0;
-    padding: 0.8em 1em;
-    border-left: 0.25em solid var(--accent);
-    border-radius: 0 6px 6px 0;
-    background: var(--code-bg);
-  }
-  .readme blockquote :last-child { margin-bottom: 0; }
-
-  .steps {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    margin-top: 2rem;
-    padding-top: 1rem;
-    border-top: 1px solid var(--line);
-  }
-  .steps span { margin-left: auto; color: var(--muted); font-size: 0.85rem; }
-  .steps button {
-    padding: 0.4em 0.9em;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--bg);
-    color: var(--fg);
-    font: inherit;
-    cursor: pointer;
-  }
-  .steps button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-  .steps button:disabled { opacity: 0.4; cursor: default; }
-  .steps span + button { margin-left: 0; }
-
-  /* editor + preview */
+  /* the work column: tabs, the editor pane, the preview under it */
 
   .work { display: flex; flex-direction: column; overflow: hidden; }
 
@@ -435,6 +181,8 @@
     border-bottom: 1px solid var(--line);
   }
   .tabs .spacer { flex: 1; }
+  /* .ghost is the diff bar's cancel button too: the tutorial mounts into the
+     page rather than a shadow root, so one stylesheet dresses all of its chrome */
   .tab, .ghost {
     padding: 0.3em 0.7em;
     border: 0;
@@ -454,137 +202,6 @@
     flex: 1 1 55%;
     min-height: 12rem;
     border-bottom: 1px solid var(--line);
-  }
-
-  /* The editor is a textarea with its text made invisible, sitting exactly on
-     top of a <pre> holding the same text, highlighted. Only the caret and the
-     selection show through, so what the user reads is the highlighted layer
-     while what they type into is still a plain textarea.
-
-     The two only stay aligned if they wrap identically, hence the shared metrics
-     below: same font, same padding, same wrapping. The <pre> is the one in flow,
-     so it sizes the pane's scroll height and the textarea stretches to match -
-     which means neither ever scrolls on its own and there's no scroll to sync. */
-  .code { height: 100%; overflow: auto; background: var(--code-bg); }
-  .code-layers { position: relative; min-height: 100%; }
-
-  .code-shadow,
-  .editor {
-    margin: 0;
-    padding: 1rem;
-    border: 0;
-    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    tab-size: 2;
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    word-break: break-word;
-  }
-
-  .code-shadow {
-    position: relative;
-    min-height: 100%;
-    background: none;
-    pointer-events: none;
-  }
-
-  .editor {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    background: transparent;
-    color: transparent;
-    caret-color: var(--fg);
-    resize: none;
-    overflow: hidden;
-  }
-  .editor:focus { outline: 0; }
-  /* the text is transparent, so the selection has to be the thing you can see */
-  .editor::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
-
-  /* the solution diff */
-
-  .diff {
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    display: flex;
-    flex-direction: column;
-    background: var(--bg);
-  }
-
-  .diff-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .diff-bar .spacer { flex: 1; }
-  .diff-title { color: var(--muted); font-size: 0.85rem; }
-  .accept {
-    padding: 0.3em 0.9em;
-    border: 0;
-    border-radius: 6px;
-    background: var(--accent);
-    color: #fff;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .accept:hover { filter: brightness(1.1); }
-
-  .diff-body { flex: 1; overflow: auto; background: var(--code-bg); }
-  .diff-file + .diff-file { border-top: 1px solid var(--line); }
-  .diff-name {
-    padding: 0.4rem 1rem;
-    border-bottom: 1px solid var(--line);
-    color: var(--muted);
-    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-
-  .diff-rows { padding: 0.5rem 0; }
-  .row {
-    padding: 0 1rem 0 2rem;
-    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    tab-size: 2;
-    white-space: pre-wrap;
-    overflow-wrap: break-word;
-    word-break: break-word;
-    min-height: 1.6em;
-  }
-  /* the marker sits in the padding, so it can't push the code out of alignment
-     with the same code one row above or below */
-  .row::before {
-    display: inline-block;
-    width: 1rem;
-    margin-left: -1.5rem;
-    opacity: 0.7;
-    content: " ";
-  }
-  .row.add { background: color-mix(in srgb, #2da44e 16%, transparent); }
-  .row.add::before { content: "+"; }
-  .row.del { background: color-mix(in srgb, #cf222e 14%, transparent); }
-  .row.del::before { content: "−"; }
-  .row.same { opacity: 0.6; }
-
-  /* preview */
-
-  .output { flex: 1 1 45%; overflow: auto; }
-  .preview { padding: 1rem; }
-
-  .error {
-    margin: 0;
-    padding: 0.8rem 1rem;
-    background: #ffeef0;
-    color: #b3202d;
-    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    white-space: pre-wrap;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .error { background: #3b1219; color: #ff8a9b; }
   }
 
   @media (max-width: 60rem) {
