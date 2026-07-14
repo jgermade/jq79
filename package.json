@@ -1,6 +1,6 @@
 {
   "name": "jq79",
-  "version": "0.3.23",
+  "version": "0.3.24",
   "description": "Mini reactive component library: single-file components, Svelte-style setup scripts, fine-grained proxy reactivity. Single-file build, zero dependencies.",
   "keywords": [
     "reactive",
