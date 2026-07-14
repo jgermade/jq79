@@ -176,6 +176,15 @@
   .tutorial-container > * {
     background: var(--bg);
     overflow-y: auto;
+  }
+
+  /* the work column renders with the template, but the three panes it holds are
+     fetched like the two above it: <Editor> and <Diff> in .pane, <Preview> under
+     it. They land whenever their request comes back, so they fade in on their own
+     rather than with the column that was already there waiting for them */
+  .tutorial-container > *,
+  .pane > *,
+  .work > .output {
     animation: pane-in 250ms ease-out;
   }
 
@@ -185,7 +194,9 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .tutorial-container > * { animation: none; }
+    .tutorial-container > *,
+    .pane > *,
+    .work > .output { animation: none; }
   }
 
   /* the work column: tabs, the editor pane, the preview under it */
