@@ -29,6 +29,24 @@ marked.use(
   })
 )
 
+// marked emits headings with no id, so the cross-document anchor links the docs
+// already use (components.md#styles, vite-plugin.md#style-lang--css-preprocessors)
+// landed nowhere once rendered - they only worked on GitHub, which slugs headings
+// itself. Same rules as GitHub's: lowercase, drop anything that isn't a word
+// character/space/hyphen, then one hyphen per remaining space (an em dash leaves
+// the spaces on either side of it behind, hence the double hyphens)
+const slug = text =>
+  text.toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s/g, "-")
+
+marked.use({
+  renderer: {
+    heading(token) {
+      const content = this.parser.parseInline(token.tokens)
+      return `<h${token.depth} id="${slug(token.text)}">${content}</h${token.depth}>\n`
+    },
+  },
+})
+
 const SITE = "site"
 const REPO_URL = "https://github.com/jgermade/jq79"
 const NPM_URL = "https://www.npmjs.com/package/jq79"
