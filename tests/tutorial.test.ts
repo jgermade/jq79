@@ -373,6 +373,18 @@ describe("the tutorial app", () => {
   // long enough to clear the editor's 250ms recompile debounce
   const settle = () => new Promise(resolve => setTimeout(resolve, 320))
 
+  // mounting the app is not a matter of waiting a fixed slice of time: the panes
+  // are imported (which crosses a macrotask) and then mounted, and on a loaded
+  // machine that costs more than the debounce a settle() allows for - which is
+  // what used to fail this suite on CI and never here. Wait for the app instead
+  const until = async (ready: () => boolean, what: string, timeout = 5000) => {
+    const deadline = Date.now() + timeout
+    while (!ready()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+
   const type = (host: HTMLElement, source: string) => {
     const editor = host.querySelector("textarea") as HTMLTextAreaElement
     editor.value = source
@@ -406,7 +418,10 @@ describe("the tutorial app", () => {
     // view of it rather than rewriting it in place (see the sharing tests in
     // reactive.test.ts - this used to compound until it hung)
     instance = new Component79(app, { modules: panes }).mount(host, { sections, Component79, hljs })
-    await settle()
+    // the preview is the last thing to land: its pane is imported, mounted, and
+    // only then does it compile the exercise, so a stage on screen means the
+    // whole app is up
+    await until(() => !!host.querySelector(".stage"), "the tutorial to mount")
   })
 
   // each test leaves a live app behind otherwise - effects still running, still

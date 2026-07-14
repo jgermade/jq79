@@ -10,7 +10,7 @@
 [![esm](https://jgermade.github.io/jq79/badges/esm-size.svg)](https://jgermade.github.io/jq79/)
 [![cjs](https://jgermade.github.io/jq79/badges/cjs-size.svg)](https://jgermade.github.io/jq79/)
 
-A mini reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
+A independent reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
 
 > no compiler required, no virtual DOM, no dependencies.
 
