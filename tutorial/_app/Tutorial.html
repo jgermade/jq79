@@ -2,15 +2,19 @@
   The tutorial app, itself a jq79 component. Mounted by the generated
   site/tutorial/index.html with the exercise manifest as render data:
 
-    app.mount("#app", { sections, Component79 })
+    app.mount("#app", { sections, Component79, hljs })
 
   Each exercise's files live in the store as { name, source }; whatever the
   editor holds is compiled with `new Component79(...)` and mounted into a
   shadow root, so an exercise's <style> can't leak into the tutorial's own UI.
   Non-entry files are handed to the entry as its `modules` map, which is what
   lets `await import("./Greeting.html")` resolve to the file in the next tab.
+
+  `hljs` is the same highlighter the site build runs over the markdown, so the
+  editor, the solution diff and the snippets in the prose are colored by one
+  library off one stylesheet (the .hljs-* rules the shell page carries).
 -->
-<script :setup="{ sections, Component79 }">
+<script :setup="{ sections, Component79, hljs }">
   const ENTRY = "app.html"
 
   const flat = sections.flatMap(section =>
@@ -24,6 +28,9 @@
   let files = []
   let active = 0
   let error = ""
+  // the solution, diffed against what's in the editor and waiting to be applied
+  // (or dismissed); null the rest of the time
+  let pending = null
 
   $: current = flat[index]
 
@@ -82,22 +89,130 @@
   // registers the dependency), debounced so a burst of keystrokes compiles once
   $: preview.schedule(files.map(file => file.source).join("\n"))
 
+  // --- highlighting ----------------------------------------------------------
+
+  // an exercise is html unless its tab says otherwise; xml is what hljs calls
+  // html, and it highlights a component's <script>/<style> blocks as js/css
+  const languageOf = name =>
+    name.endsWith(".js") ? "javascript"
+    : name.endsWith(".css") ? "css"
+    : name.endsWith(".json") ? "json"
+    : "xml"
+
+  // half-written code is the normal state of an editor, so illegal matches can't
+  // be allowed to throw - hljs just colors what it can make sense of
+  const highlight = (code, language) =>
+    hljs.highlight(code, { language, ignoreIllegals: true }).value
+
   // --- the editor ------------------------------------------------------------
 
   const onInput = $event => { files[active].source = $event.target.value }
 
-  // the textarea is written to imperatively rather than bound in the template:
-  // an interpolated value would be rewritten on every keystroke and reset the
-  // caret. Guarding on inequality means typing is a no-op here, while switching
-  // file/exercise (or hitting reset/solve) still refreshes it
+  // The textarea is transparent, laid over a <pre> holding the same text
+  // highlighted - so both have to be written imperatively and kept in step.
+  // Binding either in the template would rewrite it on every keystroke and reset
+  // the caret; guarding on inequality means typing is a no-op for the textarea,
+  // while switching file/exercise (or applying a solution) still refreshes it.
   const syncEditor = () => {
     const editor = $self(".editor")
-    if (!editor) return
+    const shadow = $self(".editor-highlight")
+    if (!editor || !shadow) return
+
     const source = files[active]?.source ?? ""
     if (editor.value !== source) editor.value = source
+
+    // a <pre> swallows one trailing newline, so the text is fed an extra one:
+    // without it the highlight layer comes up a line short of the textarea
+    // whenever the file ends in a blank line, and the two drift apart
+    shadow.innerHTML = highlight(`${source}\n`, languageOf(files[active]?.name ?? ENTRY))
   }
 
   $: syncEditor(active, files[active]?.source)
+
+  // --- the solution ----------------------------------------------------------
+
+  // a plain LCS line diff: the table is O(lines²), which for an exercise file is
+  // nothing, and it keeps the common lines aligned so the change reads as a change
+  const diffLines = (before, after) => {
+    const a = before.split("\n")
+    const b = after.split("\n")
+
+    const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0))
+    for (let i = a.length - 1; i >= 0; i--) {
+      for (let j = b.length - 1; j >= 0; j--) {
+        lcs[i][j] = a[i] === b[j]
+          ? lcs[i + 1][j + 1] + 1
+          : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+      }
+    }
+
+    const rows = []
+    let i = 0
+    let j = 0
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) {
+        rows.push({ type: "same", text: a[i] })
+        i++
+        j++
+      } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+        rows.push({ type: "del", text: a[i++] })
+      } else {
+        rows.push({ type: "add", text: b[j++] })
+      }
+    }
+    while (i < a.length) rows.push({ type: "del", text: a[i++] })
+    while (j < b.length) rows.push({ type: "add", text: b[j++] })
+
+    return rows
+  }
+
+  // hljs colors a file in one pass; a diff is a stack of single lines, so the
+  // language each one is in has to be carried across them by hand - otherwise
+  // every line inside a <script> would come out as flat, uncolored markup
+  const highlightRows = (rows, language) => {
+    let inside = language
+    return rows.map(({ type, text }) => {
+      const opens = /<(script|style)\b/i.exec(text)
+      const closes = /<\/(script|style)/i.test(text)
+      // the tag line itself is markup; only what sits between the tags isn't
+      const lineLanguage = opens || closes ? "xml" : inside
+      if (opens) inside = opens[1].toLowerCase() === "script" ? "javascript" : "css"
+      if (closes) inside = "xml"
+      // an empty line has no highlighted output, and an empty row has no height:
+      // the newline gives it one back (the rows are white-space: pre-wrap)
+      return { type, html: highlight(text, lineLanguage) || "\n" }
+    })
+  }
+
+  // solutions only list the files they change, so the rest carry over as-is -
+  // which also means applying one reverts any edits the user made elsewhere.
+  // That's the diff: what the editor holds now against what it would hold after
+  const solution = () => ({ ...flat[index].files, ...flat[index].solution })
+
+  const review = () => {
+    const after = solution()
+    const changes = Object.entries(after)
+      .filter(([name, source]) => files.find(file => file.name === name)?.source !== source)
+      .map(([name, source]) => ({
+        name,
+        rows: highlightRows(
+          diffLines(files.find(file => file.name === name)?.source ?? "", source),
+          languageOf(name)
+        ),
+      }))
+
+    pending = { changes }
+    // the overlay covers the textarea, but covering it doesn't take the caret
+    // out of it - keystrokes would still land in a file the user can't see
+    $self(".editor")?.blur()
+  }
+
+  const apply = () => {
+    files = toFiles(solution())
+    pending = null
+  }
+
+  const dismiss = () => { pending = null }
 
   // --- navigation ------------------------------------------------------------
 
@@ -106,6 +221,7 @@
     files = toFiles(flat[index].files)
     active = 0
     error = ""
+    pending = null
   }
 
   const go = position => {
@@ -119,17 +235,17 @@
     load(found === -1 ? 0 : found)
   }
 
-  const reset = () => { files = toFiles(flat[index].files) }
-
-  // solutions only list the files they change, so the rest carry over as-is
-  const solve = () => { files = toFiles({ ...flat[index].files, ...flat[index].solution }) }
+  const reset = () => {
+    files = toFiles(flat[index].files)
+    pending = null
+  }
 
   // a setup script has no teardown hook, so this listener outlives the instance
   // that registered it. Harmless on the real page (there's only ever one), but
   // it means a replaced instance would keep answering hash changes - so ignore
   // the event unless this instance's DOM is still on screen
   window.addEventListener("hashchange", () => {
-    if ($self(".tutorial")?.isConnected) fromHash()
+    if ($self(".tutorial-container")?.isConnected) fromHash()
   })
 
   fromHash()
@@ -175,10 +291,50 @@
       >{{ file.name }}</button>
       <span class="spacer"></span>
       <button class="ghost" @click="reset">reset</button>
-      <button class="ghost" @click="solve">solution</button>
+      <button class="ghost" @click="review">solution</button>
     </header>
 
-    <textarea class="editor" spellcheck="false" autocomplete="off" @input="onInput"></textarea>
+    <!-- the editor and the diff share one pane: the diff is an overlay, so the
+         editor keeps its state (and the preview keeps its last good render)
+         while a solution is being reviewed -->
+    <div class="pane">
+      <div class="code">
+        <div class="code-layers">
+          <pre class="code-shadow" aria-hidden="true"><code class="hljs editor-highlight"></code></pre>
+          <textarea
+            class="editor"
+            spellcheck="false"
+            autocomplete="off"
+            :attrs="{ readonly: !!pending }"
+            @input="onInput"
+          ></textarea>
+        </div>
+      </div>
+
+      <div class="diff" :if="pending">
+        <header class="diff-bar">
+          <span class="diff-title" :if="pending.changes.length">the solution changes:</span>
+          <span class="diff-title" :else>no changes — your code already matches the solution</span>
+          <span class="spacer"></span>
+          <button class="ghost" @click="dismiss">cancel</button>
+          <button class="accept" :if="pending.changes.length" @click="apply">apply</button>
+        </header>
+
+        <div class="diff-body">
+          <div class="diff-file" :each="file in pending.changes" :key="file.name">
+            <div class="diff-name">{{ file.name }}</div>
+            <div class="diff-rows hljs">
+              <div
+                :each="row in file.rows"
+                :key="$index"
+                :attrs="{ class: `row ${row.type}` }"
+                :html="row.html"
+              ></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div class="output">
       <div class="preview"></div>
@@ -194,8 +350,6 @@
     gap: 1px;
     background: var(--line);
     /* the shell page makes #app the flex-grown remainder below the header */
-    /* height: 100%;
-    min-height: 30rem; */
     height: calc(100vh - 2.5rem);
     height: calc(100dvh - 2.5rem);
   }
@@ -295,19 +449,127 @@
   .tab.active { background: var(--code-bg); color: var(--fg); font-weight: 600; }
   .ghost { color: var(--accent); }
 
-  .editor {
+  .pane {
+    position: relative;
     flex: 1 1 55%;
     min-height: 12rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* The editor is a textarea with its text made invisible, sitting exactly on
+     top of a <pre> holding the same text, highlighted. Only the caret and the
+     selection show through, so what the user reads is the highlighted layer
+     while what they type into is still a plain textarea.
+
+     The two only stay aligned if they wrap identically, hence the shared metrics
+     below: same font, same padding, same wrapping. The <pre> is the one in flow,
+     so it sizes the pane's scroll height and the textarea stretches to match -
+     which means neither ever scrolls on its own and there's no scroll to sync. */
+  .code { height: 100%; overflow: auto; background: var(--code-bg); }
+  .code-layers { position: relative; min-height: 100%; }
+
+  .code-shadow,
+  .editor {
+    margin: 0;
     padding: 1rem;
     border: 0;
-    border-bottom: 1px solid var(--line);
-    background: var(--code-bg);
-    color: var(--fg);
     font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    resize: none;
     tab-size: 2;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+
+  .code-shadow {
+    position: relative;
+    min-height: 100%;
+    background: none;
+    pointer-events: none;
+  }
+
+  .editor {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    color: transparent;
+    caret-color: var(--fg);
+    resize: none;
+    overflow: hidden;
   }
   .editor:focus { outline: 0; }
+  /* the text is transparent, so the selection has to be the thing you can see */
+  .editor::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+  /* the solution diff */
+
+  .diff {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+
+  .diff-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .diff-bar .spacer { flex: 1; }
+  .diff-title { color: var(--muted); font-size: 0.85rem; }
+  .accept {
+    padding: 0.3em 0.9em;
+    border: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .accept:hover { filter: brightness(1.1); }
+
+  .diff-body { flex: 1; overflow: auto; background: var(--code-bg); }
+  .diff-file + .diff-file { border-top: 1px solid var(--line); }
+  .diff-name {
+    padding: 0.4rem 1rem;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .diff-rows { padding: 0.5rem 0; }
+  .row {
+    padding: 0 1rem 0 2rem;
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    tab-size: 2;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    min-height: 1.6em;
+  }
+  /* the marker sits in the padding, so it can't push the code out of alignment
+     with the same code one row above or below */
+  .row::before {
+    display: inline-block;
+    width: 1rem;
+    margin-left: -1.5rem;
+    opacity: 0.7;
+    content: " ";
+  }
+  .row.add { background: color-mix(in srgb, #2da44e 16%, transparent); }
+  .row.add::before { content: "+"; }
+  .row.del { background: color-mix(in srgb, #cf222e 14%, transparent); }
+  .row.del::before { content: "−"; }
+  .row.same { opacity: 0.6; }
+
+  /* preview */
 
   .output { flex: 1 1 45%; overflow: auto; }
   .preview { padding: 1rem; }
@@ -326,7 +588,7 @@
   }
 
   @media (max-width: 60rem) {
-    .tutorial { grid-template-columns: 1fr; height: auto; }
+    .tutorial-container { grid-template-columns: 1fr; height: auto; }
     .work { height: 80vh; }
   }
 </style>
