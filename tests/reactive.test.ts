@@ -239,6 +239,111 @@ describe("$reactive", () => {
       expect(heard).toEqual([7])
     })
 
+    // A nested store keeps its own listeners - and the holder's effects are not
+    // among them, so a write through it used to notify nobody upstairs: a
+    // component rendering `{{ cart.items.length }}` off a `$reactive` it was
+    // handed never updated, which left shared state with no way back up but
+    // $emit. The holder subscribes to it and re-notifies under the path it sits
+    // at (see bridge)
+    it("wakes the holder's effects when the store inside it changes", () => {
+      const cart = $reactive({ items: ["apple"] })
+      const store = $reactive({ cart })
+
+      const seen: number[] = []
+      store.$effect(() => { seen.push(store.cart.items.length) })
+
+      store.cart.items = ["apple", "pear"]
+      cart.items = ["pear"]            // ...and through the inner store's own handle
+
+      expect(seen).toEqual([1, 2, 1])
+    })
+
+    it("wakes them on a mutation of an array inside the nested store", () => {
+      const cart = $reactive({ items: [] as string[] })
+      const store = $reactive({ cart })
+
+      const seen: number[] = []
+      store.$effect(() => { seen.push(store.cart.items.length) })
+
+      cart.items.push("apple")
+
+      // a push writes the index and then the length, so an effect that read the
+      // array wakes twice - it does the same for an array in the store's own
+      // data, and what matters is where it lands
+      expect(seen.at(-1)).toBe(1)
+    })
+
+    it("re-notifies the inner store's changes under the path it sits at", () => {
+      const inner = $reactive({ user: { name: "Ada" } })
+      const outer = $reactive({ session: inner })
+
+      const heard: string[] = []
+      outer.$onAny((dotKey, value) => heard.push(`${dotKey}=${value}`))
+      const exact: string[] = []
+      outer.$on("session.user.name", value => exact.push(value))
+
+      inner.user.name = "Grace"
+
+      expect(heard).toEqual(["session.user.name=Grace"])
+      expect(exact).toEqual(["Grace"])
+    })
+
+    it("carries a change up through a chain of stores", () => {
+      const leaf = $reactive({ n: 1 })
+      const middle = $reactive({ leaf })
+      const root = $reactive({ middle })
+
+      const seen: number[] = []
+      root.$effect(() => { seen.push(root.middle.leaf.n) })
+
+      leaf.n = 2
+
+      expect(seen).toEqual([1, 2])
+    })
+
+    it("gives every holder of one store its own view, and wakes them all", () => {
+      const cart = $reactive({ items: [] as string[] })
+      const first = $reactive({ cart })
+      const second = $reactive({ cart })
+
+      const seen: string[] = []
+      first.$effect(() => { seen.push(`first:${first.cart.items.length}`) })
+      second.$effect(() => { seen.push(`second:${second.cart.items.length}`) })
+
+      // this is the shared-state case: two components' stores over one $reactive
+      second.cart.items = ["apple"]
+
+      expect(seen).toEqual(["first:0", "second:0", "first:1", "second:1"])
+    })
+
+    it("stops listening to a store it no longer holds", () => {
+      const first = $reactive({ n: 1 })
+      const second = $reactive({ n: 10 })
+      const store = $reactive<{ current: any }>({ current: first })
+
+      const seen: number[] = []
+      store.$effect(() => { seen.push(store.current.n) })
+
+      store.current = second
+      first.n = 2        // the store it dropped: nobody here cares anymore
+      second.n = 20
+
+      expect(seen).toEqual([1, 10, 20])
+    })
+
+    it("drops its subscriptions on $dispose, so a shared store doesn't collect dead holders", () => {
+      const cart = $reactive({ items: [] as string[] })
+      const store = $reactive({ cart })
+
+      const seen: number[] = []
+      store.$effect(() => { seen.push(store.cart.items.length) })
+
+      store.$dispose()
+      cart.items.push("apple")
+
+      expect(seen).toEqual([0])
+    })
+
     it("passes class instances through untouched", () => {
       class Session {
         constructor(public id: number) {}

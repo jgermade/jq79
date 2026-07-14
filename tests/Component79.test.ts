@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { $, $$, Component79 } from "../src/jq79"
+import { $, $$, Component79, $reactive } from "../src/jq79"
 
 describe("Component79", () => {
   let host: HTMLDivElement
@@ -595,6 +595,39 @@ describe("Component79", () => {
 
       expect($(host, ".child")?.textContent).toBe("Hardcoded title / Ada")
       jq79.destroy()
+    })
+
+    // a `$reactive` handed to several components is the shared-state case: each
+    // one wraps it in its own store, and a write from any of them - or from
+    // outside - has to reach all of them. Before the stores bridged what they
+    // nest, a child's write updated the child alone and the parent's DOM went
+    // stale, leaving $emit as the only way back up
+    it("shares a `$reactive` store between parent and children, in both directions", () => {
+      const cart = $reactive({ items: [] as string[] })
+      const child = new Component79(
+        `<button class="child" @click="cart.items = [...cart.items, 'from child']">{{ cart.items.length }}</button>`
+      )
+      const jq79 = new Component79(
+        `<div><p class="parent">{{ cart.items.length }}</p><CartChild :cart /><CartChild :cart /></div>`
+      ).render({ cart, CartChild: child }).mount(host)
+
+      const [first, second] = $$(host, ".child")
+      expect($(host, ".parent")?.textContent).toBe("0")
+
+      first.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect($(host, ".parent")?.textContent).toBe("1")
+      expect(second.textContent).toBe("1")
+
+      // and the store drives them from outside the component tree too
+      cart.items = ["a", "b", "c"]
+
+      expect($(host, ".parent")?.textContent).toBe("3")
+      expect(first.textContent).toBe("3")
+
+      // once the tree is gone, the store it was handed keeps none of its listeners
+      jq79.destroy()
+      expect(() => { cart.items = [] }).not.toThrow()
     })
 
     it("passes a plain (non-`:`) attribute to the child as a literal string prop", () => {

@@ -1033,6 +1033,9 @@ export class Component79 {
     this.detach()
     this.fx?.dispose()
     this.fx = null
+    // a store this component was handed (a shared `$reactive`) outlives it, and
+    // holds a listener per store that nested it - drop this instance's
+    this.data?.$dispose()
     this.styleEls.forEach(el => el.parentNode?.removeChild(el))
     this.styleEls = []
     if (this.ownsSharedStyles) {

@@ -34,6 +34,10 @@ invariants that look like implementation details and are not. The short version:
 - **A proxy's identity is keyed to the object, not its path**, because `:each`
   diffs its items by reference. Key the cache by path and every reorder rebuilds
   the list.
+- **A store nested in another store is bridged, not wrapped.** The holder
+  subscribes to it and re-notifies its changes under the path it sits at — that's
+  what makes a `$reactive` passed as a prop shared *state*, visible to every
+  component that holds it. Wrapping it instead would bring the freeze back.
 - **Top-level `let`/`const` in a setup script become reactive store variables.**
   An effect that reads *and* writes one wakes itself forever — but only from the
   second pass, so it renders fine and dies later. Timers, cached instances and

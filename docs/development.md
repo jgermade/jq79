@@ -35,6 +35,17 @@ components with one data object, or re-mounting one, was enough to hang it.
 Reverting to eager wrapping brings that straight back; `tests/reactive.test.ts`
 ("data shared with another store") is what stands in the way.
 
+**A nested store is bridged, not wrapped.** A store put inside another store keeps
+its own listeners and its own effects — and the holder's effects are not among
+them, so a write through it would notify nobody upstairs. The holder subscribes
+to it instead (`$onAny`) and re-notifies its changes under the path it sits at
+(`items.0` → `cart.items.0`), which is the path an effect reading through `cart`
+recorded as a dependency. That bridge is what makes a shared `$reactive` shared
+*state* rather than shared data, so don't remove it in the name of the invariant
+above: the fix for eager wrapping is not to re-wrap the store, it's to listen to
+it. It's dropped when the holder is destroyed (`$dispose`), or a long-lived store
+would collect a listener per component that ever held it.
+
 **Identity is keyed to the object, not to its path.** A reordered list has to hand
 back the same proxy for the same item, because [`:each`](template-syntax.md) diffs
 by reference (`Object.is`) — key the proxy cache by path instead and every row

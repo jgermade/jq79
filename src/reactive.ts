@@ -13,6 +13,10 @@ export type ReactiveDeepData<T> = T & {
   // runs `run` immediately, recording every dotKey it reads off this store, then
   // re-runs it whenever a changed dotKey overlaps one of those - see pathsOverlap
   $effect: (run: () => void) => Unsubscribe
+  // drops this store's subscriptions to the stores nested inside it (see
+  // bridge). A store that outlives the one holding it - the shared-state case -
+  // would otherwise keep the dead holder's listeners on its own list forever
+  $dispose: () => void
 }
 
 const getByPath = (obj: Record<string, any>, dotKey: string): any =>
@@ -116,6 +120,33 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   const isWrappable = (value: any): value is Record<string, any> =>
     value !== null && typeof value === "object" && isPlainData(value)
 
+  // a store nested inside this one keeps its own listeners and its own effects,
+  // and this store's effects are not among them - so a write through the inner
+  // store notifies nobody out here, and a component rendering `{{ cart.items }}`
+  // off a `$reactive` it was handed would never update. The holder subscribes
+  // instead, and re-notifies the inner store's changes under the path it sits at
+  // ("items.0" -> "cart.items.0"). An effect that read through `cart` recorded
+  // exactly that path's ancestor as a dependency, so pathsOverlap wakes it.
+  // Chains compose: re-notifying runs this store's own $onAny listeners, which
+  // is how a store two levels down still reaches the top
+  const bridges = new Map<string, { store: any; unsubscribe: Unsubscribe }>()
+
+  const bridge = (store: any, path: string) => {
+    const current = bridges.get(path)
+    if (current?.store === store) return
+    current?.unsubscribe()
+    bridges.set(path, {
+      store,
+      unsubscribe: store.$onAny((dotKey: string, value: any) => notify(`${path}.${dotKey}`, value)),
+    })
+  }
+
+  // the key no longer holds the store it held: stop listening to it
+  const unbridge = (path: string) => {
+    bridges.get(path)?.unsubscribe()
+    bridges.delete(path)
+  }
+
   // the reactive view of `raw`, created on demand. Callers must hand it a raw
   // object (see toRaw at both call sites): wrapping a proxy is what compounds
   const wrap = (raw: Record<string, any>, path: string): Record<string, any> => {
@@ -135,7 +166,10 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         // nested objects are wrapped here rather than up front, so the object
         // handed to $reactive is never rewritten
         const value = Reflect.get(target, key, receiver)
-        if (isStore(value)) return value
+        if (isStore(value)) {
+          bridge(value, dotKey)
+          return value
+        }
 
         const raw = toRaw(value)
         return isWrappable(raw) ? wrap(raw, dotKey) : raw
@@ -160,6 +194,8 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         const stored = isStore(value) ? value : toRaw(value)
         const isNewKey = !Object.prototype.hasOwnProperty.call(target, key)
         target[key] = stored
+        if (isStore(stored)) bridge(stored, dotKey)
+        else unbridge(dotKey)
         const notified = isStore(stored) || !isWrappable(stored) ? stored : wrap(stored, dotKey)
         notify(dotKey, notified, isNewKey)
         return true
@@ -171,6 +207,16 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   }
 
   const reactive = wrap(toRaw(data), "") as ReactiveDeepData<T>
+
+  // a store handed in with the data (a prop, or render data) is bridged here
+  // rather than on first read, so a listener registered before anything reads
+  // the key still hears it. Only the top level is scanned: that's where a prop
+  // lands, and descending would mean walking whatever else was handed in - a
+  // highlighter, an API client - to its leaves. A store sitting deeper is
+  // bridged when the read that reaches it wraps its parent
+  Object.entries(toRaw(data)).forEach(([key, value]) => {
+    if (isStore(value)) bridge(value, key)
+  })
 
   const $on = (dotKey: string, listener: ChangeListener, { immediate = false }: ListenerOptions = {}): Unsubscribe => {
     if (!exactListeners.has(dotKey)) exactListeners.set(dotKey, new Set())
@@ -204,9 +250,15 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     return () => { effects.delete(effect) }
   }
 
+  const $dispose = () => {
+    bridges.forEach(({ unsubscribe }) => unsubscribe())
+    bridges.clear()
+  }
+
   storeApi.$on = $on
   storeApi.$onAny = $onAny
   storeApi.$effect = $effect
+  storeApi.$dispose = $dispose
 
   return reactive
 }
