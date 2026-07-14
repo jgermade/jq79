@@ -747,6 +747,105 @@ describe("Component79", () => {
       expect(childEl.textContent).toBe("x") // child effects disposed with the parent
     })
 
+    // a component renders as a fragment (two anchors with the instance's DOM
+    // between them), and a fragment empties itself on insertion - :each and :if
+    // used to hold the fragment as their handle to the entry/branch, so keyed
+    // reorders moved nothing and removals left the anchors behind
+    it("reorders a keyed :each of components, keeping unchanged instances", () => {
+      const child = new Component79(`<span class="card">{{ item.label }}</span>`)
+      const jq79 = new Component79(
+        `<div class="list"><Card :each="item in items" :key="item.id" :item></Card><b class="tail">tail</b></div>`
+      ).render({
+        Card: child,
+        items: [
+          { id: 1, label: "one" },
+          { id: 2, label: "two" },
+          { id: 3, label: "three" },
+        ],
+      }).mount(host)
+
+      const labels = () => $$(host, ".card").map(el => el.textContent)
+      expect(labels()).toEqual(["one", "two", "three"])
+      const [firstCard] = $$(host, ".card")
+
+      const data = jq79.data!
+      data.items = [data.items[2], data.items[0], data.items[1]]
+
+      expect(labels()).toEqual(["three", "one", "two"])
+      // same key, same item: the instance's DOM moved rather than being rebuilt
+      expect($$(host, ".card")[1]).toBe(firstCard)
+      // and repositioning didn't push the list's following sibling around
+      expect($(host, ".list")?.lastElementChild?.className).toBe("tail")
+
+      jq79.destroy()
+    })
+
+    it("removes :each component entries whole - anchors included, churn after churn", () => {
+      const child = new Component79(`<span class="card">{{ item.label }}</span>`)
+      const jq79 = new Component79(
+        `<div class="list"><Card :each="item in items" :key="item.id" :item></Card></div>`
+      ).render({
+        Card: child,
+        items: [{ id: 1, label: "one" }, { id: 2, label: "two" }],
+      }).mount(host)
+
+      const list = $(host, ".list")!
+      const data = jq79.data!
+
+      data.items = [data.items[0]]
+      expect($$(host, ".card").map(el => el.textContent)).toEqual(["one"])
+      const settled = list.childNodes.length
+
+      data.items = [data.items[0], { id: 3, label: "three" }]
+      data.items = [data.items[0]]
+
+      expect($$(host, ".card").map(el => el.textContent)).toEqual(["one"])
+      expect(list.childNodes.length).toBe(settled) // nothing accumulates
+      jq79.destroy()
+    })
+
+    it("switches :if away from a component without leaving its anchors behind", () => {
+      const child = new Component79(`<span class="card">on</span>`)
+      const jq79 = new Component79(
+        `<div class="box"><Card :if="show"></Card><p :else class="off">off</p></div>`
+      ).render({ Card: child, show: true }).mount(host)
+
+      const box = $(host, ".box")!
+      const data = jq79.data!
+
+      data.show = false
+      const settled = box.childNodes.length
+      for (let i = 0; i < 5; i++) {
+        data.show = true
+        data.show = false
+      }
+
+      expect(box.childNodes.length).toBe(settled) // nothing accumulates
+      expect($(host, ".off")).not.toBeNull()
+      data.show = true
+      expect($(host, ".card")).not.toBeNull()
+      jq79.destroy()
+    })
+
+    it("cleans up an upgraded late component when its :if branch goes away", () => {
+      const child = new Component79(`<span class="card">late</span>`)
+      const jq79 = new Component79(
+        `<div class="box"><late-card :if="show"></late-card><p :else class="off">off</p></div>`
+      ).render({ show: true }).mount(host)
+
+      jq79.data!.LateCard = child
+      expect($(host, ".card")).not.toBeNull()
+
+      jq79.data!.show = false
+
+      expect($(host, ".card")).toBeNull()
+      expect($(host, ".off")).not.toBeNull()
+      // the branch took the upgrade's anchors with it: only :if's own remains
+      const comments = Array.from($(host, ".box")!.childNodes).filter(node => node.nodeType === Node.COMMENT_NODE)
+      expect(comments.map(node => node.textContent)).toEqual(["if"])
+      jq79.destroy()
+    })
+
     it("expands self-closing component tags, keeping siblings intact", () => {
       const First = new Component79(`<span class="first">{{ user.name }}</span>`)
       const Second = new Component79(`<span class="second">{{ user.name }}</span>`)

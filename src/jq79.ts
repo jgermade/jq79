@@ -120,6 +120,40 @@ const bindEvent = (el: Element, attr: string, expr: string, scope: Record<string
 
 const kebabToCamel = (name: string) => name.replace(/-(\w)/g, (_, c: string) => c.toUpperCase())
 
+// the stable boundaries of a rendered chunk. An element is its own handle, but
+// a fragment (a nested component: two anchors with the instance's DOM between
+// them) empties itself into the parent on insertion - after that its identity
+// answers nothing, and what stays put are its first and last children. Callers
+// that reposition or remove a chunk later (:each entries, :if branches) must
+// capture its bounds *before* inserting it and work on the range
+type NodeRange = { first: Node; last: Node }
+
+const boundsOf = (node: Node): NodeRange =>
+  node instanceof DocumentFragment
+    ? { first: node.firstChild!, last: node.lastChild! }
+    : { first: node, last: node }
+
+// removes [first..last] inclusive - the range's content is dynamic (a nested
+// component's DOM comes and goes between its anchors), so it walks siblings
+// rather than assuming any particular nodes in between
+const removeRange = ({ first, last }: NodeRange) => {
+  for (let node: Node | null = first; node; ) {
+    const next: Node | null = node === last ? null : node.nextSibling
+    node.parentNode?.removeChild(node)
+    node = next
+  }
+}
+
+// moves [first..last] inclusive so the range starts right after `prev`
+const moveRangeAfter = ({ first, last }: NodeRange, prev: Node) => {
+  const ref = prev.nextSibling
+  for (let node: Node | null = first; node; ) {
+    const next: Node | null = node === last ? null : node.nextSibling
+    prev.parentNode!.insertBefore(node, ref)
+    node = next
+  }
+}
+
 // finds the scope variable a template tag refers to. HTML parsing lowercases
 // tag names, so <NestedComponent> arrives as "nestedcomponent" and matching is
 // case-insensitive with dashes stripped (<nested-component> works too). Only
@@ -149,9 +183,14 @@ const findComponentKey = (scope: Record<string, any>, tag: string): string | nul
 // tree, and a style that never applies to its own component would still be
 // restyling the page around it
 const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
+  // two anchors bracketing everything this usage site ever renders: the
+  // instance's DOM is dynamic (the definition can resolve late or be swapped),
+  // so a caller that needs to move or remove this chunk later can't hold any
+  // of it - it holds the anchors, which never move on their own (see boundsOf)
   const anchor = document.createComment(key)
+  const endAnchor = document.createComment(`/${key}`)
   const wrapper = document.createDocumentFragment()
-  wrapper.appendChild(anchor)
+  wrapper.append(anchor, endAnchor)
 
   const props: Record<string, string> = {} // prop name -> expression in parent scope
   Object.entries(node.attrs).forEach(([attr, value]) => {
@@ -199,7 +238,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // they style, and the parent's shadow root is what scopes both
     const holder = document.createDocumentFragment()
     ;(shadow ? instance.renderShadow(seed) : instance.render(seed)).mount(holder)
-    anchor.parentNode!.insertBefore(holder, anchor.nextSibling)
+    endAnchor.parentNode!.insertBefore(holder, endAnchor)
 
     const syncFx = createEffectScope(scope)
     Object.entries(props).forEach(([name, expr]) => {
@@ -283,7 +322,12 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       const key = findComponentKey(scope, node.tag)
       if (!key) return
       upgraded = true
-      el.replaceWith(renderNestedComponent(key, node, scope, fx, shadow))
+      const replacement = renderNestedComponent(key, node, scope, fx, shadow)
+      // whoever tears this subtree down holds `el`, which the swap detaches -
+      // so the component's anchors must remove themselves when the scope goes
+      const range = boundsOf(replacement)
+      fx.onDispose(() => removeRange(range))
+      el.replaceWith(replacement)
     })
   }
 
@@ -333,7 +377,7 @@ const renderConditional = (branches: ConditionalBranch[], scope: Record<string, 
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
 
-  let current: Node | null = null
+  let current: NodeRange | null = null
   let activeBranch: ConditionalBranch | null = null
   let branchFx: EffectScope | null = null
 
@@ -342,14 +386,17 @@ const renderConditional = (branches: ConditionalBranch[], scope: Record<string, 
     if (next === activeBranch) return
 
     branchFx?.dispose()
-    if (current) current.parentNode?.removeChild(current)
+    if (current) removeRange(current)
     current = null
     activeBranch = next
     if (!next) return
 
     branchFx = createEffectScope(scope)
-    current = renderNode(next.node, scope, branchFx, shadow)
-    anchor.parentNode!.insertBefore(current, anchor.nextSibling)
+    // bounds captured before inserting: a component branch is a fragment, and
+    // inserting it is what empties it (see boundsOf)
+    const rendered = renderNode(next.node, scope, branchFx, shadow)
+    current = boundsOf(rendered)
+    anchor.parentNode!.insertBefore(rendered, anchor.nextSibling)
   })
 
   return wrapper
@@ -367,7 +414,7 @@ const defineScopeVar = (scope: Record<string, any>, key: string, value: any) => 
   Object.defineProperty(scope, key, { value, writable: true, enumerable: true, configurable: true })
 }
 
-type EachEntry = { key: any; item: any; scope: Record<string, any>; node: Node; fx: EffectScope }
+type EachEntry = { key: any; item: any; scope: Record<string, any>; range: NodeRange; fx: EffectScope }
 
 // :each="item in items", optionally keyed with :key="expr". Only depends on
 // the list expression itself (e.g. "items"), and on each run diffs by key:
@@ -409,25 +456,30 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         return existing
       }
 
-      existing?.fx.dispose()
-      existing?.node.parentNode?.removeChild(existing.node)
+      if (existing) {
+        existing.fx.dispose()
+        removeRange(existing.range)
+      }
 
       const itemFx = createEffectScope(scope)
-      return { key, item, scope: itemScope, fx: itemFx, node: renderNode(itemNode, itemScope, itemFx, shadow) }
+      // bounds captured before the positioning pass inserts the entry: a
+      // component entry is a fragment, which empties on insertion (see boundsOf)
+      const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
+      return { key, item, scope: itemScope, fx: itemFx, range }
     })
 
     const nextKeys = new Set(nextEntries.map(entry => entry.key))
     entries.forEach(entry => {
       if (!nextKeys.has(entry.key)) {
         entry.fx.dispose()
-        entry.node.parentNode?.removeChild(entry.node)
+        removeRange(entry.range)
       }
     })
 
     let prevNode: Node = anchor
     nextEntries.forEach(entry => {
-      if (prevNode.nextSibling !== entry.node) anchor.parentNode!.insertBefore(entry.node, prevNode.nextSibling)
-      prevNode = entry.node
+      if (prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
+      prevNode = entry.range.last
     })
 
     entries = nextEntries
