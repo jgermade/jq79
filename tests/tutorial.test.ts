@@ -257,14 +257,10 @@ describe("the tutorial app", () => {
     location.hash = ""
     host = document.createElement("div")
     document.body.appendChild(host)
-    // a fresh copy per mount, deliberately: $reactive rewrites the object it is
-    // given, replacing nested objects with proxies in place, and a second store
-    // handed the same object wraps those proxies again. Re-mounting with one
-    // shared `sections` compounds the nesting until it hangs the process
-    instance = new Component79(app).mount(host, {
-      sections: structuredClone(sections),
-      Component79,
-    })
+    // the same `sections` object, mount after mount: each store keeps its own
+    // view of it rather than rewriting it in place (see the sharing tests in
+    // reactive.test.ts - this used to compound until it hung)
+    instance = new Component79(app).mount(host, { sections, Component79 })
     await settle()
   })
 

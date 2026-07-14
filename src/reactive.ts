@@ -41,9 +41,31 @@ const walkLeaves = (obj: Record<string, any>, path: string, visit: (dotKey: stri
 const pathsOverlap = (a: string, b: string): boolean =>
   a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`)
 
+// reads the raw object behind a store proxy. Module-level (not per-store) so a
+// value that is already reactive - in this store or in another one - can be
+// unwrapped before being wrapped again. Without it, handing the same object to
+// two stores has each one wrapping the other's proxies, and since a wrap walks
+// what it wraps, the nesting compounds until the process stops responding
+const RAW = Symbol("jq79.raw")
+
+const toRaw = <T>(value: T): T => {
+  let raw: any = value
+  while (raw !== null && typeof raw === "object" && raw[RAW]) raw = raw[RAW]
+  return raw
+}
+
+// marks a store's *root* proxy. A store put inside another store (a setup
+// script's `const local = $reactive(...)`) has to pass through whole: it owns
+// its listeners and its $on/$effect, so unwrapping it would strip away the very
+// thing it is. Nested proxies carry no such marker and are unwrapped freely
+const STORE = Symbol("jq79.store")
+
+const isStore = (value: any): boolean =>
+  value !== null && typeof value === "object" && value[STORE] === true
+
 // active $effect() runs, innermost last - a module-level stack (rather than
 // one per store) so nested effects across stores still nest correctly; reads
-// during makeReactive's `get` trap are attributed to whichever run is on top
+// during a proxy's `get` trap are attributed to whichever run is on top
 const trackerStack: Set<string>[] = []
 
 // runs fn with dependency tracking suspended - reads inside it are attributed
@@ -63,12 +85,22 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   const exactListeners = new Map<string, Set<ChangeListener>>()
   const anyListeners = new Set<AnyChangeListener>()
   const effects = new Set<Effect>()
-  // every proxy this store has ever handed out, so re-assigning an object
-  // that's already reactive (e.g. `data.list = [data.list[1], data.list[0]]`)
-  // doesn't wrap it a second time - which would hand out a *new* object
-  // identity for the same logical item, breaking reference-equality checks
-  // like :each's keyed diffing
-  const reactiveProxies = new WeakSet<object>()
+
+  // one proxy per raw object, for this store alone. Keyed by the *raw object*
+  // rather than by its path, so identity travels with the object: :each diffs
+  // its items by reference (Object.is), and a reordered list has to hand back
+  // the same proxy for the same item or every row would re-render. The flip
+  // side is that an object's path is fixed when it is first wrapped, so after a
+  // reorder its notifications carry the old index - effects that read the list
+  // itself still wake up (pathsOverlap), which is what makes it a non-issue in
+  // practice
+  const proxies = new WeakMap<object, Record<string, any>>()
+
+  // $on/$onAny/$effect are served from the root proxy's `get` instead of being
+  // defined on the object: a store must leave nothing behind on the data it was
+  // handed, and two stores over one object would otherwise clobber each other's
+  // handles. Null-prototype, so `key in storeApi` can't match Object.prototype
+  const storeApi: Record<string, any> = Object.create(null)
 
   const notify = (dotKey: string, value: any, isNewKey = false) => {
     exactListeners.get(dotKey)?.forEach(listener => listener(value, dotKey))
@@ -81,21 +113,32 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     })
   }
 
-  const makeReactive = (obj: Record<string, any>, path: string): Record<string, any> => {
-    if (reactiveProxies.has(obj)) return obj
+  const isWrappable = (value: any): value is Record<string, any> =>
+    value !== null && typeof value === "object" && isPlainData(value)
 
-    Object.entries(obj).forEach(([key, value]) => {
-      if (value && typeof value === "object" && isPlainData(value)) {
-        obj[key] = makeReactive(value, path ? `${path}.${key}` : key)
-      }
-    })
+  // the reactive view of `raw`, created on demand. Callers must hand it a raw
+  // object (see toRaw at both call sites): wrapping a proxy is what compounds
+  const wrap = (raw: Record<string, any>, path: string): Record<string, any> => {
+    const cached = proxies.get(raw)
+    if (cached) return cached
 
-    const proxy = new Proxy(obj, {
+    const proxy: Record<string, any> = new Proxy(raw, {
       get(target, key, receiver) {
-        if (typeof key === "string") {
-          trackerStack[trackerStack.length - 1]?.add(path ? `${path}.${key}` : key)
-        }
-        return Reflect.get(target, key, receiver)
+        if (key === RAW) return target
+        if (key === STORE) return path === ""
+        if (typeof key !== "string") return Reflect.get(target, key, receiver)
+        if (path === "" && key in storeApi) return storeApi[key]
+
+        const dotKey = path ? `${path}.${key}` : key
+        trackerStack[trackerStack.length - 1]?.add(dotKey)
+
+        // nested objects are wrapped here rather than up front, so the object
+        // handed to $reactive is never rewritten
+        const value = Reflect.get(target, key, receiver)
+        if (isStore(value)) return value
+
+        const raw = toRaw(value)
+        return isWrappable(raw) ? wrap(raw, dotKey) : raw
       },
       set(target, key: string, value, receiver) {
         // an assignment delegated up the prototype chain from a derived scope
@@ -110,21 +153,24 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         }
 
         const dotKey = path ? `${path}.${key}` : key
-        if (value && typeof value === "object" && isPlainData(value)) {
-          value = makeReactive(value, dotKey)
-        }
+        // store the raw value, never a proxy - including one of our own, so
+        // that `list = [list[1], list[0]]` doesn't write proxies back into the
+        // data. Reads re-wrap it, from the cache, as the very same proxy. A
+        // whole store assigned in is the exception: it stays as it is
+        const stored = isStore(value) ? value : toRaw(value)
         const isNewKey = !Object.prototype.hasOwnProperty.call(target, key)
-        target[key] = value
-        notify(dotKey, value, isNewKey)
+        target[key] = stored
+        const notified = isStore(stored) || !isWrappable(stored) ? stored : wrap(stored, dotKey)
+        notify(dotKey, notified, isNewKey)
         return true
       }
     })
 
-    reactiveProxies.add(proxy)
+    proxies.set(raw, proxy)
     return proxy
   }
 
-  const reactive = makeReactive(data, "") as ReactiveDeepData<T>
+  const reactive = wrap(toRaw(data), "") as ReactiveDeepData<T>
 
   const $on = (dotKey: string, listener: ChangeListener, { immediate = false }: ListenerOptions = {}): Unsubscribe => {
     if (!exactListeners.has(dotKey)) exactListeners.set(dotKey, new Set())
@@ -158,9 +204,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     return () => { effects.delete(effect) }
   }
 
-  Object.defineProperty(reactive, "$on", { value: $on, enumerable: false })
-  Object.defineProperty(reactive, "$onAny", { value: $onAny, enumerable: false })
-  Object.defineProperty(reactive, "$effect", { value: $effect, enumerable: false })
+  storeApi.$on = $on
+  storeApi.$onAny = $onAny
+  storeApi.$effect = $effect
 
   return reactive
 }

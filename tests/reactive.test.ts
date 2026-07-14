@@ -159,4 +159,99 @@ describe("$reactive", () => {
 
     expect(Object.keys(scope)).toEqual(["name"])
   })
+
+  // A store used to rewrite the object it was handed, replacing every nested
+  // object with a proxy in place. Two stores over one object then wrapped each
+  // other's proxies, and since wrapping walked what it wrapped, the nesting
+  // compounded until the process stopped responding - which is what mounting
+  // two components with the same data, or re-mounting one, does.
+  describe("data shared with another store", () => {
+    it("leaves the object it was handed untouched", () => {
+      const data = { user: { address: { city: "NYC" } } }
+      const user = data.user
+      const address = data.user.address
+
+      $reactive(data)
+
+      expect(data.user).toBe(user)
+      expect(data.user.address).toBe(address)
+      expect(Object.keys(data)).toEqual(["user"])
+    })
+
+    it("gives each store its own view of the same object, without nesting them", () => {
+      const shared = { user: { name: "Ada" } }
+
+      const first = $reactive({ shared })
+      const second = $reactive({ shared })
+
+      // one raw object, two independent reactive views of it
+      expect(first.shared).not.toBe(second.shared)
+      expect(first.shared.user.name).toBe("Ada")
+      expect(second.shared.user.name).toBe("Ada")
+
+      // ...and each store still notifies its own listeners
+      const heard: string[] = []
+      first.$on("shared.user.name", value => heard.push(`first:${value}`))
+      second.$on("shared.user.name", value => heard.push(`second:${value}`))
+
+      first.shared.user.name = "Grace"
+      second.shared.user.name = "Katherine"
+
+      expect(heard).toEqual(["first:Grace", "second:Katherine"])
+    })
+
+    it("stays flat however many stores wrap the same data", () => {
+      const shared = { rows: [{ cells: [{ deep: { deeper: 1 } }] }] }
+
+      // this is the one that used to hang: each pass re-wrapped the last one's
+      // proxies, doubling the layers, and blew up with the nesting depth
+      const stores = Array.from({ length: 12 }, () => $reactive({ shared }))
+
+      stores.forEach(store => {
+        expect(store.shared.rows[0].cells[0].deep.deeper).toBe(1)
+      })
+    })
+
+    it("hands back the same proxy for the same object, so :each can diff by reference", () => {
+      const store = $reactive({ list: [{ id: 1 }, { id: 2 }] })
+      const first = store.list[0]
+
+      // identity is keyed to the object, not to where it sits, so a reorder
+      // keeps each item's DOM instead of rebuilding the whole list
+      store.list = [store.list[1], store.list[0]]
+
+      expect(store.list[1]).toBe(first)
+      expect(store.list[0].id).toBe(2)
+    })
+
+    it("keeps a store put inside another store whole", () => {
+      const inner = $reactive({ n: 1 })
+      const outer = $reactive({ inner })
+
+      // `inner` is a store, not plain data: it owns its listeners, so the outer
+      // store must not unwrap and re-wrap it
+      expect(outer.inner).toBe(inner)
+
+      const heard: number[] = []
+      outer.inner.$on("n", value => heard.push(value))
+      outer.inner.n = 7
+
+      expect(heard).toEqual([7])
+    })
+
+    it("passes class instances through untouched", () => {
+      class Session {
+        constructor(public id: number) {}
+        describe() { return `session ${this.id}` }
+      }
+      const session = new Session(3)
+      const when = new Date(0)
+
+      const store = $reactive({ session, when })
+
+      expect(store.session).toBe(session)
+      expect(store.session.describe()).toBe("session 3")
+      expect(store.when).toBe(when)
+    })
+  })
 })
