@@ -30,6 +30,22 @@ describe("setup script scanner on unterminated input", () => {
 
     expect(code).toBe(`$__effect(() => { total = sum([1, 2 });`)
   })
+
+  it("consumes an unterminated regex to the end of the source", () => {
+    const { vars, code } = transformSetupScript(`let re = /never closed`)
+
+    expect(vars).toEqual(["re"])
+    expect(code).toBe(`re = /never closed`)
+  })
+
+  it("stops an unclosed regex at its line end, so the damage stays on that line", () => {
+    // a literal can't contain an unescaped newline: the skip bails there and
+    // the next line is scanned normally - one broken line, not a cascade
+    const { vars, code } = transformSetupScript(`let re = /never closed\nlet after = 1`)
+
+    expect(vars).toEqual(["re", "after"])
+    expect(code).toBe(`re = /never closed\nafter = 1`)
+  })
 })
 
 describe("setup script scanner", () => {
@@ -176,6 +192,60 @@ describe("regex literals", () => {
     ])
   })
 
+  it("skips quantifier braces and a lone `}` inside a literal", () => {
+    // `{2,3}` used to count as real braces (balanced, by luck); a lone `}`
+    // used to clamp the depth AND flip atStatementStart mid-expression
+    expect(transformSetupScript(`$: ok = /^a{2,3}$/.test(s)\nlet after = 1`).code).toBe(
+      `$__effect(() => { ok = /^a{2,3}$/.test(s) });\nafter = 1`
+    )
+    expect(transformSetupScript(`let m = s.split(/}/)\nlet after = 1`).vars).toEqual(["m", "after"])
+  })
+
+  it("is not fooled by comment lookalikes inside the literal", () => {
+    // `/a\/*/` contains the two characters of a block-comment opener
+    const { vars, code } = transformSetupScript(`let m = s.match(/a\\/*/)\nlet after = 1`)
+
+    expect(vars).toEqual(["m", "after"])
+    expect(code).toBe(`m = s.match(/a\\/*/)\nafter = 1`)
+  })
+
+  it("keeps an escaped `]` from closing the character class", () => {
+    // the class is `[\]/]` - the escaped bracket stays inside, so the `/`
+    // after it must not close the literal
+    const { vars, code } = transformSetupScript(`$: m = s.match(/[\\]/]/)\nlet after = 1`)
+
+    expect(vars).toEqual(["m", "after"])
+    expect(code).toBe(`$__effect(() => { m = s.match(/[\\]/]/) });\nafter = 1`)
+  })
+
+  it("handles two slash-heavy literals in one expression", () => {
+    const { code } = transformSetupScript(`$: both = /a\\//.test(x) && /b\\//.test(y)\nlet after = 1`)
+
+    expect(code).toBe(`$__effect(() => { both = /a\\//.test(x) && /b\\//.test(y) });\nafter = 1`)
+  })
+
+  it("reads a regex and a division in the same statement", () => {
+    // the first `/` follows `=` (regex), the second follows `)` (division)
+    const { code } = transformSetupScript(`$: ratio = /\\d+\\//.test(s) / len\nlet after = 1`)
+
+    expect(code).toBe(`$__effect(() => { ratio = /\\d+\\//.test(s) / len });\nafter = 1`)
+  })
+
+  it("admits a regex after typeof, and at the very start of the script", () => {
+    expect(transformSetupScript(`$: kind = typeof /\\//`).code).toBe(
+      `$__effect(() => { kind = typeof /\\// });`
+    )
+    // nothing before the `/`: an expression can start here
+    expect(transformSetupScript(`/^#/.test(h) && init()\nlet after = 1`).vars).toEqual(["after"])
+  })
+
+  it("leaves a regex inside a template interpolation to the string skip", () => {
+    const { vars, code } = transformSetupScript("let t = `has ${s.split(/\\//).length} parts`\nlet after = 1")
+
+    expect(vars).toEqual(["t", "after"])
+    expect(code).toBe("t = `has ${s.split(/\\//).length} parts`\nafter = 1")
+  })
+
   it("leaves division alone", () => {
     // any future regex-awareness must keep classifying these as plain code:
     // division follows a completed expression (identifier, `)`, postfix ++)
@@ -236,6 +306,143 @@ describe("boundaries a scanner fix must respect", () => {
 
     expect(code).toBe(`$__effect(() => { sum = a + // parts });\n  b`)
   })
+
+  it("keeps a for-header `let` as the loop-local it is", () => {
+    // depth 1 inside the parens: the declaration rewrite must not reach it
+    const { vars, code } = transformSetupScript(`for (let i = 0; i < 3; i++) log(i)\nlet after = 1`)
+
+    expect(vars).toEqual(["after"])
+    expect(code).toBe(`for (let i = 0; i < 3; i++) log(i)\nafter = 1`)
+  })
+
+  it("leaves a destructuring declaration as plain (non-reactive) JS", () => {
+    // a known limit: DECLARATION_RE wants an identifier after the keyword, so
+    // `let [a, b]` keeps its `let` and stays local to the compiled script -
+    // change the scanner and this pin says what you signed up for
+    const { vars, code } = transformSetupScript(`let [a, b] = pair\nlet after = 1`)
+
+    expect(vars).toEqual(["after"])
+    expect(code).toBe(`let [a, b] = pair\nafter = 1`)
+  })
+
+  it("registers only the first name of a multi-declarator statement", () => {
+    // `b` still lands on the store at runtime (the assignment routes through
+    // the scope proxy as a new key); it just isn't pre-declared like `a`
+    const { vars, code } = transformSetupScript(`let a = 1, b = 2\nlet after = 1`)
+
+    expect(vars).toEqual(["a", "after"])
+    expect(code).toBe(`a = 1, b = 2\nafter = 1`)
+  })
+
+  it("ignores declarations hidden in a block comment", () => {
+    const { vars, code } = transformSetupScript(`/* let hidden = 1 */\nlet real = 2`)
+
+    expect(vars).toEqual(["real"])
+    expect(code).toBe(`/* let hidden = 1 */\nreal = 2`)
+  })
+
+  it("wraps a `$:` member assignment as an effect without declaring a var", () => {
+    const { vars, code } = transformSetupScript(`$: user.name = fullName.split(" ")[0]`)
+
+    expect(vars).toEqual([])
+    expect(code).toBe(`$__effect(() => { user.name = fullName.split(" ")[0] });`)
+  })
+
+  it("wraps a compound assignment without declaring its target", () => {
+    // `+=` is not the declaring form (`=` alone is): the effect still wraps
+    const { vars, code } = transformSetupScript(`$: count += step`)
+
+    expect(vars).toEqual([])
+    expect(code).toBe(`$__effect(() => { count += step });`)
+  })
+
+  it("reads the compact `$:x=y` form", () => {
+    const { vars, code } = transformSetupScript(`$:x=doubled`)
+
+    expect(vars).toEqual(["x"])
+    expect(code).toBe(`$__effect(() => { x=doubled });`)
+  })
+
+  it("keeps an arrow with a block body inside one `$:` statement", () => {
+    const { vars, code } = transformSetupScript(`$: handler = () => { if (open) close() }\nlet after = 1`)
+
+    expect(vars).toEqual(["handler", "after"])
+    expect(code).toBe(`$__effect(() => { handler = () => { if (open) close() } });\nafter = 1`)
+  })
+
+  it("wraps a Svelte-style destructuring `$:` without declaring vars", () => {
+    // `({ a, b } = obj)` assigns through the scope at runtime; no name is
+    // captured because the statement doesn't start with `identifier =`
+    const { vars, code } = transformSetupScript(`$: ({ a, b } = obj)\nlet after = 1`)
+
+    expect(vars).toEqual(["after"])
+    expect(code).toBe(`$__effect(() => { ({ a, b } = obj) });\nafter = 1`)
+  })
+
+  it("splits two `$:` statements sharing a line at their semicolon", () => {
+    const { vars, code } = transformSetupScript(`$: a = 1; $: b = a + 1`)
+
+    expect(vars).toEqual(["a", "b"])
+    expect(code).toBe(`$__effect(() => { a = 1 });; $__effect(() => { b = a + 1 });`)
+  })
+
+  it("ends a `$:` statement at a CRLF line ending", () => {
+    // the `\r` rides along inside the effect as whitespace; the next line
+    // still starts a fresh statement
+    const { vars, code } = transformSetupScript(`$: x = a\r\nlet after = 1`)
+
+    expect(vars).toEqual(["x", "after"])
+    expect(code).toBe(`$__effect(() => { x = a\r });\nafter = 1`)
+  })
+
+  it("passes `await` in a `$:` through for the engine to reject", () => {
+    // a known limit, pinned: the effect callback is a sync arrow, so the
+    // compiled script throws "await is only valid in async functions" - the
+    // transform hands the statement over as written rather than guessing
+    const { code } = transformSetupScript(`$: data = await fetchData()`)
+
+    expect(code).toBe(`$__effect(() => { data = await fetchData() });`)
+  })
+
+  it("registers only the ASCII stem of an accented identifier", () => {
+    // a known limit, pinned: the identifier regexes are ASCII (`\w`), so
+    // `café` pre-declares as `caf`. The emitted code is intact - the store
+    // key appears on first assignment through the scope - but a template
+    // reading it before that first write won't resolve the name
+    const { vars, code } = transformSetupScript(`let café = 1`)
+
+    expect(vars).toEqual(["caf"])
+    expect(code).toBe(`café = 1`)
+  })
+})
+
+// the import() -> $__import rewrite: only real calls, wherever they sit
+describe("the import() rewrite", () => {
+  it("rewrites a call in a plain statement", () => {
+    expect(transformSetupScript(`const C = await import("./x.html")`).code).toBe(
+      `C = await $__import("./x.html")`
+    )
+  })
+
+  it("rewrites a call inside a `$:` statement", () => {
+    // the body used to be sliced into the effect raw, so an import() there
+    // kept the native form - bypassing the bundler map and the .html loader
+    const { code } = transformSetupScript(`$: comp = import("./x.html")`)
+
+    expect(code).toBe(`$__effect(() => { comp = $__import("./x.html") });`)
+  })
+
+  it("leaves strings, comments, member calls and lookalike names alone", () => {
+    const src = [
+      `let s = "import('./a.html')"`,
+      `// import("./b.html")`,
+      `loader.import("./c.html")`,
+      `important("./d.html")`,
+    ].join("\n")
+    const { code } = transformSetupScript(src)
+
+    expect(code).not.toContain("$__import")
+  })
 })
 
 describe("transformFactoryScript", () => {
@@ -254,6 +461,29 @@ describe("transformFactoryScript", () => {
     )
 
     expect(code).toContain("$__exports.default = () => ({ a: 1 })")
+  })
+
+  it("rewrites a namespace import without unwrapping a default", () => {
+    const code = transformFactoryScript(`import * as helpers from "./helpers.js"\nexport default (_, ctx) => helpers`)
+
+    expect(code).toContain(`const helpers = await $__import("./helpers.js")`)
+    expect(code).not.toContain("$__default(")
+  })
+
+  it("rewrites a multi-line named import, keeping its line count", () => {
+    const src = `import {\n  count,\n  total\n} from "./stats.js"\nexport default (_, ctx) => count + total`
+    const code = transformFactoryScript(src)!
+
+    expect(code).toContain(`const {\n  count,\n  total\n} = await $__import("./stats.js")`)
+    expect(code.split("\n").length).toBe(src.split("\n").length)
+  })
+
+  it("rewrites a mixed default + namespace clause through one shared module", () => {
+    const code = transformFactoryScript(`import Card, * as extras from "./card.js"\nexport default (_, ctx) => Card`)
+
+    expect(code).toContain(
+      `const $__mod0 = await $__import("./card.js"), Card = $__default($__mod0), extras = $__mod0`
+    )
   })
 
   it("rewrites a side-effect import (no clause) into a bare await", () => {
@@ -292,6 +522,24 @@ describe("parsePropsPattern", () => {
     ])
   })
 
+  it("keeps a division default as code and reads the `=` past a regex one", () => {
+    // `total / 2` must not be mistaken for a regex; the `=` inside `/a=b/`
+    // must not be mistaken for the default's own
+    expect(parsePropsPattern(`{ half = total / 2, eq = /a=b/ }`)).toEqual([
+      { name: "half", default: "total / 2" },
+      { name: "eq", default: "/a=b/" },
+    ])
+  })
+
+  it("keeps a comment from closing the pattern early", () => {
+    // the `}` inside the comment must not end the pattern: `b` used to
+    // vanish and `a`'s default came back truncated as "1 /*"
+    expect(parsePropsPattern(`{ a = 1 /* } */, b = 2 }`)).toEqual([
+      { name: "a", default: "1 /* } */" },
+      { name: "b", default: "2" },
+    ])
+  })
+
   it("stops at the pattern's own brace, ignoring a parameter default", () => {
     expect(parsePropsPattern("{ label = 'Total' } = {}")).toEqual([{ name: "label", default: "'Total'" }])
   })
@@ -314,6 +562,21 @@ describe("parseFactoryProps", () => {
   it("reads an async factory, and a function-expression one", () => {
     expect(parseFactoryProps(`export default async ({ user }) => {}`)).toEqual([{ name: "user" }])
     expect(parseFactoryProps(`export default function ({ user }, ctx) {}`)).toEqual([{ name: "user" }])
+  })
+
+  it("keeps a comment from closing the parameter list early", () => {
+    // the `)` inside the comment must not end the list
+    expect(parseFactoryProps(`export default ({ retries = 3 /* ) */ }, ctx) => retries`)).toEqual([
+      { name: "retries", default: "3 /* ) */" },
+    ])
+  })
+
+  it("reads a regex default in the first parameter, comma included", () => {
+    // the comma inside /,/ must not split the parameter list or the pattern
+    expect(parseFactoryProps(`export default ({ sep = /,/, label = "x" }, { $data }) => sep`)).toEqual([
+      { name: "sep", default: "/,/" },
+      { name: "label", default: `"x"` },
+    ])
   })
 
   it("declares nothing when the first parameter isn't a pattern", () => {

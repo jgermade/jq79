@@ -235,7 +235,12 @@ export const transformSetupScript = (src: string): SetupTransform => {
         if (assign) vars.push(assign[1])
         const start = i + label[0].length
         const end = findStatementEnd(src, start)
-        out += `$__effect(() => { ${src.slice(start, end)} });`
+        // the body is re-scanned rather than sliced raw, so an `import()`
+        // inside it gets the $__import rewrite like anywhere else. Safe to
+        // recurse: strings/comments/regexes copy through unchanged, and a
+        // depth-0 declaration inside a labeled statement is a SyntaxError
+        // in JS anyway, so nothing else can rewrite
+        out += `$__effect(() => { ${transformSetupScript(src.slice(start, end)).code} });`
         i = end
         continue
       }
@@ -407,6 +412,8 @@ export const parsePropsPattern = (pattern: string | undefined): PropDecl[] | nul
   while (close < src.length) {
     const ch = src[close]
     if (ch === "'" || ch === '"' || ch === "`") { close = skipString(src, close); continue }
+    if (ch === "/" && src[close + 1] === "/") { close = skipLineComment(src, close); continue }
+    if (ch === "/" && src[close + 1] === "*") { close = skipBlockComment(src, close); continue }
     if (ch === "/" && regexAllowed(src, close)) { close = skipRegex(src, close); continue }
     if ("([{".includes(ch)) depth++
     else if (")]}".includes(ch) && --depth === 0) break
@@ -480,6 +487,8 @@ const firstParameterSource = (src: string): string | null => {
   while (end < src.length) {
     const ch = src[end]
     if (ch === "'" || ch === '"' || ch === "`") { end = skipString(src, end); continue }
+    if (ch === "/" && src[end + 1] === "/") { end = skipLineComment(src, end); continue }
+    if (ch === "/" && src[end + 1] === "*") { end = skipBlockComment(src, end); continue }
     if (ch === "/" && regexAllowed(src, end)) { end = skipRegex(src, end); continue }
     if ("([{".includes(ch)) depth++
     else if (")]}".includes(ch) && --depth === 0) break
