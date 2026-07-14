@@ -153,7 +153,17 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     const cached = proxies.get(raw)
     if (cached) return cached
 
+    // keys that were deleted off this object. `with ($scope)` resolves a name
+    // through [[HasProperty]], so without a claim here a deleted key would fall
+    // through to globalThis and the *whole* expression would die of
+    // ReferenceError - `user ? user.name : "none"` must take its else branch
+    // instead. The cost: `"user" in store` stays true after a delete
+    let tombstones: Set<string> | null = null
+
     const proxy: Record<string, any> = new Proxy(raw, {
+      has(target, key) {
+        return Reflect.has(target, key) || (typeof key === "string" && tombstones?.has(key) === true)
+      },
       get(target, key, receiver) {
         if (key === RAW) return target
         if (key === STORE) return path === ""
@@ -194,11 +204,29 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         const stored = isStore(value) ? value : toRaw(value)
         const isNewKey = !Object.prototype.hasOwnProperty.call(target, key)
         target[key] = stored
+        tombstones?.delete(key) // the key exists again: no claim needed
         if (isStore(stored)) bridge(stored, dotKey)
         else unbridge(dotKey)
         const notified = isStore(stored) || !isWrappable(stored) ? stored : wrap(stored, dotKey)
         notify(dotKey, notified, isNewKey)
         return true
+      },
+      // `delete data.user` is a plain-object mutation like any other, so it
+      // notifies like one - with `undefined`, which is what a read returns
+      // afterwards. Array methods that shrink (pop, splice) delete their dead
+      // slots through this trap too. No new-key sweep: whoever depended on the
+      // key tracked it while it existed, so dep matching wakes exactly them
+      deleteProperty(target, key) {
+        if (typeof key !== "string") return Reflect.deleteProperty(target, key)
+        const had = Object.prototype.hasOwnProperty.call(target, key)
+        const deleted = Reflect.deleteProperty(target, key)
+        if (deleted && had) {
+          const dotKey = path ? `${path}.${key}` : key
+          ;(tombstones ??= new Set()).add(key)
+          unbridge(dotKey) // a nested store it held: stop listening to it
+          notify(dotKey, undefined)
+        }
+        return deleted
       }
     })
 

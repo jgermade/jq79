@@ -272,6 +272,18 @@ describe("renderComponent", () => {
     expect($$(container, "li").map(el => el.textContent)).toEqual(["0:a", "1:b"])
   })
 
+  it("updates the template when a key it renders is deleted", () => {
+    const component = parseComponent(`<span class="v">{{ user ? user.name : "none" }}</span>`)
+    const data = $reactive({ user: { name: "Ada" } } as { user?: { name: string } })
+
+    container.appendChild(renderComponent(component, data))
+    expect($(container, ".v")?.textContent).toBe("Ada")
+
+    delete data.user
+
+    expect($(container, ".v")?.textContent).toBe("none")
+  })
+
   it("does not touch unrelated bindings when an unrelated property changes", () => {
     const component = parseComponent(`<div>{{ title }}</div><div :attrs="{ label }"></div>`)
     const data = $reactive({ title: "hi", label: "x", unrelated: 1 })

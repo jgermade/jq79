@@ -150,6 +150,30 @@ describe("jq79 vite plugin", () => {
       expect(code).not.toContain('from "https://esm.sh/other"')
     })
 
+    it("does not hoist specifiers sitting in comments or strings", async () => {
+      const dir = resolve("node_modules/.cache/jq79-tests")
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "commented.html")
+      await writeFile(file, `
+        <script :setup>
+          // const Old = await import("./gone.html")
+          /* import legacy from "./also-gone.js" */
+          const label = 'see import("./not-code.html") for details'
+          const Card = await import("./user-card.html")
+        </script>
+        <p>{{ x }}</p>
+      `)
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // only the real import is hoisted; the commented-out and quoted ones
+      // must not become bundle imports (a missing file would break the build)
+      expect(code).toContain('import __jq79_0 from "./user-card.html"')
+      expect(code).not.toContain("__jq79_1")
+      expect(code).not.toContain('from "./gone.html"')
+      expect(code).not.toContain('from "./also-gone.js"')
+      expect(code).not.toContain('from "./not-code.html"')
+    })
+
     it("leaves html imports the include does not claim to runtime fetch", async () => {
       const custom: any = jq79({ include: /\.c79\.html$/ })
       const dir = resolve("node_modules/.cache/jq79-tests")

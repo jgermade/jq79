@@ -154,6 +154,65 @@ describe("$reactive", () => {
     })
   })
 
+  // `delete` used to fall through untrapped: the key vanished from the raw
+  // object and nobody heard about it - effects kept rendering the dead value,
+  // and a deleted nested store stayed bridged
+  describe("deleting keys", () => {
+    it("notifies listeners with undefined when a key is deleted", () => {
+      const listener = vi.fn()
+      const scope = $reactive({ user: { name: "Ada" } } as { user?: { name: string } })
+      scope.$on("user", listener)
+
+      delete scope.user
+
+      expect(listener).toHaveBeenCalledWith(undefined, "user")
+    })
+
+    it("notifies the full dot path for a nested delete, waking effects that read it", () => {
+      const scope = $reactive({ user: { name: "Ada" } as { name?: string } })
+      const seen: any[] = []
+      scope.$effect(() => { seen.push(scope.user.name) })
+
+      delete scope.user.name
+
+      expect(seen).toEqual(["Ada", undefined])
+    })
+
+    it("hears array methods that shrink through [[Delete]], like pop", () => {
+      const listener = vi.fn()
+      const scope = $reactive({ items: [1, 2, 3] })
+      scope.$onAny(listener)
+
+      scope.items.pop()
+
+      expect(listener).toHaveBeenCalledWith("items.2", undefined)
+      expect(listener).toHaveBeenCalledWith("items.length", 2)
+    })
+
+    it("stops listening to a nested store when its key is deleted", () => {
+      const inner = $reactive({ n: 1 })
+      const holder = $reactive({ inner } as { inner?: typeof inner })
+      const listener = vi.fn()
+      holder.$onAny(listener)
+
+      delete holder.inner
+      listener.mockClear()
+      inner.n = 2
+
+      expect(listener).not.toHaveBeenCalled()
+    })
+
+    it("notifies nobody for a key that was never there", () => {
+      const listener = vi.fn()
+      const scope = $reactive({ name: "a" } as { name: string; ghost?: number })
+      scope.$onAny(listener)
+
+      delete scope.ghost
+
+      expect(listener).not.toHaveBeenCalled()
+    })
+  })
+
   it("does not expose $on/$onAny as enumerable data properties", () => {
     const scope = $reactive({ name: "a" })
 

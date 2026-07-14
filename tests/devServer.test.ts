@@ -56,6 +56,27 @@ describe("dev server", () => {
     expect(await res.text()).toContain("<title>app</title>")
   })
 
+  it("redirects a directory hit missing its trailing slash", async () => {
+    await mkdir(join(root, "docs"))
+    await writeFile(join(root, "docs", "index.html"), "<html><body>docs</body></html>")
+
+    // served as-is, the page's relative links would resolve against the parent
+    const res = await fetch(`${server.url}/docs`, { headers: asDocument, redirect: "manual" })
+
+    expect(res.status).toBe(301)
+    expect(res.headers.get("location")).toBe("/docs/")
+  })
+
+  it("does not mistake <header> for <head> when injecting the client", async () => {
+    await writeFile(join(root, "bare.html"), "<header>nav</header><main>content</main>")
+
+    const html = await get("/bare.html", asDocument).then(res => res.text())
+
+    // no <head> and no <body>: the client goes at the very top of the page,
+    // not inside the <header> element
+    expect(html.startsWith(`<script src="/__jq79/client.js"></script>`)).toBe(true)
+  })
+
   it("serves a component verbatim - it is fetched by the runtime, not rendered", async () => {
     // the same .html extension, and it must NOT get the client injected: the
     // runtime parses whatever comes back, so an injected <script> would become

@@ -8,7 +8,7 @@
 [![npm](https://jgermade.github.io/jq79/badges/npm.svg)](https://www.npmjs.com/package/jq79)
 [![coverage](https://jgermade.github.io/jq79/badges/coverage.svg)](https://jgermade.github.io/jq79/coverage/)
 [![esm](https://jgermade.github.io/jq79/badges/esm-size.svg)](https://jgermade.github.io/jq79/)
-[![cjs](https://jgermade.github.io/jq79/badges/cjs-size.svg)](https://jgermade.github.io/jq79/)
+[![cdn](https://jgermade.github.io/jq79/badges/cdn-size.svg)](https://jgermade.github.io/jq79/)
 
 A independent reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
 

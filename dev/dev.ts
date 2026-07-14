@@ -92,7 +92,8 @@ const isDocument = (req: IncomingMessage) => req.headers["sec-fetch-dest"] === "
 // fall back to the top of it rather than skipping the injection
 const injectClient = (html: string): string => {
   const tag = `<script src="${CLIENT_URL}"></script>`
-  const open = /<head[^>]*>/i.exec(html) ?? /<body[^>]*>/i.exec(html)
+  // (\s[^>]*)? rather than [^>]*, or <header> would pass for <head>
+  const open = /<head(\s[^>]*)?>/i.exec(html) ?? /<body(\s[^>]*)?>/i.exec(html)
   if (!open) return tag + html
   const at = open.index + open[0].length
   return html.slice(0, at) + tag + html.slice(at)
@@ -130,7 +131,16 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
     }
 
     try {
-      if ((await stat(file)).isDirectory()) file = join(file, "index.html")
+      if ((await stat(file)).isDirectory()) {
+        // a directory is served through its trailing-slash URL, like every
+        // static host: /docs rendered as-is would resolve its relative links
+        // against the parent ("img.png" -> /img.png instead of /docs/img.png)
+        if (!pathname.endsWith("/")) {
+          res.writeHead(301, { location: pathname + "/" }).end()
+          return
+        }
+        file = join(file, "index.html")
+      }
       const body = await readFile(file)
       const type = CONTENT_TYPES[extname(file).toLowerCase()] ?? "application/octet-stream"
 

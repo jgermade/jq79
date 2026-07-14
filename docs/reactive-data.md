@@ -18,6 +18,9 @@ const stop = data.$effect(() => {
 // deep mutations notify with the full dot path
 data.user.address.city = "LA"
 
+// so does deleting a key (listeners hear undefined, same as a read afterwards)
+delete data.user.address.city
+
 // effects/listeners return an unsubscribe fn
 stop()
 

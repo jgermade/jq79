@@ -33,13 +33,57 @@ export interface Jq79PluginOptions {
 const COMPONENT_QUERY = "?jq79"
 
 const SCRIPT_BLOCK_RE = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi
-// import("...") with a literal specifier; the lookbehind skips $__import and
-// property accesses like foo.import(...)
-const IMPORT_LITERAL_RE = /(?<![\w$.])import\s*\(\s*(["'])([^"'\n]+?)\1\s*\)/g
+// import("...") with a literal specifier, tried at word boundaries the
+// scanner below reaches (which is what skips $__import and foo.import(...))
+const IMPORT_CALL_RE = /import\s*\(\s*(["'])([^"'\n]+?)\1\s*\)/y
 // static import statements (factory scripts): optional clause + literal
 // specifier. The clause can't contain parens/quotes, so dynamic import()
 // and import.meta never match
-const STATIC_IMPORT_LITERAL_RE = /(?<![\w$.])import\s*(?:[\w$\s,{}*]+?\s*from\s*)?(["'])([^"'\n]+)\1/g
+const STATIC_IMPORT_RE = /import\s*(?:[\w$\s,{}*]+?\s*from\s*)?(["'])([^"'\n]+)\1/y
+
+const skipString = (src: string, start: number): number => {
+  const quote = src[start]
+  let i = start + 1
+  while (i < src.length) {
+    if (src[i] === "\\") { i += 2; continue }
+    if (src[i] === quote) return i + 1
+    i++
+  }
+  return src.length
+}
+
+// the literal import specifiers in one script body. A scanner rather than a
+// bare matchAll, because a specifier mentioned in a comment or a string is
+// not an import: hoisting a commented-out `import("./old.html")` would pull
+// dead files into the bundle - or break the build once the file is gone
+const importSpecifiers = (script: string): string[] => {
+  const specs: string[] = []
+  let i = 0
+  while (i < script.length) {
+    const ch = script[i]
+    if (ch === "'" || ch === '"' || ch === "`") { i = skipString(script, i); continue }
+    if (ch === "/" && script[i + 1] === "/") {
+      const end = script.indexOf("\n", i)
+      i = end === -1 ? script.length : end + 1
+      continue
+    }
+    if (ch === "/" && script[i + 1] === "*") {
+      const end = script.indexOf("*/", i + 2)
+      i = end === -1 ? script.length : end + 2
+      continue
+    }
+    if (ch === "i" && (i === 0 || !/[\w$.]/.test(script[i - 1]))) {
+      IMPORT_CALL_RE.lastIndex = i
+      const call = IMPORT_CALL_RE.exec(script)
+      if (call) { specs.push(call[2]); i = IMPORT_CALL_RE.lastIndex; continue }
+      STATIC_IMPORT_RE.lastIndex = i
+      const staticImport = STATIC_IMPORT_RE.exec(script)
+      if (staticImport) { specs.push(staticImport[2]); i = STATIC_IMPORT_RE.lastIndex; continue }
+    }
+    i++
+  }
+  return specs
+}
 
 const isHtmlUrl = (spec: string) => /\.html?([?#]|$)/.test(spec)
 const isExternalUrl = (spec: string) => /^[a-z][a-z0-9+.-]*:/i.test(spec) || spec.startsWith("/")
@@ -52,11 +96,7 @@ const isExternalUrl = (spec: string) => /^[a-z][a-z0-9+.-]*:/i.test(spec) || spe
 const hoistableImports = (source: string, include: RegExp): string[] => {
   const specifiers = new Set<string>()
   for (const [, script] of source.matchAll(SCRIPT_BLOCK_RE)) {
-    const specs = [
-      ...[...script.matchAll(IMPORT_LITERAL_RE)].map(match => match[2]),
-      ...[...script.matchAll(STATIC_IMPORT_LITERAL_RE)].map(match => match[2]),
-    ]
-    for (const spec of specs) {
+    for (const spec of importSpecifiers(script)) {
       if (isExternalUrl(spec)) continue
       if (isHtmlUrl(spec) && !include.test(spec)) continue // html left to runtime fetch
       specifiers.add(spec) // a claimed component, a source file or an npm package
