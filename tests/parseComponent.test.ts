@@ -50,11 +50,13 @@ describe("parseComponent", () => {
     expect(template[1]).toEqual({
       tag: "div",
       attrs: { class: "full-name" },
-      children: ["{{ fullName }}"],
+      children: ["\n      {{ fullName }}\n    "],
     })
   })
 
-  it("recurses into nested elements", () => {
+  // a template is HTML: the whitespace between two elements is the space the
+  // browser renders between them, so the AST keeps it and CSS decides its worth
+  it("recurses into nested elements, keeping the whitespace between them", () => {
     const { template } = parseComponent(`
       <ul>
         <li>one</li>
@@ -67,8 +69,11 @@ describe("parseComponent", () => {
         tag: "ul",
         attrs: {},
         children: [
+          "\n        ",
           { tag: "li", attrs: {}, children: ["one"] },
+          "\n        ",
           { tag: "li", attrs: {}, children: ["two"] },
+          "\n      ",
         ],
       },
     ])

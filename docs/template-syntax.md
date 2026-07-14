@@ -17,6 +17,12 @@ Expressions may span several lines — both here and in every directive (`:if`, 
   .length }}</span>
 ```
 
+## Whitespace
+
+A template is HTML, and its whitespace is HTML's: it reaches the DOM as written, and CSS decides what it's worth. Two elements on separate lines are separated by a space when they render inline — the same space you'd get from the same markup in an `.html` file — and by nothing when they're block or flex children. If you don't want the space, close the tags against each other (`</span><span>`) as you would anywhere else.
+
+The one exception is the indentation *between* the branches of an `:if`/`:elseif`/`:else` chain, which is dropped: only one branch is ever in the DOM, so there's nothing for it to be a space between.
+
 ## `:attrs` — dynamic attributes
 
 Evaluates to an object; each entry becomes an attribute. `null`, `undefined` and `false` values remove the attribute.

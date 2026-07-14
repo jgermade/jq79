@@ -24,12 +24,18 @@ type TagBlock = {
 const elementAttrs = (el: Element): Record<string, string> =>
   Object.fromEntries(Array.from(el.attributes).map(attr => [attr.name, attr.value]))
 
+// text is kept verbatim - not trimmed, not dropped when it's only whitespace.
+// A template is HTML, so the space in `<span>a</span>\n<span>b</span>` is the
+// same space the browser would collapse-and-render between them, and CSS gets
+// to decide what it's worth (nothing in a block or flex container, one space
+// between inline elements). Trimming it here, as this used to, silently glued
+// siblings together and ate the spaces in `hola <b>mundo</b> adios`
 const elementToAST = (el: Element): TemplateNode => ({
   tag: el.tagName.toLowerCase(),
   attrs: elementAttrs(el),
   children: Array.from(el.childNodes).flatMap((node): (TemplateNode | string)[] => {
     if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent?.trim() ?? ""
+      const text = node.textContent ?? ""
       return text ? [text] : []
     }
     if (node.nodeType === Node.ELEMENT_NODE) {
@@ -409,8 +415,10 @@ const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any
     const node = nodes[i]
 
     if (typeof node === "string") {
-      const textNode = document.createTextNode("")
-      fx.effect(() => { textNode.textContent = interpolate(node, scope) })
+      const textNode = document.createTextNode(node)
+      // static text is most of a template (all of its indentation, for a start):
+      // only text with a {{ expression }} in it needs an effect to stay in sync
+      if (node.includes("{{")) fx.effect(() => { textNode.textContent = interpolate(node, scope) })
       fragment.appendChild(textNode)
       i++
       continue
@@ -425,15 +433,27 @@ const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any
     if (":if" in node.attrs) {
       const branches: ConditionalBranch[] = [{ expr: node.attrs[":if"], node }]
       i++
-      while (i < nodes.length && typeof nodes[i] !== "string" && ":elseif" in (nodes[i] as TemplateNode).attrs) {
-        const elseifNode = nodes[i] as TemplateNode
-        branches.push({ expr: elseifNode.attrs[":elseif"], node: elseifNode })
-        i++
+
+      // the branches of a chain are siblings in the AST, but the template writes
+      // them on their own lines - so the whitespace between them is indentation
+      // and nothing else, and it's dropped rather than rendered: only one branch
+      // is ever in the DOM, so there is nothing for it to be a space *between*
+      const nextBranch = (attr: string): TemplateNode | undefined => {
+        let next = i
+        while (next < nodes.length && typeof nodes[next] === "string" && !(nodes[next] as string).trim()) next++
+        const candidate = nodes[next]
+        if (typeof candidate === "object" && attr in candidate.attrs) {
+          i = next + 1
+          return candidate
+        }
+        return undefined
       }
-      if (i < nodes.length && typeof nodes[i] !== "string" && ":else" in (nodes[i] as TemplateNode).attrs) {
-        branches.push({ node: nodes[i] as TemplateNode })
-        i++
+
+      for (let elseif = nextBranch(":elseif"); elseif; elseif = nextBranch(":elseif")) {
+        branches.push({ expr: elseif.attrs[":elseif"], node: elseif })
       }
+      const elseNode = nextBranch(":else")
+      if (elseNode) branches.push({ node: elseNode })
 
       fragment.appendChild(renderConditional(branches, scope, fx))
       continue

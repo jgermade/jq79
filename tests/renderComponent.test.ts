@@ -205,6 +205,51 @@ describe("renderComponent", () => {
     expect(container.querySelector(".c")).toBeNull()
   })
 
+  // the branches of a chain are siblings in the AST, and a real template writes
+  // them on their own lines - so the indentation between them lands in the AST
+  // too, and must not break the chain into three unrelated :if nodes
+  it("walks an :if/:else chain written across lines", () => {
+    const component = parseComponent(`
+      <div :if="ok" class="a">yes</div>
+      <div :elseif="maybe" class="b">maybe</div>
+      <div :else class="c">no</div>
+    `)
+    const data = $reactive({ ok: false, maybe: false })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect(container.querySelector(".c")).not.toBeNull()
+    expect(container.querySelector(".a")).toBeNull()
+    expect(container.querySelector(".b")).toBeNull()
+
+    data.maybe = true
+
+    expect(container.querySelector(".b")).not.toBeNull()
+    expect(container.querySelector(".c")).toBeNull()
+
+    data.ok = true
+
+    expect(container.querySelector(".a")).not.toBeNull()
+    expect(container.querySelector(".b")).toBeNull()
+    expect(container.querySelector(".c")).toBeNull()
+  })
+
+  // a template is HTML: siblings on separate lines are separated by a space when
+  // the browser renders them, so the template can't quietly glue them together
+  it("keeps the whitespace between siblings and around inline text", () => {
+    const component = parseComponent(`<p>
+      <span>uno</span>
+      <span>dos</span>
+      hola <b>{{ who }}</b> adios
+    </p>`)
+
+    container.appendChild(renderComponent(component, $reactive({ who: "mundo" })))
+
+    expect(container.querySelector("p")?.innerHTML).toBe(
+      "\n      <span>uno</span>\n      <span>dos</span>\n      hola <b>mundo</b> adios\n    "
+    )
+  })
+
   it("renders a list with :each and re-renders it when the array changes", () => {
     const component = parseComponent(`<li :each="name in names">{{ name }}</li>`)
     const data = $reactive({ names: ["a", "b"] })
