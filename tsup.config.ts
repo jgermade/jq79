@@ -20,4 +20,23 @@ export default defineConfig([
     platform: "node",
     target: "node18",
   },
+  {
+    entry: { dev: "src/dev.ts" },   // the no-bundle dev server, exported as jq79/dev
+    format: ["esm", "cjs"],
+    dts: false,
+    sourcemap: true,
+    clean: false,
+    platform: "node",
+    target: "node20",               // fs.watch({ recursive: true }) on linux
+  },
+  {
+    entry: { cli: "src/cli.ts" },   // the `jq79` command (package.json "bin")
+    format: ["esm"],                // it awaits at the top level
+    banner: { js: "#!/usr/bin/env node" },
+    dts: false,
+    sourcemap: false,
+    clean: false,
+    platform: "node",
+    target: "node20",
+  },
 ])

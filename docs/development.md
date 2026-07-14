@@ -35,6 +35,14 @@ local build.
 It builds `dist/` itself when it's missing or older than `src/` (~0.5s), since `npm
 test` runs before `npm run build`.
 
+The [dev server](dev-server.md) that serves that path — `npx jq79 dev`, in
+[`src/dev.ts`](../src/dev.ts) — is covered by
+[`tests/devServer.test.ts`](../tests/devServer.test.ts), which runs a real server
+over a real directory and asserts both ends of the seam a browser sits in: the
+`{ url, src }` an SSE frame carries, and the swap the runtime makes of it. The
+client script the server injects is fetched from the running server and executed,
+so a typo in it fails the suite rather than the page.
+
 ## Load-bearing invariants
 
 Things that look like implementation details but aren't — each one is held up by
@@ -69,6 +77,18 @@ re-renders on every reorder. The trade is that an object's dot-path is fixed whe
 it's first wrapped, so after a reorder its notifications carry the old index;
 effects that read the list itself still wake up (paths overlap), which is what
 makes it a non-issue in practice.
+
+**A hot swap re-attaches at the markers, and destroys before it swaps.**
+`hotReplace` — the one both the [Vite plugin](vite-plugin.md) and the
+[dev server](dev-server.md) drive — has two orderings that look arbitrary and are
+not. It re-inserts the new output *between the component's markers*, not into
+`mountRoot`, because a nested clone is mounted into a `DocumentFragment` that is
+then emptied into the page: its `mountRoot` is a stale, detached fragment, and
+re-mounting on it would lift the component out of the document. And it calls
+`destroy()` while `this.styles` still holds the **old** style blocks — `destroy()`
+releases the refcounted stylesheets it acquired, so swapping the parts in first
+releases a stylesheet nobody holds and leaves the old one styling the page
+forever.
 
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same

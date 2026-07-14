@@ -784,6 +784,88 @@ const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run
   if ($__exports.done) invoke() // fully-sync body: factory runs before first render
 }
 
+// ---------------------------------------------------------------------------
+// hot reload
+//
+// Both delivery paths want the same thing when a .html file changes: reparse
+// it, and re-render every live instance of it in place, keeping its data. The
+// swap lives in the runtime (hotReplace, below) so jq79/dev and the Vite
+// plugin share one implementation instead of two - and so it can reach the
+// private fields it needs (the markers, the holding fragment) rather than
+// poking at them from outside, which is what the plugin used to do.
+//
+// Finding the instances is the part only the runtime can do: a component
+// fetched at runtime is reachable from nothing but the DOM it rendered. So
+// instances register themselves - but only once a page opts in, before the
+// runtime loads. Nothing here costs a bundled app anything: with the registry
+// off, an instance is not tracked at all.
+// ---------------------------------------------------------------------------
+
+const HOT_FLAG = "__JQ79_HMR_ENABLED__"
+const HOT_RUNTIME = "__JQ79_HMR__"
+
+// live instances by filename. WeakRef because a destroyed component that the
+// page has dropped must stay collectable: `:each` churns through clones
+let hotRegistry: Map<string, Set<WeakRef<Component79>>> | null = null
+
+const hotRegister = (instance: Component79) => {
+  if (!hotRegistry || !instance.filename) return
+  let refs = hotRegistry.get(instance.filename)
+  if (!refs) hotRegistry.set(instance.filename, (refs = new Set()))
+  refs.add(new WeakRef(instance))
+}
+
+// the same file reaches the runtime under different names - "./card.html" from
+// an import() in a setup script, "/cards/card.html" from a fetch, "cards/card.
+// html" from the dev server that watched it - and they all have to land on one
+// key. Resolving against the page is what settles them
+const hotKey = (filename: string): string => {
+  try {
+    return new URL(filename, document.baseURI).pathname
+  } catch {
+    return filename
+  }
+}
+
+// swaps the file's new source into every instance that came from `filename`,
+// and returns how many of them were *on the page* and so re-rendered. Zero
+// means the change is not visible anywhere - the file is a page rather than a
+// component, or nothing has mounted it yet - and the caller (a dev server)
+// should fall back to reloading. Definitions and instances that have been
+// destroyed but not yet collected are patched all the same; they just don't
+// count, because nothing on screen changed for them
+export const hotUpdate = (filename: string, src: string): number => {
+  if (!hotRegistry) return 0
+
+  const key = hotKey(filename)
+  // parsed once and shared by every instance - which is already what a
+  // definition and the clones :component makes from it do
+  const parts = parseComponentString(src)
+
+  let rerendered = 0
+  for (const [name, refs] of hotRegistry) {
+    if (hotKey(name) !== key) continue
+    for (const ref of refs) {
+      const instance = ref.deref()
+      if (!instance) {
+        refs.delete(ref) // collected since the last update
+        continue
+      }
+      if (instance.hotReplace(parts)) rerendered++
+    }
+    if (!refs.size) hotRegistry.delete(name)
+  }
+  return rerendered
+}
+
+// starts tracking instances, so hotUpdate can find them. jq79/dev's client
+// calls this through the global handshake at the foot of this file; it is
+// exported so a bundled app - or a test - can opt in directly
+export const enableHotReload = (): void => {
+  hotRegistry ??= new Map()
+  ;(globalThis as any)[HOT_RUNTIME] = { update: hotUpdate }
+}
+
 type EmitListener = (event: CustomEvent, payload: any) => void
 
 // a parsed single-file component. Typical lifecycle:
@@ -834,6 +916,56 @@ export class Component79 {
     this.styles = parts.styles
     this.modules = options.modules ?? (typeof src === "string" ? undefined : src.modules)
     this.filename = options.filename ?? (typeof src === "string" ? undefined : src.filename)
+    hotRegister(this) // a no-op unless the page enabled hot reload
+  }
+
+  // swaps this component's parsed parts for `src`'s and, if it is on the page,
+  // re-renders it where it stands - seeded with a snapshot of its data, so
+  // props and store values survive (the setup script runs again, so whatever it
+  // initializes is reset). Returns whether it re-rendered: an instance that was
+  // never rendered is a *definition*, and patching its parts is all there is to
+  // do - the clones :component made from it are instances in their own right,
+  // registered under the same filename, and re-render themselves.
+  //
+  // Dev-only, and not part of the public API: jq79/dev and the Vite plugin call
+  // it when a file changes. It re-attaches against the markers rather than
+  // mountRoot on purpose - a nested clone is mounted into a fragment that is
+  // then emptied into the page, so its mountRoot is a stale, detached fragment
+  // while its markers sit where its DOM actually is
+  hotReplace(src: string | ComponentParts): boolean {
+    const parts = typeof src === "string" ? parseComponentString(src) : src
+    const marker = this.startMarker
+    const rendered = !!(marker && this.content)
+
+    // where its output sits now, if it is on the page. A rendered-but-detached
+    // instance (markers in the holding fragment) re-renders detached, and a
+    // later mount() attaches the new output - like any update it missed away
+    const live = rendered && marker!.isConnected
+    const parent = live ? (marker!.parentNode as Element | ShadowRoot | DocumentFragment) : null
+    const before = live ? this.endMarker!.nextSibling : null
+    const data = { ...this.data }
+    const shadow = this.useShadow
+
+    // destroy() releases the styles it acquired, so it has to run while
+    // this.styles is still the *old* set - swapping the parts first would leak
+    // the old stylesheet into the head and release a new one nobody holds
+    if (rendered) this.destroy()
+
+    this.template = parts.template
+    this.scripts = parts.scripts
+    this.styles = parts.styles
+    if (!rendered) return false // a definition: its clones re-render themselves
+
+    this.renderWith(data, shadow)
+    if (!parent) return false
+
+    // shadow styles live inline, right before the DOM they style (attach()
+    // appends them ahead of the content), so they go back the same way
+    if (shadow) this.styleEls.forEach(el => parent.insertBefore(el, before))
+    parent.insertBefore(this.content!, before)
+    this.mountRoot = parent
+    this.resolveMounted?.()
+    return true
   }
 
   static async fetch(url: string): Promise<Component79> {
@@ -1052,4 +1184,11 @@ export class Component79 {
 }
 
 export const parseComponent = (component: string): Component79 => new Component79(component)
+
+// the hot-reload handshake. jq79/dev serves a classic script that sets the flag
+// below; classic scripts run before deferred module ones, so the flag is always
+// set before this module evaluates. The page's copy of the runtime can come from
+// anywhere - a CDN, an import map, dist/ - and the dev client has no way to
+// import *that* copy, so the runtime hands itself to the client instead
+if (typeof globalThis !== "undefined" && (globalThis as any)[HOT_FLAG]) enableHotReload()
 

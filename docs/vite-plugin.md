@@ -34,7 +34,8 @@ transformed — with the single exception of `<style lang>` below. The same
 - **Fetched** — placed in `public/`, loaded with `Component79.fetch(url)` or
   `import("./card.html")` from a setup script, no build required.
 - **No project at all** — served from any static host and used with the CDN
-  build of jq79.
+  build of jq79. [`npx jq79 dev`](dev-server.md) serves and hot-reloads those
+  files without a bundler in sight.
 
 ## `<style lang>` — CSS preprocessors
 
@@ -154,13 +155,18 @@ Left to runtime resolution on purpose:
 
 Editing a component file updates it in place during `vite dev`:
 
-- A component mounted directly is re-rendered where it stands, seeded with a
-  snapshot of its current data (props and store values survive; the setup
-  script runs again, so anything it initializes is reset).
+- A component mounted directly is re-rendered where it stands — between the
+  markers it already occupies, so its position among unrelated siblings is
+  kept — seeded with a snapshot of its current data (props and store values
+  survive; the setup script runs again, so anything it initializes is reset).
 - A component used only as a nested definition falls back to a full page
-  reload — already-rendered clones can't be reached from the module.
+  reload — already-rendered clones can't be reached from the module that
+  imported the definition.
 
-Two caveats: a re-rendered component is re-appended to its mount target, so
-its position among unrelated siblings may change; and an instance that is
-both directly mounted *and* used as a nested definition only refreshes the
-direct mount.
+One caveat: an instance that is both directly mounted *and* used as a nested
+definition only refreshes the direct mount.
+
+The swap itself is the runtime's, not the plugin's — the same one the
+[dev server](dev-server.md) drives for components fetched at runtime. There it
+can reach the nested clones too, because the runtime tracks instances by
+filename rather than reaching them through a module.

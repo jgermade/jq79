@@ -22,6 +22,11 @@ build output — the files you wrote are the files you shipped. `Component79.fet
 does what it says: a `fetch()`, then the same parse `new Component79(source)`
 does.
 
+While you're writing them, `npx jq79 dev` serves that folder and hot-reloads the
+components you edit, keeping their state — no build step there either, and it
+serves the same bytes a static host would. See the
+[dev server](../../../docs/dev-server.md).
+
 The page you are reading is that page. It fetched `Tutorial.html` from the host,
 and `Tutorial.html` fetched its own five panes — the editor you're about to type
 in arrived over the network as a `.html` file.

@@ -36,7 +36,16 @@
       "import": "./dist/vite.js",
       "require": "./dist/vite.cjs",
       "default": "./dist/vite.js"
+    },
+    "./dev": {
+      "types": "./dist/dev.d.ts",
+      "import": "./dist/dev.js",
+      "require": "./dist/dev.cjs",
+      "default": "./dist/dev.js"
     }
+  },
+  "bin": {
+    "jq79": "./dist/cli.js"
   },
   "unpkg": "./dist/jq79.global.js",
   "jsdelivr": "./dist/jq79.global.js",
@@ -47,7 +56,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup && tsc src/jq79.ts src/vite.ts --declaration --emitDeclarationOnly --strict --skipLibCheck --lib dom,es2020 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
+    "build": "tsup && tsc src/jq79.ts src/vite.ts src/dev.ts --declaration --emitDeclarationOnly --strict --skipLibCheck --lib dom,es2021 --target es2020 --module es2020 --moduleResolution bundler --outDir dist",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "site": "node scripts/build-site.mjs",

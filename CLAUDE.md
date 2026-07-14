@@ -50,7 +50,8 @@ invariants that look like implementation details and are not. The short version:
 Written for users, but they're where the behaviour is specified:
 [components](docs/components.md), [template syntax](docs/template-syntax.md),
 [setup scripts](docs/setup-scripts.md), [reactive data](docs/reactive-data.md),
-[DOM helpers](docs/dom-helpers.md), [Vite plugin](docs/vite-plugin.md).
+[DOM helpers](docs/dom-helpers.md), [Vite plugin](docs/vite-plugin.md),
+[dev server](docs/dev-server.md).
 
 Docs and the site are generated from the repo's own markdown
 ([`scripts/build-site.mjs`](scripts/build-site.mjs)) — edit the `.md`, not `site/`

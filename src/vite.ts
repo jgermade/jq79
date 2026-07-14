@@ -118,12 +118,12 @@ const compileStyleBlocks = async (
 //
 // In dev, `hot.data` carries the exported instance across updates: importers
 // hold a reference to the *first* module evaluation's instance, so later
-// evaluations patch that same instance in place (the parsed parts are public
-// fields) instead of exporting a new one nobody sees. A live instance is
-// re-rendered where it stands, seeded with a snapshot of its current store;
-// an instance only used as a definition (nested component clones can't be
-// reached from here) falls back to a full reload. `mountRoot` is internal to
-// Component79, but plugin and runtime ship in lockstep from the same package.
+// evaluations patch that same instance in place instead of exporting a new one
+// nobody sees. The patching itself is the runtime's `hotReplace` - the same
+// swap the jq79/dev server drives, from the one place that can reach a
+// component's markers. An instance only used as a definition has nothing to
+// re-render (nested clones can't be reached from this module), so it falls
+// back to a full reload.
 const componentModule = (source: string, include: RegExp, filename: string): string => {
   const hoisted = hoistableImports(source, include)
   const imports = hoisted
@@ -147,18 +147,12 @@ let component
 
 if (import.meta.hot && import.meta.hot.data.component) {
   const prior = import.meta.hot.data.component
-  const next = new Component79(src)
-  prior.template = next.template
-  prior.scripts = next.scripts
-  prior.styles = next.styles
   prior.modules = modules
   prior.filename = filename
-  const root = prior.mountRoot
-  if (root) {
-    prior.mount(root, { ...prior.data })
-  } else if (!prior.data) {
-    import.meta.hot.invalidate()
-  }
+  // re-renders it where it stands, keeping its data. false means it was never
+  // rendered - a definition used only as a nested component - and a reload is
+  // the only way to reach the clones made from it
+  if (!prior.hotReplace(src) && !prior.data) import.meta.hot.invalidate()
   component = prior
 } else {
   component = new Component79(src, { modules, filename })
