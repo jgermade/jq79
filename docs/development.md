@@ -19,6 +19,38 @@ npm run site
 npm run site.dev
 ```
 
+## Load-bearing invariants
+
+Things that look like implementation details but aren't — each one is held up by
+tests, and each has cost real debugging at least once.
+
+**The store never wraps a proxy.** [`$reactive`](reactive-data.md) wraps nested
+objects lazily, as they're read, caching one proxy per raw object per store, and
+unwraps (`toRaw`) on the way in and on the way out. This is not an optimisation:
+it is the thing that makes the store safe. It used to wrap eagerly, rewriting the
+object it was handed and replacing nested objects with proxies in place — so two
+stores over the same object each wrapped the other's proxies, and because wrapping
+walks what it wraps, the layers compounded until the tab froze. Mounting two
+components with one data object, or re-mounting one, was enough to hang it.
+Reverting to eager wrapping brings that straight back; `tests/reactive.test.ts`
+("data shared with another store") is what stands in the way.
+
+**Identity is keyed to the object, not to its path.** A reordered list has to hand
+back the same proxy for the same item, because [`:each`](template-syntax.md) diffs
+by reference (`Object.is`) — key the proxy cache by path instead and every row
+re-renders on every reorder. The trade is that an object's dot-path is fixed when
+it's first wrapped, so after a reorder its notifications carry the old index;
+effects that read the list itself still wake up (paths overlap), which is what
+makes it a non-issue in practice.
+
+**Setup scripts have two traps** that no test can catch for you, both written up in
+[setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same
+scope variable wakes itself forever — but only from the **second** pass, since an
+effect's dependencies are recorded after its first run, so the component renders
+fine and blows up later. And `$:` effects run before the template exists, so
+anything that touches the DOM needs its first pass done by hand after
+`await $mounted()`.
+
 ## The tutorial
 
 `/tutorial/` on the site is a jq79 component ([`tutorial/_app/Tutorial.html`](../tutorial/_app/Tutorial.html)) that
