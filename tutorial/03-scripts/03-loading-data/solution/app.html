@@ -1,0 +1,31 @@
+<script :setup>
+  // stands in for a real request - the tutorial has no server to talk to
+  const fetchUsers = () => new Promise(resolve => setTimeout(() => resolve([
+    { id: 1, name: "Ada Lovelace" },
+    { id: 2, name: "Grace Hopper" },
+    { id: 3, name: "Alan Turing" },
+  ]), 600))
+
+  let users = []
+  let loading = true
+
+  fetchUsers().then(list => {
+    users = list
+    loading = false
+  })
+</script>
+
+<h2>Users</h2>
+
+<p class="loading" :if="loading">loading…</p>
+
+<ul class="users" :else>
+  <li :each="user in users" :key="user.id">{{ user.name }}</li>
+</ul>
+
+<style>
+  h2 { font-size: 1.1em; }
+  .users { list-style: none; padding: 0; }
+  .users li { padding: 0.3em 0; border-bottom: 1px solid #d1d9e0; }
+  .loading { color: #59636e; }
+</style>

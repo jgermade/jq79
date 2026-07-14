@@ -1,0 +1,36 @@
+<script :setup>
+  let draft = { name: "", email: "" }
+  let saved = null
+
+  const save = () => {
+    saved = { ...draft }
+  }
+</script>
+
+<form class="form" @submit.prevent="save">
+  <fieldset :with="draft">
+    <label>
+      name
+      <input class="name" placeholder="Ada" @input="name = $event.target.value" />
+    </label>
+    <label>
+      email
+      <input class="email" placeholder="ada@lovelace.dev" @input="email = $event.target.value" />
+    </label>
+
+    <p class="preview">{{ name || "nobody" }} — {{ email || "no email" }}</p>
+  </fieldset>
+
+  <button type="submit">Save</button>
+</form>
+
+<p class="saved" :if="saved">saved: {{ saved.name }} ({{ saved.email }})</p>
+
+<style>
+  fieldset { border: 1px solid #d1d9e0; border-radius: 6px; }
+  label { display: block; margin-bottom: 0.6em; }
+  input { font: inherit; padding: 0.3em 0.5em; border: 1px solid #d1d9e0; border-radius: 6px; }
+  button { font: inherit; margin-top: 0.8em; padding: 0.4em 1em; border-radius: 6px; cursor: pointer; }
+  .preview { color: #59636e; margin: 0; }
+  .saved { color: #1a7f37; }
+</style>

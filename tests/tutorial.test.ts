@@ -166,6 +166,67 @@ describe("tutorial", () => {
     expect(status.textContent).toBe("saving…")
   })
 
+  it("01-basics/05: writes through :with, and keeps the browser from submitting the form", () => {
+    mount(solutionOf("01-basics/05-forms-and-scope"), host)
+    const root = host.shadowRoot!
+    const field = (selector: string, value: string) => {
+      const input = root.querySelector(selector) as HTMLInputElement
+      input.value = value
+      input.dispatchEvent(new Event("input"))
+    }
+
+    // `name = …` inside :with="draft" writes draft.name, and the preview reads it
+    // back through the same narrowed scope
+    field(".name", "Ada")
+    field(".email", "ada@lovelace.dev")
+
+    expect(root.querySelector(".preview")?.textContent).toBe("Ada — ada@lovelace.dev")
+    expect(root.querySelector(".saved")).toBeFalsy()
+
+    const submit = new Event("submit", { bubbles: true, cancelable: true })
+    root.querySelector("form")!.dispatchEvent(submit)
+
+    expect(submit.defaultPrevented).toBe(true)
+    expect(root.querySelector(".saved")?.textContent).toBe("saved: Ada (ada@lovelace.dev)")
+  })
+
+  it("03-scripts/03: renders a loading state, then the users it fetched", async () => {
+    mount(solutionOf("03-scripts/03-loading-data"), host)
+
+    // the point of the exercise: there is DOM before the request resolves
+    expect(host.shadowRoot?.querySelector(".loading")?.textContent).toBe("loading…")
+    expect(host.shadowRoot?.querySelector(".users")).toBeFalsy()
+
+    await new Promise(resolve => setTimeout(resolve, 700))
+
+    expect(host.shadowRoot?.querySelector(".loading")).toBeFalsy()
+    expect([...host.shadowRoot!.querySelectorAll(".users li")].map(li => li.textContent)).toEqual([
+      "Ada Lovelace",
+      "Grace Hopper",
+      "Alan Turing",
+    ])
+  })
+
+  it("03-scripts/04: debounces the search - one run for a burst of keystrokes", async () => {
+    mount(solutionOf("03-scripts/04-keeping-state-out-of-the-store"), host)
+    const input = host.shadowRoot!.querySelector(".search") as HTMLInputElement
+
+    // with `timer` still in the store, the second of these would re-enter the
+    // effect that wrote it and recurse until the stack blew
+    for (const query of ["b", "be", "ber"]) {
+      input.value = query
+      input.dispatchEvent(new Event("input"))
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 400))
+
+    expect(host.shadowRoot?.querySelector(".count")?.textContent).toBe("1 searches run")
+    expect([...host.shadowRoot!.querySelectorAll(".matches li")].map(li => li.textContent)).toEqual([
+      "blueberry",
+      "cranberry",
+    ])
+  })
+
   it("02-components/02: bubbles each child's $emit payload up to the parent", async () => {
     mount(solutionOf("02-components/02-component-events"), host)
     await tick()

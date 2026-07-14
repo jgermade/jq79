@@ -1,0 +1,35 @@
+<script :setup>
+  const fruits = ["apple", "apricot", "banana", "blueberry", "cherry", "cranberry"]
+
+  let query = ""
+  let matches = []
+  let searches = 0
+
+  let timer = null   // top-level, so it lives in the store - and that's the bug
+
+  const search = () => {
+    matches = query ? fruits.filter(fruit => fruit.includes(query)) : []
+    searches++
+  }
+
+  const schedule = () => {
+    clearTimeout(timer)
+    timer = setTimeout(search, 250)
+  }
+
+  $: schedule(query)
+</script>
+
+<input class="search" placeholder="type to search" @input="query = $event.target.value" />
+
+<p class="count">{{ searches }} searches run</p>
+
+<ul class="matches">
+  <li :each="fruit in matches" :key="fruit">{{ fruit }}</li>
+</ul>
+
+<style>
+  .search { font: inherit; padding: 0.4em 0.6em; border: 1px solid #d1d9e0; border-radius: 6px; }
+  .count { color: #59636e; }
+  .matches { list-style: none; padding: 0; }
+</style>
