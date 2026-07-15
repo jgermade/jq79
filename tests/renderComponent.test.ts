@@ -1102,6 +1102,80 @@ describe(":each and in-place array mutation", () => {
   })
 })
 
+// :html.allowed - the per-element destination policy over :html's sanitizer.
+// Value is an expression, like every : attribute: host patterns (string or
+// array) or a predicate; anything broken denies every destination
+describe(":html.allowed", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+
+  const BODY = `<a href="https://a.germade.dev/x">ok</a><a href="https://evil.com/x">bad</a>`
+
+  it("filters destinations with a host-pattern string", () => {
+    const component = parseComponent(`<div :html="body" :html.allowed="'*.germade.dev'"></div>`)
+    const data = $reactive({ body: BODY })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.querySelectorAll("a").length).toBe(2)
+    expect(el.innerHTML).toContain(`href="https://a.germade.dev/x"`)
+    expect(el.innerHTML).not.toContain("evil.com")
+  })
+
+  it("takes the policy from the store and re-applies it reactively", () => {
+    const component = parseComponent(`<div :html="body" :html.allowed="policy"></div>`)
+    const data = $reactive({ body: BODY, policy: ["*.germade.dev"] as any })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.innerHTML).not.toContain("evil.com")
+
+    data.policy = ["*.germade.dev", "evil.com"]
+
+    expect(el.innerHTML).toContain(`href="https://evil.com/x"`)
+  })
+
+  it("accepts a predicate, evaluated per URL", () => {
+    const component = parseComponent(
+      `<div :html="body" :html.allowed="url => url.hostname.endsWith('.germade.dev')"></div>`
+    )
+    const data = $reactive({ body: BODY })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.innerHTML).toContain("a.germade.dev")
+    expect(el.innerHTML).not.toContain("evil.com")
+  })
+
+  it("a policy that evaluates to undefined denies every destination (fails closed)", () => {
+    const component = parseComponent(`<div :html="body" :html.allowed="missing"></div>`)
+    const data = $reactive({ body: BODY })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.querySelectorAll("a").length).toBe(2) // the content stays, destination-less
+    expect(el.innerHTML).not.toContain("href=")
+  })
+
+  it("warns when :html.allowed sits on an element without :html", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const component = parseComponent(`<div :html.allowed="'*.germade.dev'">plain</div>`)
+
+    container.appendChild(renderComponent(component, $reactive({})))
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":html.allowed without :html"))
+    warn.mockRestore()
+  })
+})
+
 describe("nested component recursion", () => {
   it("a component's own tag inside its template renders one level and stops", () => {
     // no runaway recursion by construction: the child's scope holds only its

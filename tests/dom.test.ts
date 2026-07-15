@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest"
 import { $, $$, $create } from "../src/jq79"
-import { isSafeUrl, sanitizeHTML } from "../src/dom"
+import { isSafeUrl, sanitizeHTML, allowedHosts } from "../src/dom"
 
 describe("$", () => {
   beforeEach(() => {
@@ -238,5 +238,106 @@ describe("sanitizeHTML against evasion and mutation payloads", () => {
     const html = "<b>".repeat(depth) + "x" + "</b>".repeat(depth)
     expect(() => sanitizeHTML(html)).toThrow(RangeError)
     expect(() => sanitizeHTML(html)).toThrow(/nests deeper than 512/)
+  })
+})
+
+// the destination policy: host patterns compiled by allowedHosts, consulted
+// by sanitizeHTML through the allowUrl option - always on top of the
+// protocol check, never instead of it. See TODOS/2026-07-15.html-allowed.md
+describe("allowedHosts", () => {
+  const url = (u: string) => new URL(u)
+
+  it("`*` matches exactly one dns label - the TLS wildcard rule, not CSP's any-depth", () => {
+    const allow = allowedHosts("*.germade.dev")
+
+    expect(allow(url("https://a.germade.dev/x"), "a", "href")).toBe(true)
+    expect(allow(url("https://germade.dev/x"), "a", "href")).toBe(false)
+    expect(allow(url("https://a.b.germade.dev/x"), "a", "href")).toBe(false)
+    expect(allow(url("https://evilgermade.dev/x"), "a", "href")).toBe(false)
+  })
+
+  it("a literal host matches only itself, case-insensitively", () => {
+    const allow = allowedHosts("germade.dev")
+
+    expect(allow(url("https://germade.dev/"), "a", "href")).toBe(true)
+    expect(allow(url("https://GERMADE.dev/"), "a", "href")).toBe(true)
+    expect(allow(url("https://a.germade.dev/"), "a", "href")).toBe(false)
+  })
+
+  it("no port means any port; an explicit port must match the *effective* one", () => {
+    expect(allowedHosts("germade.dev")(url("https://germade.dev:8443/"), "a", "href")).toBe(true)
+    // the scheme's default port counts as the effective port
+    expect(allowedHosts("germade.dev:443")(url("https://germade.dev/"), "a", "href")).toBe(true)
+    expect(allowedHosts("germade.dev:443")(url("https://germade.dev:8443/"), "a", "href")).toBe(false)
+    expect(allowedHosts("germade.dev:*")(url("https://germade.dev:8443/"), "a", "href")).toBe(true)
+  })
+
+  it("a comma-separated string and an array are equivalent", () => {
+    const fromString = allowedHosts("*.germade.dev, *.germade.es")
+    const fromArray = allowedHosts(["*.germade.dev", "*.germade.es"])
+
+    for (const candidate of ["https://a.germade.dev/", "https://b.germade.es/", "https://evil.com/"]) {
+      expect(fromString(url(candidate), "a", "href")).toBe(fromArray(url(candidate), "a", "href"))
+    }
+    expect(fromString(url("https://b.germade.es/"), "a", "href")).toBe(true)
+  })
+
+  it("an invalid pattern matches nothing (fails closed)", () => {
+    expect(allowedHosts("germade dev")(url("https://germade.dev/"), "a", "href")).toBe(false)
+    expect(allowedHosts("")(url("https://germade.dev/"), "a", "href")).toBe(false)
+  })
+
+  it("a URL with no host (mailto:) matches no pattern", () => {
+    expect(allowedHosts("*.germade.dev, germade.dev")(url("mailto:x@germade.dev"), "a", "href")).toBe(false)
+  })
+})
+
+describe("sanitizeHTML with a destination policy", () => {
+  it("strips href/src whose destination the policy rejects, and keeps allowed ones", () => {
+    const out = sanitizeHTML(
+      `<a href="https://a.germade.dev/x">ok</a>` +
+      `<a href="https://evil.com/x">bad</a>` +
+      `<img src="https://a.germade.dev/i.png">` +
+      `<img src="https://tracker.evil.com/pixel.gif">`,
+      { allowUrl: allowedHosts("*.germade.dev") }
+    )
+
+    expect(out).toContain(`href="https://a.germade.dev/x"`)
+    expect(out).not.toContain("evil.com")
+    expect(out).toContain(`src="https://a.germade.dev/i.png"`)
+    // the rejected link survives as text, without its destination
+    expect(out).toContain(`<a rel="noopener noreferrer">bad</a>`)
+  })
+
+  it("the protocol check still applies before the policy - an allow-all can't re-admit javascript:", () => {
+    const out = sanitizeHTML(`<a href="javascript:evil()">x</a>`, { allowUrl: () => true })
+
+    expect(out).toBe(`<a rel="noopener noreferrer">x</a>`)
+  })
+
+  it("a throwing predicate rejects (fails closed)", () => {
+    const out = sanitizeHTML(`<a href="https://germade.dev/">x</a>`, {
+      allowUrl: () => { throw new Error("boom") },
+    })
+
+    expect(out).toBe(`<a rel="noopener noreferrer">x</a>`)
+  })
+
+  it("relative URLs resolve against the page, so a same-origin policy can pass them", () => {
+    const out = sanitizeHTML(`<a href="/inicio">x</a><a href="https://evil.com/">y</a>`, {
+      allowUrl: allowedHosts(location.hostname),
+    })
+
+    expect(out).toContain(`href="/inicio"`)
+    expect(out).not.toContain("evil.com")
+  })
+
+  it("hands the predicate the parsed URL plus the tag and attribute", () => {
+    const seen: string[] = []
+    sanitizeHTML(`<a href="https://x.dev/">l</a><img src="https://y.dev/i.png">`, {
+      allowUrl: (url, tag, attr) => { seen.push(`${tag}.${attr}=${url.hostname}`); return true },
+    })
+
+    expect(seen).toEqual(["a.href=x.dev", "img.src=y.dev"])
   })
 })

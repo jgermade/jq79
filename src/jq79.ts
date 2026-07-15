@@ -1,5 +1,6 @@
 
-import { $, $$, $create, sanitizeHTML } from "./dom"
+import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
+import type { AllowUrl } from "./dom"
 import { $reactive, untracked, createEffectScope } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
@@ -91,7 +92,7 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
   template.replace(/{{\s*([\s\S]+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
 
 
-const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
+const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed"])
 // `item in items`, `item, i in items`, `(value, key) in props` - the second
 // binding is the array index or the object key, parens optional (Vue-style).
 // The list expression can span lines, so it matches [\s\S] rather than `.`
@@ -308,6 +309,26 @@ const classNames = (value: any): string[] => {
   return []
 }
 
+// what :html.allowed accepts, normalized to an AllowUrl predicate: host
+// patterns (a comma-separated string or an array - see allowedHosts in
+// ./dom) or a function (url: URL, tag, attr) => boolean. Anything else -
+// including a policy expression that evaluates to undefined - denies every
+// destination: the attribute declares the intent to restrict, so a broken
+// policy fails closed, and so does a predicate that throws
+const normalizeAllowUrl = (policy: any): AllowUrl => {
+  if (typeof policy === "function") {
+    return (url, tag, attr) => {
+      try {
+        return !!policy(url, tag, attr)
+      } catch {
+        return false
+      }
+    }
+  }
+  if (typeof policy === "string" || Array.isArray(policy)) return allowedHosts(policy)
+  return () => false
+}
+
 // renders a single element node: static attrs, @event listeners, a reactive
 // :attrs object, and its content - :text/:html override the element's own
 // children with a reactive textContent/innerHTML, otherwise children render
@@ -389,13 +410,23 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // :text="expr" sets textContent reactively, replacing any children.
   // :html="expr" sets innerHTML reactively, sanitizing the value first so
   // untrusted content can't inject scripts/attributes (see sanitizeHTML in
-  // ./dom). Both skip rendering the element's own children/interpolation
+  // ./dom). Both skip rendering the element's own children/interpolation.
+  // :html.allowed="expr" adds a destination policy for the content's
+  // href/src URLs - evaluated in the same effect, so a policy held in the
+  // store is as reactive as the content itself
   const textExpr = node.attrs[":text"]
   const htmlExpr = node.attrs[":html"]
+  const allowedExpr = node.attrs[":html.allowed"]
+  if (allowedExpr !== undefined && htmlExpr === undefined) {
+    console.warn("jq79: :html.allowed without :html on the same element does nothing")
+  }
   if (textExpr !== undefined) {
     fx.effect(() => { el.textContent = String(evalExpr(textExpr, scope) ?? "") })
   } else if (htmlExpr !== undefined) {
-    fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(htmlExpr, scope) ?? "")) })
+    fx.effect(() => {
+      const options = allowedExpr !== undefined ? { allowUrl: normalizeAllowUrl(evalExpr(allowedExpr, scope)) } : undefined
+      el.innerHTML = sanitizeHTML(String(evalExpr(htmlExpr, scope) ?? ""), options)
+    })
   } else {
     el.appendChild(renderNodes(node.children, scope, fx, shadow))
   }

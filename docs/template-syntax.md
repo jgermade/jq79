@@ -79,6 +79,27 @@ Set an element's content directly from an expression, instead of interpolating i
 
 - `:text` sets `textContent` — safe for any string, no markup is parsed.
 - `:html` sets `innerHTML` after passing the value through `sanitizeHTML` (stripping anything not in a small allowlist of tags/attributes, and unsafe `href`/`src` protocols) — use it for untrusted or user-authored HTML. Content nested deeper than 512 elements throws a `RangeError` (browser parsers flatten beyond that anyway, so no legitimate document loses anything).
+
+### `:html.allowed` — destination policy
+
+The sanitizer always blocks *executable* URLs (`javascript:`, `data:`), but by default it doesn't care **where** a link or image points. `:html.allowed` adds that restriction, per element — different zones of one page can trust different destinations, which is the one thing a page-wide `Content-Security-Policy` can't express:
+
+```html
+<div :html="body" :html.allowed="'*.germade.dev'"></div>
+<div :html="body" :html.allowed="['*.germade.dev', '*.germade.es']"></div>
+<div :html="body" :html.allowed="url => url.hostname.endsWith('.germade.dev')"></div>
+```
+
+The value is an expression, like every `:` attribute: a comma-separated string or array of host patterns, or a predicate `(url: URL, tag, attr) => boolean` called with the URL already resolved against the page (so relative URLs are judged as the same-origin destinations they are). A rejected `href`/`src` is stripped; the element and its text stay.
+
+Pattern grammar — `host[:port]`:
+
+- `*` matches **exactly one DNS label** (the TLS-certificate wildcard rule, not CSP's any-depth one): `*.germade.dev` matches `a.germade.dev`, but neither `germade.dev` (list both to include the apex) nor `a.b.germade.dev`.
+- No port matches any port; an explicit port must equal the URL's effective port (`germade.dev:443` matches `https://germade.dev/`).
+- Everything broken fails **closed**: an invalid pattern matches nothing, a policy that evaluates to `undefined` denies all destinations, a throwing predicate is a no. And no policy can re-admit what the protocol check blocked.
+- Patterns speak hosts, so a URL without one (`mailto:`) never matches a pattern list — use the function form to allow it.
+
+Without `.allowed`, `:html` keeps its default: protocol check only, any destination. For a page-wide floor, set a `Content-Security-Policy` — the two compose, and the stricter one wins.
 - Either one replaces the element's own children entirely; they don't combine with nested template content.
 - If both are present on the same element, `:text` wins and `:html` is ignored.
 - They apply to plain elements only; on a nested-component tag they're ignored.
