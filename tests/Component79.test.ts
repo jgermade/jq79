@@ -613,6 +613,28 @@ describe("Component79", () => {
       expect(seen).toEqual(["current"])
       jq79.destroy()
     })
+
+    // the template's root scope answers $emit too (see templateScope in
+    // renderWith) - inline handlers can emit without a setup function
+    it("makes $emit callable inline from template expressions", () => {
+      const seen: any[] = []
+      const jq79 = new Component79(`<button class="btn" @click="$emit('submit', 'inline')">go</button>`)
+        .on("submit", (_e, payload) => seen.push(payload))
+        .render()
+        .mount(host)
+
+      $(host, ".btn")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+
+      expect(seen).toEqual(["inline"])
+      jq79.destroy()
+    })
+
+    it("lets a store key named $emit shadow the template helper", () => {
+      const jq79 = new Component79(`<p class="shadow">{{ $emit }}</p>`).render({ $emit: "mine" }).mount(host)
+
+      expect($(host, ".shadow")?.textContent).toBe("mine")
+      jq79.destroy()
+    })
   })
 
   describe("nested components", () => {
@@ -925,6 +947,285 @@ describe("Component79", () => {
 
       b.destroy()
       expect(document.head.querySelectorAll("style").length).toBe(stylesBefore)
+    })
+  })
+
+  describe(":model on component tags", () => {
+    it("binds the default model both ways: prop down as `model`, model:update back up", () => {
+      const field = new Component79(
+        `<input class="field" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+      )
+      const jq79 = new Component79(
+        `<div><EmailField :model="email" /><p class="echo">{{ email }}</p></div>`
+      ).render({ email: "ada@lovelace.dev", EmailField: field }).mount(host)
+
+      const input = $(host, ".field") as HTMLInputElement
+      expect(input.value).toBe("ada@lovelace.dev") // the prop came down
+
+      input.value = "grace@hopper.dev"
+      input.dispatchEvent(new Event("input"))
+
+      // ...and the edit came back up, through the echo the wiring looks like
+      // it creates (parent assign -> prop sync -> same-value skip) and out
+      expect($(host, ".echo")?.textContent).toBe("grace@hopper.dev")
+
+      // down again: a parent reset reaches the child's input
+      jq79.data!.email = ""
+      expect(input.value).toBe("")
+      jq79.destroy()
+    })
+
+    it("routes named models by the payload's name, multi-line emit expressions included", () => {
+      const form = new Component79(
+        `<form>` +
+          `<input class="u" :value="uname" @input="
+            $emit('model:update', {
+              name: 'uname',
+              value: $event.target.value
+            })
+          ">` +
+          `<input class="p" :value="password" @input="$emit('model:update', { name: 'password', value: $event.target.value })">` +
+          `</form>`
+      )
+      const jq79 = new Component79(
+        `<div><LoginForm :model.uname="uname" :model.password="password" /></div>`
+      ).render({ uname: "", password: "", LoginForm: form }).mount(host)
+
+      const user = $(host, ".u") as HTMLInputElement
+      user.value = "ada"
+      user.dispatchEvent(new Event("input"))
+
+      expect(jq79.data!.uname).toBe("ada")
+      expect(jq79.data!.password).toBe("")
+      jq79.destroy()
+    })
+
+    it("matches an explicit { name: 'default' } to the bare :model", () => {
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { name: 'default', value: 'yes' })">go</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model="flag" /></div>`)
+        .render({ flag: "no", Field: field }).mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.flag).toBe("yes")
+      jq79.destroy()
+    })
+
+    it("normalizes kebab-case model names to camelCase, payload included", () => {
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { name: 'userName', value: 'grace' })">{{ userName }}</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model.user-name="who" /></div>`)
+        .render({ who: "ada", Field: field }).mount(host)
+
+      expect($(host, ".go")?.textContent).toBe("ada") // the prop landed under the camel name
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.who).toBe("grace")
+      jq79.destroy()
+    })
+
+    it("assigns through a member path, reactively", () => {
+      const field = new Component79(
+        `<button class="set" @click="$emit('model:update', { value: 'Grace' })">set</button>`
+      )
+      const jq79 = new Component79(
+        `<div><Field :model="user.name" /><p class="who">{{ user.name }}</p></div>`
+      ).render({ user: { name: "Ada" }, Field: field }).mount(host)
+
+      expect($(host, ".who")?.textContent).toBe("Ada")
+
+      ;($(host, ".set") as HTMLButtonElement).click()
+
+      expect($(host, ".who")?.textContent).toBe("Grace")
+      jq79.destroy()
+    })
+
+    it("expands the shorthand like props do: :model.uname alone binds the variable uname", () => {
+      const field = new Component79(
+        `<button class="got" @click="$emit('model:update', { name: 'uname', value: 'turing' })">{{ uname }}</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model.uname /></div>`)
+        .render({ uname: "ada", Field: field }).mount(host)
+
+      expect($(host, ".got")?.textContent).toBe("ada")
+
+      ;($(host, ".got") as HTMLButtonElement).click()
+
+      expect(jq79.data!.uname).toBe("turing")
+      jq79.destroy()
+    })
+
+    it("warns on a model:update whose name nothing on the tag binds, assigning nothing", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { name: 'passwrod', value: 'x' })">go</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model.password="password" /></div>`)
+        .render({ password: "keep", Field: field }).mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      // the typo'd name must not type into the void silently
+      expect(jq79.data!.password).toBe("keep")
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(":model.passwrod"))
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("warns at wiring time when the expression is not assignable, and drops updates", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { value: 'x' })">{{ model }}</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model="a + b" /></div>`)
+        .render({ a: 1, b: 2, Field: field }).mount(host)
+
+      // said before any update happens, not on the first one that vanishes
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("not assignable"))
+      expect($(host, ".go")?.textContent).toBe("3") // the prop still flows down
+
+      ;($(host, ".go") as HTMLButtonElement).click() // dropped, without throwing
+
+      expect(jq79.data!.a).toBe(1)
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("warns and ignores a payload that isn't a { name?, value } object", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', 'bare-string')">go</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model="flag" /></div>`)
+        .render({ flag: "keep", Field: field }).mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.flag).toBe("keep")
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("{ name?, value }"))
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("warns when :model and an explicit prop bind the same name - the model wins", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const field = new Component79(`<span class="got">{{ uname }}</span>`)
+      const jq79 = new Component79(`<div><Field :uname="'explicit'" :model.uname="bound" /></div>`)
+        .render({ bound: "model-side", Field: field }).mount(host)
+
+      expect($(host, ".got")?.textContent).toBe("model-side")
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`binds prop "uname"`))
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("warns that :model does nothing on a plain element - components only, for now", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const jq79 = new Component79(`<div><input :model="email"></div>`)
+        .render({ email: "x" }).mount(host)
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("component tags only"))
+      // and the attribute never landed literally on the element
+      expect(($(host, "input") as HTMLInputElement).hasAttribute(":model")).toBe(false)
+      warn.mockRestore()
+      jq79.destroy()
+    })
+  })
+
+  describe("@event on component tags", () => {
+    it("hears the child's $emit on the tag, with $event.detail in scope", () => {
+      const child = new Component79(`<button class="bump" @click="$emit('changed', 7)">go</button>`)
+      const jq79 = new Component79(`<div><Stepper @changed="last = $event.detail" /></div>`)
+        .render({ last: 0, Stepper: child }).mount(host)
+
+      ;($(host, ".bump") as HTMLButtonElement).click()
+
+      expect(jq79.data!.last).toBe(7)
+      jq79.destroy()
+    })
+
+    it("does not hear native DOM events from the child's inner DOM - the $emit channel only", () => {
+      const child = new Component79(`<button class="inner">native</button>`)
+      const jq79 = new Component79(`<div><Widget @click="hits = hits + 1" /></div>`)
+        .render({ hits: 0, Widget: child }).mount(host)
+
+      // the native click bubbles past the tag's anchors to shared ancestors;
+      // hearing it on the tag is the container pattern's job, not this one's
+      ;($(host, ".inner") as HTMLButtonElement).click()
+
+      expect(jq79.data!.hits).toBe(0)
+      jq79.destroy()
+    })
+
+    it("still bubbles the emit to wrapping elements - both channels stay live", () => {
+      const child = new Component79(`<button class="fire" @click="$emit('ping')">go</button>`)
+      const jq79 = new Component79(
+        `<div @ping="outer = outer + 1"><Widget @ping="inner = inner + 1" /></div>`
+      ).render({ inner: 0, outer: 0, Widget: child }).mount(host)
+
+      ;($(host, ".fire") as HTMLButtonElement).click()
+
+      expect(jq79.data!.inner).toBe(1)
+      expect(jq79.data!.outer).toBe(1)
+      jq79.destroy()
+    })
+
+    it(".stop keeps the emit off the DOM dispatch - wrapping elements never hear it", () => {
+      const child = new Component79(`<button class="fire" @click="$emit('ping')">go</button>`)
+      const jq79 = new Component79(
+        `<div @ping="outer = outer + 1"><Widget @ping.stop="inner = inner + 1" /></div>`
+      ).render({ inner: 0, outer: 0, Widget: child }).mount(host)
+
+      ;($(host, ".fire") as HTMLButtonElement).click()
+
+      expect(jq79.data!.inner).toBe(1)
+      expect(jq79.data!.outer).toBe(0)
+      jq79.destroy()
+    })
+
+    it(".prevent flips the child's $emit() return to false - the parent-veto contract", () => {
+      const child = new Component79(
+        `<script :setup>let vetoed = "?"</script>` +
+          `<button class="fire" @click="vetoed = !$emit('save', 1)">{{ vetoed }}</button>`
+      )
+      const jq79 = new Component79(`<div><Editor @save.prevent="hits = hits + 1" /></div>`)
+        .render({ hits: 0, Editor: child }).mount(host)
+
+      ;($(host, ".fire") as HTMLButtonElement).click()
+
+      expect(jq79.data!.hits).toBe(1) // the handler ran...
+      expect($(host, ".fire")?.textContent).toBe("true") // ...and the child heard the veto
+      jq79.destroy()
+    })
+
+    it("without .prevent, $emit returns true", () => {
+      const child = new Component79(
+        `<script :setup>let vetoed = "?"</script>` +
+          `<button class="fire" @click="vetoed = !$emit('save', 1)">{{ vetoed }}</button>`
+      )
+      const jq79 = new Component79(`<div><Editor @save="hits = hits + 1" /></div>`)
+        .render({ hits: 0, Editor: child }).mount(host)
+
+      ;($(host, ".fire") as HTMLButtonElement).click()
+
+      expect($(host, ".fire")?.textContent).toBe("false")
+      jq79.destroy()
+    })
+
+    it(".once unsubscribes after the first emit", () => {
+      const child = new Component79(`<button class="fire" @click="$emit('tick')">go</button>`)
+      const jq79 = new Component79(`<div><Widget @tick.once="count = count + 1" /></div>`)
+        .render({ count: 0, Widget: child }).mount(host)
+
+      ;($(host, ".fire") as HTMLButtonElement).click()
+      ;($(host, ".fire") as HTMLButtonElement).click()
+
+      expect(jq79.data!.count).toBe(1)
+      jq79.destroy()
     })
   })
 

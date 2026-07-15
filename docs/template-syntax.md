@@ -171,6 +171,42 @@ Modifiers (chainable, e.g. `@click.stop.once`):
 | `.once`    | listener runs at most once               |
 | `.capture` | listen in the capture phase              |
 
+### `@event` on a component tag
+
+A component tag renders as comment anchors — there is no element to listen on — so `@event` there subscribes to that child's [`$emit`](setup-scripts.md) channel instead:
+
+```html
+<Stepper @changed="last = $event.detail" />
+```
+
+It hears exactly what *that* child emits: not a grandchild's emits (those arrive only as an explicit re-emit), and not native DOM events from the child's inner DOM — a native `submit` bubbles past the tag's anchors to real ancestors, so it's still a wrapping element's to catch (`<div @submit.prevent=…><LoginForm/></div>`, which hears `$emit`s too, since they bubble). Modifiers on this channel: `.prevent` flips the child's `$emit(...)` return to `false` — a "the parent vetoed" signal; `.stop` keeps the emit off the DOM entirely, so wrapping elements never hear it; `.once` unsubscribes after one call; `.self` and `.capture` have no meaning here and are ignored.
+
+## `:model` — two-way component binding
+
+Props flow down, events flow up; `:model` wires both at once. The model's name rides the modifier (an expression-valued modifier, like `:html.allowed`), and one tag can carry several:
+
+```html
+<LoginForm :model.uname="uname" :model.password="password" />
+<EmailField :model="email" />
+```
+
+Each `:model[.name]="expr"` is two bindings:
+
+- **A live prop down**, named after the model — the modifier name (kebab-case in the attribute, camelCase in the child, like any prop), or `model` for the bare `:model`. The child reads it like any prop, and a parent write (`email = ""`) reaches the child's input.
+- **A writeback up**: the child emits `model:update` with `{ name?, value }`, and the matching model's expression is assigned the value. An omitted `name` means the default model — the bare `:model`. The expression must be an assignment target (`uname`, `user.name`); it's evaluated in the parent scope, so it writes the store reactively, and through a `:with` narrowing.
+
+The child's whole side is one emit, straight from the template if it's simple enough:
+
+```html
+<!-- EmailField.html -->
+<input :value="model" @input="$emit('model:update', { value: $event.target.value })">
+```
+
+- `:model.uname` alone is shorthand for `:model.uname="uname"`, like props.
+- Everything off-contract warns and does nothing: a payload that isn't a `{ name?, value }` object, a `name` that nothing on the tag binds (a typo must not type into the void), an expression that can't be assigned to (warned when the tag renders, not on the first update that would vanish).
+- The echo terminates: the writeback re-runs the prop sync, but the store skips same-value writes and `:value` never rewrites the string an input already holds — the caret stays put.
+- Component tags only (for now): on a plain element it warns and does nothing. The `:value` + `@input` pair above is the native-element way.
+
 ## Nested components
 
 A tag matching a **PascalCase scope variable** renders as a child component. Components reach the scope through render data, `:setup` props, or an `await import(...)` in the setup script:
@@ -194,6 +230,7 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 
 - Props: `:name="expr"` evaluates in the parent scope; `:name` alone is shorthand for `:name="name"`; plain attributes pass as literal strings.
 - Props are **live**: when a parent expression's dependencies change (deeply), the new value is written into the child's store.
+- `@event` on the tag hears the child's `$emit`s, and `:model` binds two-way — see their sections above.
 - HTML lowercases everything, so matching ignores case and dashes: `<NestedComponent>` and `<nested-component>` both resolve `NestedComponent`, and `:user-name` becomes the `userName` prop.
 - `await import('/x.html')` returns a `Component79` (non-`.html` URLs fall through to native `import()`). While the promise is pending nothing renders; the child appears when it resolves. Under the [Vite plugin](vite-plugin.md), literal relative specifiers resolve from the bundle instead of fetching.
 - Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.

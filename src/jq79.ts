@@ -121,6 +121,30 @@ const bindEvent = (el: Element, attr: string, expr: string, scope: Record<string
   }, { once: mods.has("once"), capture: mods.has("capture") })
 }
 
+// @event on a component tag: the tag renders as comment anchors, so there is
+// no element to listen on - the attribute subscribes to the child instance's
+// $emit channel (instance.on) instead, which survives the child's re-renders
+// and works detached. Native DOM events from the child's inner DOM never
+// arrive here: they bubble past the anchors to shared ancestors (a listener
+// on a wrapping element hears those); a child that wants its native event
+// heard on its tag re-emits it. .prevent flips the child's $emit() return to
+// false, .stop keeps the emit off the DOM dispatch, .once unsubscribes after
+// one call; .self and .capture have no meaning on this channel and are ignored
+const wireTagEvent = (instance: Component79, attr: string, expr: string, scope: Record<string, any>) => {
+  const [name, ...modifiers] = attr.slice(1).split(".")
+  const mods = new Set(modifiers)
+
+  const listener = (event: CustomEvent) => {
+    if (mods.has("prevent")) event.preventDefault()
+    if (mods.has("stop")) event.stopPropagation()
+    if (mods.has("once")) instance.off(name, listener)
+
+    const handler = evalExpr(expr, scope, { $event: event })
+    if (typeof handler === "function") handler(event)
+  }
+  instance.on(name, listener)
+}
+
 const kebabToCamel = (name: string) => name.replace(/-(\w)/g, (_, c: string) => c.toUpperCase())
 
 // the stable boundaries of a rendered chunk. An element is its own handle, but
@@ -196,15 +220,46 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   wrapper.append(anchor, endAnchor)
 
   const props: Record<string, string> = {} // prop name -> expression in parent scope
+  const models: Record<string, string> = {} // model name -> assignable expression in parent scope
+  const events: Array<[string, string]> = [] // @attr (modifiers included) -> handler expression
   Object.entries(node.attrs).forEach(([attr, value]) => {
     // the parent's scope stamp is stamped on every template element, this tag
     // included - it's not a prop, and the child renders under its own scope
-    if (attr === SCOPE_ATTR || CONTROL_ATTRS.has(attr) || attr.startsWith("@")) return
-    if (attr.startsWith(":")) {
+    if (attr === SCOPE_ATTR || CONTROL_ATTRS.has(attr)) return
+    if (attr.startsWith("@")) {
+      events.push([attr, value])
+    } else if (attr === ":model" || attr.startsWith(":model.")) {
+      // :model[.name]="expr" - two-way: a prop down plus a writeback listener
+      // (wired below, once the instance exists). The modifier arrives
+      // lowercased from the HTML parser, so names are declared kebab-case;
+      // the bare :model binds the name "default"
+      const name = attr === ":model" ? "default" : kebabToCamel(attr.slice(":model.".length))
+      models[name] = value || (attr === ":model" ? "model" : name)
+    } else if (attr.startsWith(":")) {
       const name = kebabToCamel(attr.slice(1))
       props[name] = value || name
     } else {
       props[kebabToCamel(attr)] = JSON.stringify(value)
+    }
+  })
+
+  // each model is also a prop down: the child reads the value under the
+  // model's name - `model` for the default, because a prop named `default`
+  // could never be read from a child expression (reserved word). Without the
+  // prop this isn't two-way, it's upward collection: a parent reset or an
+  // initial value would never reach the child
+  const modelAttr = (name: string) => (name === "default" ? ":model" : `:model.${name}`)
+  const modelProp = (name: string) => (name === "default" ? "model" : name)
+  Object.entries(models).forEach(([name, expr]) => {
+    const prop = modelProp(name)
+    if (props[prop] !== undefined) {
+      console.warn(`jq79: <${node.tag}> binds prop "${prop}" through both :${prop} and ${modelAttr(name)} - ${modelAttr(name)} wins`)
+    }
+    props[prop] = expr
+    // an expression that can't be an assignment target is a wiring mistake -
+    // say so now, not on the first update that silently goes nowhere
+    if (compileExpr(`${expr} = $value`, ["$value"]) === null) {
+      console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${node.tag}> will be dropped`)
     }
   })
 
@@ -233,6 +288,32 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       modules: nextDef.modules,
       filename: nextDef.filename,
     })
+    // the writeback half of :model - one event, one contract. The name is
+    // normalized like the attribute was (kebab->camel; absent means default),
+    // and everything off-contract warns and does nothing: an event protocol's
+    // failure mode has to be loud, or a typo'd name is an input that types
+    // into the void
+    if (Object.keys(models).length) {
+      instance.on("model:update", (_event, payload) => {
+        if (payload === null || typeof payload !== "object") {
+          console.warn(`jq79: model:update expects a { name?, value } payload, got ${payload === null ? "null" : typeof payload}`)
+          return
+        }
+        const name = payload.name == null ? "default" : kebabToCamel(String(payload.name))
+        const expr = models[name]
+        if (expr === undefined) {
+          console.warn(`jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
+          return
+        }
+        evalExpr(`${expr} = $value`, scope, { $value: payload.value })
+      })
+    }
+
+    // @event on the tag listens to this instance's $emit channel (and only
+    // this instance's - a grandchild's emit arrives here solely as an
+    // explicit re-emit)
+    events.forEach(([attr, expr]) => wireTagEvent(instance, attr, expr, scope))
+
     const seed = untracked(() =>
       Object.fromEntries(Object.entries(props).map(([name, expr]) => [name, evalExpr(expr, scope)]))
     )
@@ -370,7 +451,15 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
 
   Object.entries(node.attrs).forEach(([key, value]) => {
     if (key.startsWith("@")) bindEvent(el, key, value, scope)
-    else if (!CONTROL_ATTRS.has(key)) el.setAttribute(key, value)
+    else if (key === ":model" || key.startsWith(":model.")) {
+      // :model binds component tags only (see TODOS/2026-07-15.model-directive.md;
+      // the native-element form is parked there). Warn on a real element, but
+      // not on a tag that may still upgrade into a component - the upgrade
+      // re-renders through renderNestedComponent, models and all
+      if (!(el instanceof HTMLUnknownElement || node.tag.includes("-"))) {
+        console.warn(`jq79: ${key} on <${node.tag}> does nothing - :model binds component tags only (for now)`)
+      }
+    } else if (!CONTROL_ATTRS.has(key)) el.setAttribute(key, value)
   })
 
   const bindExpr = node.attrs[":attrs"]
@@ -1250,15 +1339,22 @@ export class Component79 {
     // listen on any ancestor (or with @event-name on a wrapping element).
     // Captures the marker rather than `this` so a later re-render's scripts
     // can't dispatch from the wrong generation - the same guard keeps stale
-    // generations from reaching the instance's on() listeners
+    // generations from reaching the instance's on() listeners.
+    // The on() channel runs *first* (it's where @event on a component tag is
+    // wired - see wireTagEvent) so its listeners can shape the DOM dispatch:
+    // stopPropagation() there keeps the event off the DOM entirely, and the
+    // event is cancelable so preventDefault() - from either channel - flips
+    // the return to false, telling the emitting child "the parent vetoed"
     const marker = this.startMarker
     const $emit = (eventName: string, payload?: any): boolean => {
-      const event = new CustomEvent(eventName, { detail: payload, bubbles: true, composed: true })
-      const result = marker.dispatchEvent(event)
+      const event = new CustomEvent(eventName, { detail: payload, bubbles: true, composed: true, cancelable: true })
       if (marker === this.startMarker) {
         this.emitListeners.get(eventName)?.forEach(listener => listener(event, payload))
       }
-      return result
+      // cancelBubble is the spec's legacy name, but it's the only *readable*
+      // accessor for the stop-propagation flag - hence the deprecation hint
+      if (!event.cancelBubble) marker.dispatchEvent(event)
+      return !event.defaultPrevented
     }
 
     // `await $mounted()` suspends a setup script until mount() attaches the
@@ -1324,7 +1420,18 @@ export class Component79 {
     })
 
     const content = document.createDocumentFragment()
-    content.append(this.startMarker, renderNodes(this.template, store, fx, shadow), this.endMarker)
+    // the template renders under a scope that also answers $emit (unless the
+    // store shadows the name), so an inline handler can emit without routing
+    // through a setup function: @input="$emit('update', $event.target.value)".
+    // has/get only - never an own key - so Object.keys, snapshot spreads and
+    // the component-key scan don't see it, and every read still forwards
+    // through the reactive store, keeping dependency tracking intact
+    const templateScope = new Proxy(store as Record<string, any>, {
+      has: (target, key) => key === "$emit" || Reflect.has(target, key),
+      get: (target, key, receiver) =>
+        key === "$emit" && !Reflect.has(target, key) ? $emit : Reflect.get(target, key, receiver),
+    })
+    content.append(this.startMarker, renderNodes(this.template, templateScope, fx, shadow), this.endMarker)
     this.content = content
 
     if (shadow) {

@@ -19,7 +19,7 @@
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.
 - The [DOM helpers](dom-helpers.md) `$`, `$$` and `$create`, plus [`$reactive`](reactive-data.md), are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
-- `$emit(eventName, payload)` dispatches a native bubbling `CustomEvent` (with `payload` as `event.detail`) from the component's position in the DOM. Listen from a parent component with `@event-name` on any wrapping element, or with plain `addEventListener` on the mount target:
+- `$emit(eventName, payload)` dispatches a native bubbling, cancelable `CustomEvent` (with `payload` as `event.detail`) from the component's position in the DOM, and returns `false` when any listener called `preventDefault()` — the "parent vetoed" signal (e.g. `@saved.prevent` on the component's tag). It's also visible to template expressions (`@click="$emit('saved', id)"` needs no setup function), shadowed by a same-named scope property like any global. Listen from a parent component with [`@event-name` on the component's own tag](template-syntax.md#event-on-a-component-tag), on any wrapping element, or with plain `addEventListener` on the mount target:
 
 ```html
 <!-- child -->
@@ -43,7 +43,7 @@ new Component79(src)
   .mount("#app")
 ```
 
-  Events emitted before the component is mounted have no ancestors to bubble to, so no DOM listener hears them (`$emit` is meant for handlers and async code, not synchronous top-level setup) — but instance `on()` listeners are notified even while detached.
+  Events emitted before the component is mounted have no ancestors to bubble to, so no DOM listener hears them (`$emit` is meant for handlers and async code, not synchronous top-level setup) — but instance `on()` listeners are notified even while detached. `on()` listeners (which is what `@event` on the component's tag uses) run *before* the DOM dispatch — one of them calling `stopPropagation()` keeps the event off the DOM entirely.
 
 - `await $mounted()` suspends the script until the component is attached to the DOM, so everything below it can use `querySelector` (or `$`/`$$`) directly:
 
