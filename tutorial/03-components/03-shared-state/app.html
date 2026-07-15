@@ -1,0 +1,17 @@
+<script :setup>
+  const CartLines = await import("./CartLines.html")
+  const CartTotal = await import("./CartTotal.html")
+
+  let cart = { items: [] }
+</script>
+
+<div class="shop">
+  <h3>cart ({{ cart.items.length }})</h3>
+  <CartLines :cart />
+  <CartTotal :cart />
+</div>
+
+<style>
+  .shop { display: grid; gap: 0.6em; justify-items: start; }
+  h3 { margin: 0; }
+</style>

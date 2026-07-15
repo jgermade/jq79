@@ -330,6 +330,81 @@ describe("tutorial", () => {
     expect(inc.textContent).toContain("clicked 0 times")
     expect(readout()).toBe("double: 0")
   })
+
+  // these two lessons stage a failure before fixing it, so their *starting*
+  // files carry claims of their own - a library change that made keyless
+  // reorders keep DOM state, or plain objects shared, would gut the lesson
+  // without breaking its solution
+
+  const startOf = (path: string) => exercises.find(candidate => candidate.path === path)!.files
+
+  it("01-basics/06: without :key, a reorder rebuilds the rows and typing is lost", () => {
+    mount(startOf("01-basics/06-keys-and-identity"), host)
+    const root = host.shadowRoot!
+    const inputs = () => [...root.querySelectorAll("input")] as HTMLInputElement[]
+
+    inputs()[0].value = "captain"
+    root.querySelector("button")!.click()
+
+    expect([...root.querySelectorAll(".name")].map(el => el.textContent)).toEqual(["Alan", "Grace", "Ada"])
+    expect(inputs().map(input => input.value)).toEqual(["", "", ""])
+  })
+
+  it("01-basics/06: with :key, the row travels with its player, typing intact", () => {
+    mount(solutionOf("01-basics/06-keys-and-identity"), host)
+    const root = host.shadowRoot!
+    const inputs = () => [...root.querySelectorAll("input")] as HTMLInputElement[]
+
+    inputs()[0].value = "captain"
+    root.querySelector("button")!.click()
+
+    expect([...root.querySelectorAll(".name")].map(el => el.textContent)).toEqual(["Alan", "Grace", "Ada"])
+    expect(inputs().map(input => input.value)).toEqual(["", "", "captain"])
+  })
+
+  it("01-basics/07: iterates the object's entries, touching only the written key", () => {
+    mount(solutionOf("01-basics/07-objects-and-entries"), host)
+    const root = host.shadowRoot!
+    const rows = () => [...root.querySelectorAll("li")].map(li => li.textContent)
+
+    expect(rows()).toEqual(["pears: 3", "melons: 1", "plums: 8"])
+
+    const untouched = root.querySelectorAll("li")[1]
+    ;(root.querySelectorAll("li")[0] as HTMLElement).click()
+    root.querySelector("button")!.click()
+
+    // a bumped count and a brand-new key, each landing on its own row - the
+    // melons row is still the same node
+    expect(rows()).toEqual(["pears: 4", "melons: 1", "plums: 8", "figs: 5"])
+    expect(root.querySelectorAll("li")[1]).toBe(untouched)
+  })
+
+  it("03-components/03: a plain object passed to both children falls out of sync", async () => {
+    mount(startOf("03-components/03-shared-state"), host)
+    await tick()
+    const root = host.shadowRoot!
+
+    ;(root.querySelector(".lines button") as HTMLButtonElement).click()
+
+    // the writer updated, the reader and the parent kept the old value
+    expect(root.querySelectorAll(".lines li").length).toBe(1)
+    expect(root.querySelector(".total")?.textContent).toBe("0 in the cart")
+    expect(root.querySelector("h3")?.textContent).toBe("cart (0)")
+  })
+
+  it("03-components/03: every holder of the store sees a child's write", async () => {
+    mount(solutionOf("03-components/03-shared-state"), host)
+    await tick()
+    const root = host.shadowRoot!
+    const [pear, melon] = [...root.querySelectorAll(".lines button")] as HTMLButtonElement[]
+
+    pear.click()
+    melon.click()
+
+    expect([...root.querySelectorAll(".lines li")].map(li => li.textContent)).toEqual(["a pear", "a melon"])
+    expect(root.querySelector(".total")?.textContent).toBe("2 in the cart")
+    expect(root.querySelector("h3")?.textContent).toBe("cart (2)")
+  })
 })
 
 // The tutorial page is itself a jq79 component, driven here the way a reader

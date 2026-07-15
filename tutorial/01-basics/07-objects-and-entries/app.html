@@ -1,0 +1,15 @@
+<script :setup>
+  let stock = { pears: 3, melons: 1, plums: 8 }
+</script>
+
+<ul>
+  <li>{{ fruit }}: {{ count }}</li>
+</ul>
+
+<button>add figs</button>
+
+<style>
+  ul { list-style: none; padding: 0; }
+  li { padding: 0.3em 0; cursor: pointer; user-select: none; }
+  button { font: inherit; padding: 0.3em 0.9em; border-radius: 6px; cursor: pointer; }
+</style>

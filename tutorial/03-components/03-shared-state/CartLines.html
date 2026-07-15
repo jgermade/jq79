@@ -1,0 +1,16 @@
+<script :setup="{ cart }"></script>
+
+<div class="lines">
+  <button @click="cart.items = [...cart.items, 'a pear']">add a pear</button>
+  <button @click="cart.items = [...cart.items, 'a melon']">add a melon</button>
+  <ul>
+    <li :each="item in cart.items">{{ item }}</li>
+  </ul>
+</div>
+
+<style>
+  .lines { display: grid; gap: 0.4em; justify-items: start; }
+  button { font: inherit; padding: 0.3em 0.9em; border-radius: 6px; cursor: pointer; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 0.15em 0; }
+</style>

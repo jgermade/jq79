@@ -24,3 +24,7 @@ active branch exists in the DOM:
 
 Clicking a todo already toggles it, because mutating a property of a reactive
 object is tracked just like assigning to a variable.
+
+There's more to `:each` — what `:key` actually buys you, a second binding, and
+iterating plain objects — in [Keys and identity](#01-basics/06-keys-and-identity)
+and [Objects and entries](#01-basics/07-objects-and-entries).

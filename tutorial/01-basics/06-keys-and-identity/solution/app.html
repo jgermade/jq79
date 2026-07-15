@@ -1,0 +1,28 @@
+<script :setup>
+  let players = [
+    { id: 1, name: "Ada" },
+    { id: 2, name: "Grace" },
+    { id: 3, name: "Alan" },
+  ]
+
+  const reverse = () => {
+    players = [...players].reverse()
+  }
+</script>
+
+<button @click="reverse">reverse</button>
+
+<ul>
+  <li :each="player in players" :key="player.id">
+    <span class="name">{{ player.name }}</span>
+    <input placeholder="notes…" />
+  </li>
+</ul>
+
+<style>
+  ul { list-style: none; padding: 0; display: grid; gap: 0.4em; }
+  li { display: flex; gap: 0.6em; align-items: center; }
+  .name { min-width: 4em; }
+  button { font: inherit; padding: 0.3em 0.9em; border-radius: 6px; cursor: pointer; }
+  input { font: inherit; padding: 0.25em 0.5em; }
+</style>
