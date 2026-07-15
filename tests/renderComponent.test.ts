@@ -40,6 +40,132 @@ describe("renderComponent", () => {
     expect(el.getAttribute("disabled")).toBe("true")
   })
 
+  describe(":class", () => {
+    it("applies a string expression and swaps its classes reactively", () => {
+      const component = parseComponent(`<div :class="theme"></div>`)
+      const data = $reactive({ theme: "dark compact" })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      expect(el.classList.contains("dark")).toBe(true)
+      expect(el.classList.contains("compact")).toBe(true)
+
+      data.theme = "light"
+
+      expect(el.className).toBe("light")
+    })
+
+    it("toggles object-form classes on top of the static class attribute", () => {
+      const component = parseComponent(`<button class="btn" :class="{ 'btn-active': active }">go</button>`)
+      const data = $reactive({ active: false })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("button")!
+
+      expect(el.className).toBe("btn")
+
+      data.active = true
+      expect(el.classList.contains("btn")).toBe(true)
+      expect(el.classList.contains("btn-active")).toBe(true)
+
+      data.active = false
+      expect(el.className).toBe("btn")
+    })
+
+    it("never removes a static class, even when the expression names and drops it", () => {
+      const component = parseComponent(`<div class="btn" :class="{ btn: on }"></div>`)
+      const data = $reactive({ on: true })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      data.on = false
+
+      expect(el.classList.contains("btn")).toBe(true)
+    })
+
+    it("normalizes arrays mixing strings and objects", () => {
+      const component = parseComponent(`<div :class="[theme, { active }]"></div>`)
+      const data = $reactive({ theme: "dark", active: true })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      expect(el.classList.contains("dark")).toBe(true)
+      expect(el.classList.contains("active")).toBe(true)
+
+      data.active = false
+      data.theme = "light"
+
+      expect(el.classList.contains("light")).toBe(true)
+      expect(el.classList.contains("dark")).toBe(false)
+      expect(el.classList.contains("active")).toBe(false)
+    })
+
+    it("contributes nothing for null/undefined/false/number values", () => {
+      const component = parseComponent(`<div :class="value"></div>`)
+      const data = $reactive({ value: null as any })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      expect(el.className).toBe("")
+
+      data.value = 42
+      expect(el.className).toBe("")
+
+      data.value = false
+      expect(el.className).toBe("")
+
+      data.value = "cond && 'active' can yield false" && "active"
+      expect(el.className).toBe("active")
+    })
+
+    it("tracks a flag nested in the store, per key", () => {
+      const component = parseComponent(`<li :class="{ done: task.done }"></li>`)
+      const data = $reactive({ task: { done: false } })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("li")!
+
+      expect(el.classList.contains("done")).toBe(false)
+
+      data.task.done = true
+
+      expect(el.classList.contains("done")).toBe(true)
+    })
+
+    it("splits object keys holding several space-separated names", () => {
+      const component = parseComponent(`<div :class="{ 'a b': on }"></div>`)
+      const data = $reactive({ on: true })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      expect(el.classList.contains("a")).toBe(true)
+      expect(el.classList.contains("b")).toBe(true)
+
+      data.on = false
+      expect(el.className).toBe("")
+    })
+
+    it("works per item on a :each element", () => {
+      const component = parseComponent(
+        `<li :each="task in tasks" :key="task.id" :class="{ done: task.done }">{{ task.name }}</li>`
+      )
+      const data = $reactive({ tasks: [{ id: 1, name: "a", done: false }, { id: 2, name: "b", done: true }] })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "li").map(el => el.classList.contains("done"))).toEqual([false, true])
+
+      data.tasks[0].done = true
+
+      expect($$(container, "li").map(el => el.classList.contains("done"))).toEqual([true, true])
+    })
+  })
+
   describe("multi-line expressions", () => {
     it("interpolates a {{ }} expression spanning several lines", () => {
       const component = parseComponent(`<p class="out">{{ items\n  .map(n => n * 2)\n  .join(",") }}</p>`)

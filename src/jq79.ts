@@ -91,7 +91,7 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
   template.replace(/{{\s*([\s\S]+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
 
 
-const CONTROL_ATTRS = new Set([":attrs", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
+const CONTROL_ATTRS = new Set([":attrs", ":class", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
 // `item in items`, `item, i in items`, `(value, key) in props` - the second
 // binding is the array index or the object key, parens optional (Vue-style).
 // The list expression can span lines, so it matches [\s\S] rather than `.`
@@ -294,6 +294,20 @@ const createWithScope = (expr: string, scope: Record<string, any>): Record<strin
   })
 }
 
+// what :class accepts, flattened to single class tokens: a string of
+// space-separated names, an array (entries normalized recursively), or an
+// object whose truthy-valued keys are the names (a key may itself hold
+// several). Everything else - null, false, numbers - contributes nothing, so
+// `cond && 'active'` reads naturally. The object form reads each value, so a
+// store-backed flag is tracked per key
+const classNames = (value: any): string[] => {
+  if (typeof value === "string") return value.split(/\s+/).filter(Boolean)
+  if (Array.isArray(value)) return value.flatMap(classNames)
+  if (value !== null && typeof value === "object")
+    return Object.entries(value).flatMap(([name, on]) => (on ? classNames(name) : []))
+  return []
+}
+
 // renders a single element node: static attrs, @event listeners, a reactive
 // :attrs object, and its content - :text/:html override the element's own
 // children with a reactive textContent/innerHTML, otherwise children render
@@ -350,6 +364,25 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
         const value = bound[key]
         if (value != null && value !== false) el.setAttribute(key, String(value))
       })
+    })
+  }
+
+  // :class="expr" adds classes on top of the static `class` attribute. Only
+  // classes this binding added are ever removed: the static list survives
+  // every re-run, even when the expression names one of its classes and then
+  // drops it (class="btn" :class="{ btn: cond }" keeps btn on false)
+  const classExpr = node.attrs[":class"]
+  if (classExpr !== undefined) {
+    const staticClasses = new Set(classNames(node.attrs.class ?? ""))
+    let bound: string[] = []
+
+    fx.effect(() => {
+      const next = classNames(evalExpr(classExpr, scope))
+      bound.forEach(name => {
+        if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
+      })
+      el.classList.add(...next)
+      bound = next
     })
   }
 

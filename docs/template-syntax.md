@@ -31,6 +31,25 @@ Evaluates to an object; each entry becomes an attribute. `null`, `undefined` and
 <button :attrs="{ disabled: isSaving, title: tooltip }">Save</button>
 ```
 
+## `:class` — reactive classes
+
+Adds classes on top of the static `class` attribute — it never replaces it. The expression may be a string, an object, or an array:
+
+```html
+<button class="btn" :class="{ 'btn-active': active }">go</button>
+<div :class="theme"></div>
+<div :class="[theme, { active }]"></div>
+```
+
+- **string** — split on whitespace, each token a class.
+- **object** — keys whose values are truthy become classes; a key may hold several space-separated names.
+- **array** — entries normalized recursively, so strings and objects mix.
+- Anything else (`null`, `undefined`, `false`, numbers) contributes nothing — so `:class="cond && 'active'"` reads naturally.
+
+Only classes the binding added are ever removed: the static list survives every re-run, even when the expression names one of its classes and then drops it (`class="btn" :class="{ btn: cond }"` keeps `btn` when `cond` goes false).
+
+Don't combine it with a `class` key inside `:attrs` on the same element — `:attrs` rewrites the whole attribute on each of its runs, wiping whatever `:class` added. On a nested-component tag `:class` is ignored, like `:text`/`:html`.
+
 ## `:text` / `:html` — content
 
 Set an element's content directly from an expression, instead of interpolating inside its children.
