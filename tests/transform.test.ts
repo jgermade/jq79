@@ -269,6 +269,53 @@ describe("regex literals", () => {
   })
 })
 
+// the gaps the regex heuristic leaves open on purpose (see the plan's
+// "Rejected"/"Open" sections): a regex where only a parser could tell it from
+// division. These pins measure each gap's blast radius as much as its
+// existence - if a smarter heuristic ever rescues one, the pin flips and gets
+// updated, which is exactly the reminder wanted
+describe("the gaps left deliberately open", () => {
+  it("misreads a regex right after an if-header `)`, radius: the rest of its line", () => {
+    // after `)` the heuristic must say division (`(a + b) / 2`), so the
+    // literal is walked as code and its `\//` reads as a line comment. With
+    // closers in the swallowed tail the depth sticks and the next `let`
+    // silently stays local - this is the harmful shape
+    const swallowed = transformSetupScript(
+      `items.forEach(item => { if (item.ok) /a\\//.test(item.s) && mark(item) })\nlet flag = true`
+    )
+    expect(swallowed.vars).toEqual([])
+    expect(swallowed.code).toContain("let flag = true")
+
+    // with a bracket-balanced tail the same misread costs nothing
+    const balanced = transformSetupScript(`if (ok) /a\\//.test(s) && go()\nlet after = 1`)
+    expect(balanced.vars).toEqual(["after"])
+    expect(balanced.code).toBe(`if (ok) /a\\//.test(s) && go()\nafter = 1`)
+  })
+
+  it("survives the lookback landing on a comment's last word", () => {
+    // the backward scan can't tell a line comment's tail from code, so
+    // "return" up there admits a "regex" that is really a division - but
+    // skipRegex bails at the line end, the text is copied verbatim, and the
+    // output comes out correct anyway: radius zero in this shape
+    const { vars, code } = transformSetupScript(`$: half = a // never return\n  / 2\nlet after = 1`)
+
+    expect(vars).toEqual(["half", "after"])
+    expect(code).toBe(`$__effect(() => { half = a // never return\n  / 2 });\nafter = 1`)
+  })
+
+  it("does not rescue `for (x of /re/)`, because `of` may be a variable", () => {
+    // the price of the gap: iterating a regex (nonsense anyway) misreads
+    const gap = transformSetupScript(`for (const m of /a\\//.exec(s)) use(m)\nlet after = 1`)
+    expect(gap.vars).toEqual([])
+
+    // what keeping `of` off the reserved list buys: `of` as a plain
+    // variable, dividing like any other name
+    const paid = transformSetupScript(`const of = 4\nlet r = of / 2`)
+    expect(paid.vars).toEqual(["of", "r"])
+    expect(paid.code).toBe(`of = 4\nr = of / 2`)
+  })
+})
+
 // boundaries that already hold and that any scanner change must not disturb -
 // notably: a blank line is NOT a statement delimiter (it legitimately lives
 // inside multi-line object/array literals), so it can't serve as a recovery
