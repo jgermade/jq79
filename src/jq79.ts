@@ -139,8 +139,17 @@ const wireTagEvent = (instance: Component79, attr: string, expr: string, scope: 
     if (mods.has("stop")) event.stopPropagation()
     if (mods.has("once")) instance.off(name, listener)
 
-    const handler = evalExpr(expr, scope, { $event: event })
-    if (typeof handler === "function") handler(event)
+    // untracked, so a tag handler behaves like an element handler no matter
+    // when the emit fires: an element handler never runs inside an effect,
+    // but $emit can (a $: that emits, a setup-script emit inside the parent's
+    // creation effect), and the handler's reads would land in that effect's
+    // deps. Today that is contained - cross-store deps are never notified,
+    // and the creation effect's definition guard no-ops a spurious wake - but
+    // "what a handler reads is nobody's dependency" shouldn't hinge on either
+    untracked(() => {
+      const handler = evalExpr(expr, scope, { $event: event })
+      if (typeof handler === "function") handler(event)
+    })
   }
   instance.on(name, listener)
 }
@@ -305,7 +314,12 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
           console.warn(`jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
           return
         }
-        evalExpr(`${expr} = $value`, scope, { $value: payload.value })
+        // untracked, like the tag handlers: a child emitting from its setup
+        // script runs inside the parent's *creation* effect, and the reads a
+        // path assignment makes (`user` in `user.name = $value`) would land
+        // in its deps - donating that effect one wasted (guard-stopped) wake
+        // per later write. An imperative writeback is nobody's dependency
+        untracked(() => evalExpr(`${expr} = $value`, scope, { $value: payload.value }))
       })
     }
 

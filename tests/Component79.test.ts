@@ -1134,6 +1134,249 @@ describe("Component79", () => {
       warn.mockRestore()
       jq79.destroy()
     })
+
+    it("routes default and named models independently on the same tag", () => {
+      const field = new Component79(
+        `<button class="d" @click="$emit('model:update', { value: 'D' })">{{ model }}</button>` +
+          `<button class="n" @click="$emit('model:update', { name: 'extra', value: 'N' })">{{ extra }}</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model="main" :model.extra="extra" /></div>`)
+        .render({ main: "m", extra: "e", Field: field }).mount(host)
+
+      expect($(host, ".d")?.textContent).toBe("m")
+      expect($(host, ".n")?.textContent).toBe("e")
+
+      ;($(host, ".d") as HTMLButtonElement).click()
+      ;($(host, ".n") as HTMLButtonElement).click()
+
+      expect(jq79.data!.main).toBe("D")
+      expect(jq79.data!.extra).toBe("N")
+      jq79.destroy()
+    })
+
+    it("accepts the payload name in kebab-case too", () => {
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { name: 'user-name', value: 'grace' })">go</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model.user-name="who" /></div>`)
+        .render({ who: "ada", Field: field }).mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.who).toBe("grace")
+      jq79.destroy()
+    })
+
+    it("assigns undefined when the payload carries no value - one rule, no special case", () => {
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { name: 'uname' })">go</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model.uname /></div>`)
+        .render({ uname: "ada", Field: field }).mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.uname).toBeUndefined()
+      jq79.destroy()
+    })
+
+    it("round-trips object values, both directions", () => {
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { value: { id: model.id + 1 } })">{{ model.id }}</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model="sel" /></div>`)
+        .render({ sel: { id: 1 }, Field: field }).mount(host)
+
+      expect($(host, ".go")?.textContent).toBe("1")
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      // the fresh object landed on the parent, and came back down as the prop
+      expect(jq79.data!.sel.id).toBe(2)
+      expect($(host, ".go")?.textContent).toBe("2")
+      jq79.destroy()
+    })
+
+    it("keeps every tag bound to the same variable in sync", () => {
+      const viewer = new Component79(`<span class="view">{{ model }}</span>`)
+      const editor = new Component79(
+        `<button class="edit" @click="$emit('model:update', { value: 'edited' })">go</button>`
+      )
+      const jq79 = new Component79(`<div><Viewer :model="shared" /><Editor :model="shared" /></div>`)
+        .render({ shared: "start", Viewer: viewer, Editor: editor }).mount(host)
+
+      expect($(host, ".view")?.textContent).toBe("start")
+
+      ;($(host, ".edit") as HTMLButtonElement).click()
+
+      // the editor's writeback reached the parent, and the parent's prop sync
+      // reached the *other* instance - the actual two-way promise
+      expect($(host, ".view")?.textContent).toBe("edited")
+      jq79.destroy()
+    })
+
+    it("follows the item, not the position, through a keyed :each reorder", () => {
+      const field = new Component79(
+        `<button class="f" @click="$emit('model:update', { value: model + '!' })">{{ model }}</button>`
+      )
+      const jq79 = new Component79(
+        `<div><Field :each="item in items" :key="item.id" :model="item.text" /></div>`
+      ).render({
+        Field: field,
+        items: [
+          { id: 1, text: "a" },
+          { id: 2, text: "b" },
+          { id: 3, text: "c" },
+        ],
+      }).mount(host)
+
+      const texts = () => $$(host, ".f").map(el => el.textContent)
+
+      ;($$(host, ".f")[1] as HTMLButtonElement).click()
+
+      const data = jq79.data!
+      expect(data.items.map((item: any) => item.text)).toEqual(["a", "b!", "c"])
+      expect(texts()).toEqual(["a", "b!", "c"]) // and the prop followed back down
+
+      // reorder, then write through the instance now sitting where another was
+      data.items = [data.items[2], data.items[0], data.items[1]]
+      expect(texts()).toEqual(["c", "a", "b!"])
+
+      ;($$(host, ".f")[1] as HTMLButtonElement).click()
+
+      // the writeback hit the item that moved there (id 1), not old position 1
+      expect(data.items.map((item: any) => item.text)).toEqual(["c", "a!", "b!"])
+      jq79.destroy()
+    })
+
+    it("writes through a :with narrowing, and reads the prop through it", () => {
+      const field = new Component79(
+        `<input class="i" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+      )
+      const jq79 = new Component79(`<div :with="form"><Field :model="uname" /></div>`)
+        .render({ form: { uname: "ada" }, Field: field }).mount(host)
+
+      const input = $(host, ".i") as HTMLInputElement
+      expect(input.value).toBe("ada")
+
+      input.value = "grace"
+      input.dispatchEvent(new Event("input"))
+
+      // the assignment resolved against the narrowed object, not the root scope
+      expect(jq79.data!.form.uname).toBe("grace")
+      expect(jq79.data!.uname).toBeUndefined()
+      jq79.destroy()
+    })
+
+    it("wires :model through the late-upgrade path, without the plain-element warn", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const field = new Component79(
+        `<input class="i" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+      )
+      const jq79 = new Component79(`<div><late-field :model="email"></late-field></div>`)
+        .render({ email: "ada@lovelace.dev" }).mount(host)
+
+      // a tag that may still become a component gets no lecture about elements
+      expect(warn).not.toHaveBeenCalled()
+
+      jq79.data!.LateField = field
+
+      const input = $(host, ".i") as HTMLInputElement
+      expect(input.value).toBe("ada@lovelace.dev") // the prop came down on upgrade
+
+      input.value = "grace@hopper.dev"
+      input.dispatchEvent(new Event("input"))
+
+      expect(jq79.data!.email).toBe("grace@hopper.dev")
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("rewires a swapped definition: the new instance seeds from and writes to the same binding", () => {
+      const first = new Component79(`<span class="v1">{{ model }}</span>`)
+      const second = new Component79(
+        `<button class="v2" @click="$emit('model:update', { value: model + '+' })">{{ model }}</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model="text" /></div>`)
+        .render({ text: "hi", Field: first }).mount(host)
+
+      expect($(host, ".v1")?.textContent).toBe("hi")
+
+      jq79.data!.Field = second
+      expect($(host, ".v1")).toBeNull()
+      expect($(host, ".v2")?.textContent).toBe("hi")
+
+      ;($(host, ".v2") as HTMLButtonElement).click()
+
+      expect(jq79.data!.text).toBe("hi+")
+      jq79.destroy()
+    })
+
+    // emits that fire while an effect is mid-run: the writeback and the tag
+    // handlers run untracked (a handler's reads are nobody's dependency), and
+    // even without that the damage is contained twice over - cross-store deps
+    // are never notified, and the creation effect's definition guard no-ops a
+    // spurious wake. These pin the visible behavior either way
+
+    it("lets a setup-script emit initialize the parent binding - wired before the child renders", () => {
+      const field = new Component79(
+        `<script :setup>$emit('model:update', { value: 'init' })</script><span class="c">{{ model }}</span>`
+      )
+      const jq79 = new Component79(`<div><Field :model="user.name" /></div>`)
+        .render({ user: { name: "" }, Field: field }).mount(host)
+
+      // the emit ran inside the parent's creation effect, and still landed -
+      // on the parent and, through the prop sync, back on the child itself
+      expect(jq79.data!.user.name).toBe("init")
+      expect($(host, ".c")?.textContent).toBe("init")
+      const el = $(host, ".c")
+
+      // later parent writes flow normally: same instance, updated in place
+      jq79.data!.user.name = "other"
+
+      expect(jq79.data!.user.name).toBe("other")
+      expect($(host, ".c")?.textContent).toBe("other")
+      expect($(host, ".c")).toBe(el) // the child was not re-created
+      jq79.destroy()
+    })
+
+    it("settles a $: effect that emits its writeback without looping", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
+      const child = new Component79(
+        `<script :setup>let n = 1\n$: $emit('model:update', { value: n })</script><i class="c"></i>`
+      )
+      const jq79 = new Component79(`<div><Field :model="hits" /></div>`)
+        .render({ hits: 0, Field: child }).mount(host)
+
+      // the emit runs inside the child's own $: effect; the writeback writes
+      // the parent's store - one pass, no self-wake (the runtime would cut a
+      // loop at 100 rounds with a console.error)
+      expect(error).not.toHaveBeenCalled()
+      expect(jq79.data!.hits).toBe(1)
+      error.mockRestore()
+      jq79.destroy()
+    })
+
+    it("settles a burst of writebacks without effect-loop errors", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
+      const field = new Component79(
+        `<input class="i" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+      )
+      const jq79 = new Component79(`<div><Field :model="text" /></div>`)
+        .render({ text: "", Field: field }).mount(host)
+
+      const input = $(host, ".i") as HTMLInputElement
+      for (const text of ["a", "ab", "abc"]) {
+        input.value = text
+        input.dispatchEvent(new Event("input"))
+      }
+
+      expect(jq79.data!.text).toBe("abc")
+      expect(input.value).toBe("abc")
+      expect(error).not.toHaveBeenCalled()
+      error.mockRestore()
+      jq79.destroy()
+    })
   })
 
   describe("@event on component tags", () => {
