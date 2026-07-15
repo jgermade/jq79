@@ -437,19 +437,41 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
 
+  // :if on the same element is not per-item filtering, and rendering
+  // everything in silence reads like a broken filter - say it out loud
+  if (":if" in node.attrs || ":elseif" in node.attrs || ":else" in node.attrs) {
+    console.warn("jq79: :if/:elseif/:else on a :each element is ignored; filter the list expression instead")
+  }
+
   let entries: EachEntry[] = []
+  let warnedDuplicates = false
 
   fx.effect(() => {
     const list = evalExpr(listExpr, scope)
     const items = Array.isArray(list) ? list : []
-    const previous = new Map(entries.map(entry => [entry.key, entry]))
+    // buckets rather than a key->entry map: duplicate keys (a user error, but
+    // one that must degrade instead of corrupt) consume entries in order of
+    // appearance, so no entry is ever matched twice - matching one twice is
+    // how a reused row got disposed and a removed one resurrected
+    const previous = new Map<any, EachEntry[]>()
+    entries.forEach(entry => {
+      const bucket = previous.get(entry.key)
+      if (bucket) bucket.push(entry)
+      else previous.set(entry.key, [entry])
+    })
 
+    const seen = new Set<any>()
     const nextEntries = items.map((item, index): EachEntry => {
       const itemScope = Object.create(scope)
       defineScopeVar(itemScope, itemName, item)
       defineScopeVar(itemScope, "$index", index)
       const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : index
-      const existing = previous.get(key)
+      if (seen.has(key) && !warnedDuplicates) {
+        warnedDuplicates = true
+        console.warn(`jq79: duplicate :key in :each "${node.attrs[":each"]}"; duplicates pair up by position`)
+      }
+      seen.add(key)
+      const existing = previous.get(key)?.shift()
 
       if (existing && Object.is(existing.item, item)) {
         defineScopeVar(existing.scope, "$index", index)
@@ -468,13 +490,11 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       return { key, item, scope: itemScope, fx: itemFx, range }
     })
 
-    const nextKeys = new Set(nextEntries.map(entry => entry.key))
-    entries.forEach(entry => {
-      if (!nextKeys.has(entry.key)) {
-        entry.fx.dispose()
-        removeRange(entry.range)
-      }
-    })
+    // whatever no new item consumed is gone
+    previous.forEach(bucket => bucket.forEach(entry => {
+      entry.fx.dispose()
+      removeRange(entry.range)
+    }))
 
     let prevNode: Node = anchor
     nextEntries.forEach(entry => {

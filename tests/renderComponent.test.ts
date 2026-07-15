@@ -388,6 +388,106 @@ describe("renderComponent", () => {
     expect(removedNode.textContent).toBe("Grace")
   })
 
+  describe(":each corners", () => {
+    it("keeps $index fresh after a keyed reorder, in bindings and handlers alike", () => {
+      const seen: number[] = []
+      const component = parseComponent(
+        `<li :each="u in users" :key="u.id" @click="record($index)">{{ $index }}:{{ u.name }}</li>`
+      )
+      const data = $reactive({
+        record: (i: number) => seen.push(i),
+        users: [{ id: 1, name: "a" }, { id: 2, name: "b" }, { id: 3, name: "c" }],
+      })
+      container.appendChild(renderComponent(component, data))
+
+      data.users = [data.users[2], data.users[0], data.users[1]]
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["0:c", "1:a", "2:b"])
+      $$(container, "li").forEach(el => el.dispatchEvent(new MouseEvent("click", { bubbles: true })))
+      expect(seen).toEqual([0, 1, 2])
+    })
+
+    it("follows in-place mutation: reverse() and push()", () => {
+      const component = parseComponent(`<li :each="u in users" :key="u.id">{{ u.name }}</li>`)
+      const data = $reactive({ users: [{ id: 1, name: "a" }, { id: 2, name: "b" }, { id: 3, name: "c" }] })
+      container.appendChild(renderComponent(component, data))
+
+      data.users.reverse()
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["c", "b", "a"])
+
+      data.users.push({ id: 4, name: "d" })
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["c", "b", "a", "d"])
+    })
+
+    it("nests :each scopes, inner lists updating on their own", () => {
+      const component = parseComponent(
+        `<ul><li :each="row in rows"><b :each="cell in row.cells">{{ row.tag }}{{ cell }}</b></li></ul>`
+      )
+      const data = $reactive({ rows: [{ tag: "r1-", cells: ["a", "b"] }, { tag: "r2-", cells: ["c"] }] })
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "b").map(el => el.textContent)).toEqual(["r1-a", "r1-b", "r2-c"])
+
+      data.rows[0].cells = ["a", "b", "x"]
+      expect($$(container, "b").map(el => el.textContent)).toEqual(["r1-a", "r1-b", "r1-x", "r2-c"])
+    })
+
+    it("takes :with on the :each element itself, over the item scope", () => {
+      const component = parseComponent(`<li :each="u in users" :with="u.profile">{{ city }}</li>`)
+      const data = $reactive({ users: [{ profile: { city: "NYC" } }, { profile: { city: "LA" } }] })
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["NYC", "LA"])
+    })
+
+    it("renders nothing for a non-array, and the list when one arrives", () => {
+      const component = parseComponent(`<li :each="n in items">{{ n }}</li>`)
+      const data = $reactive({ items: null as any })
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "li")).toHaveLength(0)
+
+      data.items = ["x"]
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["x"])
+    })
+
+    it("renders falsy items as values, not as holes", () => {
+      const component = parseComponent(`<li :each="n in items">[{{ n }}]</li>`)
+      container.appendChild(renderComponent(component, $reactive({ items: [0, "", false, null] })))
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["[0]", "[]", "[false]", "[]"])
+    })
+
+    it("degrades duplicate keys to positional pairing, with a warning", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const component = parseComponent(`<li :each="u in users" :key="u.k">{{ u.name }}</li>`)
+      const data = $reactive({ users: [{ k: 1, name: "a" }] })
+      container.appendChild(renderComponent(component, data))
+
+      // same key twice: the diff used to match one entry for both, disposing
+      // a reused row and resurrecting a removed one - a zombie third <li>
+      data.users = [data.users[0], { k: 1, name: "b" }]
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b"])
+      expect(warn).toHaveBeenCalledOnce()
+
+      // both rows stay live and consistent through later updates
+      data.users[0].name = "a2"
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["a2", "b"])
+      warn.mockRestore()
+    })
+
+    it("ignores :if on a :each element, out loud", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const component = parseComponent(`<li :each="n in items" :if="n > 1">{{ n }}</li>`)
+      container.appendChild(renderComponent(component, $reactive({ items: [1, 2, 3] })))
+
+      // not per-item filtering: everything renders, and the console says why
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["1", "2", "3"])
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(":if/:elseif/:else on a :each element"))
+      warn.mockRestore()
+    })
+  })
+
   describe(":with", () => {
     it("resolves names against the object first, falling back to the outer scope", () => {
       const component = parseComponent(
