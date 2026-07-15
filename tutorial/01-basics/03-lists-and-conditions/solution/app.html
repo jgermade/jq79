@@ -12,7 +12,7 @@
   <li
     :each="todo in todos"
     :key="todo.id"
-    :attrs="{ class: todo.done ? 'done' : '' }"
+    :class="{ done: todo.done }"
     @click="todo.done = !todo.done"
   >{{ todo.text }}</li>
 </ul>

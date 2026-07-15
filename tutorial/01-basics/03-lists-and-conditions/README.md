@@ -18,9 +18,12 @@ active branch exists in the DOM:
 <div :else>bad</div>
 ```
 
-> **Your turn:** render one `<li>` per todo, keyed by `id`. Then show the
-> "all done!" message only when nothing is left, and the count when something
-> is — the `:if`/`:else` chain is already sketched out for you.
+> **Your turn:** render one `<li>` per todo, keyed by `id`, and cross out the
+> finished ones — the styles ship a `done` class, and
+> `:class="{ done: todo.done }"` toggles it (more on `:class` in the next
+> lesson). Then show the "all done!" message only when nothing is left, and
+> the count when something is — the `:if`/`:else` chain is already sketched
+> out for you.
 
 Clicking a todo already toggles it, because mutating a property of a reactive
 object is tracked just like assigning to a variable.

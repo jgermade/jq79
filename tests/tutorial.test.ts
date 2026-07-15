@@ -193,19 +193,23 @@ describe("tutorial", () => {
     expect(cards[1].querySelector("strong")?.textContent).toBe("Linus")
   })
 
-  it("01-basics/04: drives the button's attributes and the status text", () => {
+  it("01-basics/04: drives the button's attributes, the status text and its class", () => {
     mount(solutionOf("01-basics/04-attributes"), host)
     const button = host.shadowRoot!.querySelector("button")!
     const status = host.shadowRoot!.querySelector(".status")!
 
     expect(button.hasAttribute("disabled")).toBe(false)
     expect(status.textContent).toBe("idle")
+    expect(status.classList.contains("busy")).toBe(false)
 
     button.click()
 
     expect(button.hasAttribute("disabled")).toBe(true)
     expect(button.getAttribute("title")).toContain("already in flight")
     expect(status.textContent).toBe("saving…")
+    // :class adds busy on top of the static class - both are there
+    expect(status.classList.contains("busy")).toBe(true)
+    expect(status.classList.contains("status")).toBe(true)
   })
 
   it("01-basics/05: writes through :with, and keeps the browser from submitting the form", () => {

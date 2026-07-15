@@ -13,10 +13,11 @@
   :attrs="{ disabled: saving, title: saving ? 'a save is already in flight' : 'save your work' }"
   @click="save"
 >Save</button>
-<p class="status" :text="status"></p>
+<p class="status" :class="{ busy: saving }" :text="status"></p>
 
 <style>
   button { font: inherit; padding: 0.4em 1em; border-radius: 6px; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   .status { color: #59636e; }
+  .status.busy { color: #9a6700; font-weight: 600; }
 </style>
