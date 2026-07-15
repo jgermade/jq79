@@ -66,6 +66,19 @@ const mount = (files: Record<string, string>, host: HTMLElement): Component79 =>
   return new Component79(files[ENTRY], { modules }).mountShadow(host)
 }
 
+// the scoped-styles lesson is the one exercise whose point the shadow-rooted
+// preview can't show (mountShadow ignores `scoped`), so its behaviour tests
+// mount into the document head the way its README describes - and clean up
+// after themselves, since head styles outlive the host element
+const mountHead = (files: Record<string, string>, host: HTMLElement): Component79 => {
+  const modules: Record<string, Component79> = {}
+  Object.entries(files)
+    .filter(([name]) => name !== ENTRY)
+    .forEach(([name, source]) => { modules[`./${name}`] = new Component79(source) })
+
+  return new Component79(files[ENTRY], { modules }).mount(host)
+}
+
 // setup scripts that `await` (the nested-components exercise) render on a
 // microtask, so the DOM settles a tick after mount
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -390,6 +403,38 @@ describe("tutorial", () => {
     expect(root.querySelectorAll(".lines li").length).toBe(1)
     expect(root.querySelector(".total")?.textContent).toBe("0 in the cart")
     expect(root.querySelector("h3")?.textContent).toBe("cart (0)")
+  })
+
+  it("03-components/04: an unscoped style block is global - the page heading is fair game", async () => {
+    const before = document.head.querySelectorAll("style").length
+    const instance = mountHead(startOf("03-components/04-scoped-styles"), host)
+    await tick()
+
+    const added = () => [...document.head.querySelectorAll("style")].slice(before)
+    expect(added().map(style => style.textContent).join("\n")).toContain(".title {")
+    expect(added().map(style => style.textContent).join("\n")).not.toContain("data-jq79")
+    expect(host.querySelector(".card .title")?.hasAttribute("data-jq79")).toBe(false)
+
+    instance.destroy()
+    expect(added().length).toBe(0)
+  })
+
+  it("03-components/04: `scoped` stamps the card and rewrites its rule, leaving the heading alone", async () => {
+    const before = document.head.querySelectorAll("style").length
+    const instance = mountHead(solutionOf("03-components/04-scoped-styles"), host)
+    await tick()
+
+    // the README's "what actually reaches the page" snippet, held to
+    const stamp = host.querySelector(".card .title")?.getAttribute("data-jq79")
+    expect(stamp).toBeTruthy()
+    expect(host.querySelector("h3")?.hasAttribute("data-jq79")).toBe(false)
+
+    const added = () => [...document.head.querySelectorAll("style")].slice(before)
+    expect(added().map(style => style.textContent).join("\n")).toContain(`.title[data-jq79="${stamp}"]`)
+
+    // one refcounted <style>, gone with the last instance
+    instance.destroy()
+    expect(added().length).toBe(0)
   })
 
   it("03-components/03: every holder of the store sees a child's write", async () => {
