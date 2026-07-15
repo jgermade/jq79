@@ -354,10 +354,10 @@ describe("tutorial", () => {
     expect(readout()).toBe("double: 0")
   })
 
-  // these two lessons stage a failure before fixing it, so their *starting*
-  // files carry claims of their own - a library change that made keyless
-  // reorders keep DOM state, or plain objects shared, would gut the lesson
-  // without breaking its solution
+  // these lessons stage a failure before fixing it, so their *starting* files
+  // carry claims of their own - a library change that made keyless reorders
+  // keep DOM state, plain objects shared, or :html reject destinations by
+  // default, would gut the lesson without breaking its solution
 
   const startOf = (path: string) => exercises.find(candidate => candidate.path === path)!.files
 
@@ -400,6 +400,37 @@ describe("tutorial", () => {
     // melons row is still the same node
     expect(rows()).toEqual(["pears: 4", "melons: 1", "plums: 8", "figs: 5"])
     expect(root.querySelectorAll("li")[1]).toBe(untouched)
+  })
+
+  it("01-basics/08: without a policy, clean-protocol destinations sail through", () => {
+    mount(startOf("01-basics/08-untrusted-html"), host)
+    const root = host.shadowRoot!
+
+    // mallory's executable bits never made it in - that's the sanitizer's
+    // default, no policy involved - but her text survives
+    expect(root.querySelector('a[href^="javascript:"]')).toBeFalsy()
+    expect(root.querySelector("[onclick]")).toBeFalsy()
+    expect(root.querySelectorAll(".body")[1].textContent).toContain("claim yours")
+
+    // the staged failure: trudy's phishing link and tracking pixel are live
+    expect(root.querySelector('a[href*="evil.example"]')).toBeTruthy()
+    expect(root.querySelector('img[src*="tracker.evil.example"]')).toBeTruthy()
+  })
+
+  it("01-basics/08: the policy keeps ada's docs link and strips every other destination", () => {
+    mount(solutionOf("01-basics/08-untrusted-html"), host)
+    const root = host.shadowRoot!
+
+    // *.germade.dev covers docs.germade.dev - the one href left standing
+    const kept = [...root.querySelectorAll("a[href]")].map(a => a.getAttribute("href"))
+    expect(kept).toEqual(["https://docs.germade.dev/reactive-data"])
+
+    // the rejected link survives as text without a destination, and the pixel
+    // keeps its element but loses its src
+    expect(root.querySelectorAll(".body")[2].textContent).toContain("here")
+    expect(root.querySelector('a[href*="evil.example"]')).toBeFalsy()
+    expect(root.querySelector("img")).toBeTruthy()
+    expect(root.querySelector("img")?.hasAttribute("src")).toBe(false)
   })
 
   it("03-components/03: a plain object passed to both children falls out of sync", async () => {

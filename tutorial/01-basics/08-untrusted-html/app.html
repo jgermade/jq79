@@ -1,0 +1,34 @@
+<script :setup>
+  const comments = [
+    {
+      author: "ada",
+      body: `Great write-up. The details live in
+        <a href="https://docs.germade.dev/reactive-data">the docs</a>.`,
+    },
+    {
+      author: "mallory",
+      body: `Free stickers, <a href="javascript:alert('mine now')">claim yours</a> —
+        <b onclick="alert('gotcha')">no strings attached</b>!`,
+    },
+    {
+      author: "trudy",
+      body: `Session expired? Log in again
+        <a href="https://germade.dev.evil.example/login">here</a>.
+        <img src="https://tracker.evil.example/pixel.gif" alt="">`,
+    },
+  ]
+</script>
+
+<article :each="comment in comments">
+  <strong>{{ comment.author }}</strong>
+  <div class="body" :html="comment.body"></div>
+</article>
+
+<style>
+  article { border-bottom: 1px solid #d1d9e0; padding: 0.6em 0; }
+  strong { display: block; margin-bottom: 0.2em; }
+  .body a[href]::after { content: " → " attr(href); font-size: 0.8em; color: #9a6700; word-break: break-all; }
+  /* the tracking pixel, made visible; stripped of its src, it disappears */
+  .body img[src] { width: 10px; height: 10px; background: #cf222e; }
+  .body img:not([src]) { display: none; }
+</style>
