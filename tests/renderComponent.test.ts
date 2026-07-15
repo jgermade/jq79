@@ -193,6 +193,21 @@ describe("renderComponent", () => {
       expect($$(container, ".item").map(el => el.textContent)).toEqual(["20", "30", "40"])
     })
 
+    it("survives a trailing line comment in an expression", () => {
+      // the compiled body is one line, so without the newline compileExpr
+      // adds before `)`, the comment would swallow the rest and the whole
+      // expression silently never compiled
+      const component = parseComponent(`<p class="out">{{ msg // the greeting }}</p>`)
+      const data = $reactive({ msg: "hola" })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($(container, ".out")?.textContent).toBe("hola")
+
+      data.msg = "adios"
+      expect($(container, ".out")?.textContent).toBe("adios")
+    })
+
     it("evaluates multi-line :if and :attrs expressions", () => {
       const component = parseComponent(
         `<div class="box" :if="items\n  .filter(n => n > 1)\n  .length > 0" :attrs="{\n  'data-count': items.length,\n}"></div>`

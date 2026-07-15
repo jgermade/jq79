@@ -1068,10 +1068,13 @@ describe("Component79", () => {
         .render({ password: "keep", Field: field }).mount(host)
 
       ;($(host, ".go") as HTMLButtonElement).click()
+      ;($(host, ".go") as HTMLButtonElement).click()
 
-      // the typo'd name must not type into the void silently
+      // the typo'd name must not type into the void silently - said once,
+      // not once per keystroke
       expect(jq79.data!.password).toBe("keep")
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(":model.passwrod"))
+      expect(warn).toHaveBeenCalledTimes(1)
       warn.mockRestore()
       jq79.destroy()
     })
@@ -1104,9 +1107,11 @@ describe("Component79", () => {
         .render({ flag: "keep", Field: field }).mount(host)
 
       ;($(host, ".go") as HTMLButtonElement).click()
+      ;($(host, ".go") as HTMLButtonElement).click()
 
       expect(jq79.data!.flag).toBe("keep")
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("{ name?, value }"))
+      expect(warn).toHaveBeenCalledTimes(1) // per instance, not per emit
       warn.mockRestore()
       jq79.destroy()
     })
@@ -1354,6 +1359,42 @@ describe("Component79", () => {
       expect(error).not.toHaveBeenCalled()
       expect(jq79.data!.hits).toBe(1)
       error.mockRestore()
+      jq79.destroy()
+    })
+
+    it("keeps the writeback alive when the expression carries a trailing comment", () => {
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { value: 'sent' })">go</button>`
+      )
+      // glued on one line, `= $value` would vanish into the comment and the
+      // writeback would compile as a bare read - every update silently lost
+      const jq79 = new Component79(`<div><Field :model="uname // the username" /></div>`)
+        .render({ uname: "ada", Field: field }).mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.uname).toBe("sent")
+      jq79.destroy()
+    })
+
+    it("stops writing back once the usage site tears the child down", () => {
+      let fire: ((value: string) => void) | null = null
+      const field = new Component79(
+        `<script :setup>register(v => $emit('model:update', { value: v }))</script><i class="c"></i>`
+      )
+      const jq79 = new Component79(`<div><Field :model="text" :register /></div>`)
+        .render({ text: "start", register: (fn: any) => { fire = fn }, Field: field }).mount(host)
+
+      fire!("live")
+      expect(jq79.data!.text).toBe("live")
+
+      // the swap destroys the instance; a closure the old child leaked (a
+      // timer, this captured emitter) must not keep writing the parent -
+      // destroy() nulls the marker, so the stale-generation guard eats it
+      jq79.data!.Field = null
+      fire!("ghost")
+
+      expect(jq79.data!.text).toBe("live")
       jq79.destroy()
     })
 

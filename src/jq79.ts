@@ -67,7 +67,11 @@ const compileExpr = (expr: string, params: string[]): Function | null => {
   let fn = compiled.get(key)
   if (fn === undefined) {
     try {
-      fn = new Function("$scope", ...params, `with ($scope) { return (${expr}); }`)
+      // the newline before `)` ends a trailing line comment in the
+      // expression ({{ msg // greeting }}); ASI doesn't apply inside parens,
+      // so everything else is untouched. Without it the comment eats the
+      // rest of this single-line body and the expression never compiles
+      fn = new Function("$scope", ...params, `with ($scope) { return (${expr}\n); }`)
     } catch {
       fn = null // a syntax error: it will never compile, so don't try again
     }
@@ -259,6 +263,11 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // initial value would never reach the child
   const modelAttr = (name: string) => (name === "default" ? ":model" : `:model.${name}`)
   const modelProp = (name: string) => (name === "default" ? "model" : name)
+  // the newline keeps `= $value` out of a trailing line comment in the
+  // expression (:model="uname // the username") - glued on the same line,
+  // the assignment would vanish into the comment and compile as a bare read,
+  // dropping every update without a word
+  const assignment = (expr: string) => `${expr}\n= $value`
   Object.entries(models).forEach(([name, expr]) => {
     const prop = modelProp(name)
     if (props[prop] !== undefined) {
@@ -267,7 +276,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     props[prop] = expr
     // an expression that can't be an assignment target is a wiring mistake -
     // say so now, not on the first update that silently goes nowhere
-    if (compileExpr(`${expr} = $value`, ["$value"]) === null) {
+    if (compileExpr(assignment(expr), ["$value"]) === null) {
       console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${node.tag}> will be dropped`)
     }
   })
@@ -303,15 +312,24 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // failure mode has to be loud, or a typo'd name is an input that types
     // into the void
     if (Object.keys(models).length) {
+      // each mistake is warned once per instance, not once per keystroke: an
+      // input emitting a typo'd name would otherwise flood the console on
+      // every character typed into it
+      const warned = new Set<string>()
+      const warnOnce = (key: string, message: string) => {
+        if (warned.has(key)) return
+        warned.add(key)
+        console.warn(message)
+      }
       instance.on("model:update", (_event, payload) => {
         if (payload === null || typeof payload !== "object") {
-          console.warn(`jq79: model:update expects a { name?, value } payload, got ${payload === null ? "null" : typeof payload}`)
+          warnOnce("payload", `jq79: model:update expects a { name?, value } payload, got ${payload === null ? "null" : typeof payload}`)
           return
         }
         const name = payload.name == null ? "default" : kebabToCamel(String(payload.name))
         const expr = models[name]
         if (expr === undefined) {
-          console.warn(`jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
+          warnOnce(name, `jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
           return
         }
         // untracked, like the tag handlers: a child emitting from its setup
@@ -319,7 +337,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
         // path assignment makes (`user` in `user.name = $value`) would land
         // in its deps - donating that effect one wasted (guard-stopped) wake
         // per later write. An imperative writeback is nobody's dependency
-        untracked(() => evalExpr(`${expr} = $value`, scope, { $value: payload.value }))
+        untracked(() => evalExpr(assignment(expr), scope, { $value: payload.value }))
       })
     }
 
