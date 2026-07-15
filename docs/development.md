@@ -92,11 +92,12 @@ forever.
 
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same
-scope variable wakes itself forever — but only from the **second** pass, since an
+scope variable wakes itself on repeat — but only from the **second** pass, since an
 effect's dependencies are recorded after its first run, so the component renders
-fine and blows up later. And `$:` effects run before the template exists, so
-anything that touches the DOM needs its first pass done by hand after
-`await $mounted()`.
+fine and misbehaves later (the runtime cuts the loop at 100 rounds with a console
+error, but the side effects have already run that many times). And `$:` effects run
+before the template exists, so anything that touches the DOM needs its first pass
+done by hand after `await $mounted()`.
 
 ## The tutorial
 

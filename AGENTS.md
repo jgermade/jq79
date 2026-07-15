@@ -44,9 +44,10 @@ invariants that look like implementation details and are not. The short version:
   what makes a `$reactive` passed as a prop shared *state*, visible to every
   component that holds it. Wrapping it instead would bring the freeze back.
 - **Top-level `let`/`const` in a setup script become reactive store variables.**
-  An effect that reads *and* writes one wakes itself forever — but only from the
-  second pass, so it renders fine and dies later. Timers, cached instances and
-  other bookkeeping belong in a closure, where declarations stay plain JS.
+  An effect that reads *and* writes one wakes itself on repeat — but only from the
+  second pass, so it renders fine and misbehaves later (the runtime cuts the loop
+  at 100 rounds, with a console error). Timers, cached instances and other
+  bookkeeping belong in a closure, where declarations stay plain JS.
 - **`$:` effects run before the template exists.** Anything reaching for the DOM
   needs its first pass done by hand after `await $mounted()`.
 

@@ -203,6 +203,16 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         // whole store assigned in is the exception: it stays as it is
         const stored = isStore(value) ? value : toRaw(value)
         const isNewKey = !Object.prototype.hasOwnProperty.call(target, key)
+        // a primitive write that changes nothing notifies nobody: it's what
+        // lets an effect write the value it just read (a normalizing
+        // assignment, a prop sync) and settle instead of waking itself
+        // forever. Only primitives and functions: re-writing the SAME object
+        // reference stays loud, because that is the cross-store "deep touch"
+        // channel - a parent's prop sync forwards `user.name = x` to the
+        // child's store by re-assigning the same `user`, and the child's
+        // listeners live on the child's store, not the parent's. A new key
+        // always announces itself - the sweep is its whole point
+        if (!isNewKey && Object.is(target[key], stored) && (stored === null || typeof stored !== "object")) return true
         target[key] = stored
         tombstones?.delete(key) // the key exists again: no claim needed
         if (isStore(stored)) bridge(stored, dotKey)
@@ -260,16 +270,41 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   }
 
   const $effect = (run: () => void): Unsubscribe => {
+    // a notify landing while this effect runs (an item's render writing to
+    // the store, waking the very effect that is rendering it) must not
+    // re-enter mid-run - the half-done run would race its own repeat over
+    // shared state, which is how :each once tripled its rows. It marks the
+    // run dirty instead, and repeats *after* it finishes, against settled
+    // state, until clean. Still fully synchronous: everything happens before
+    // the triggering assignment returns
+    let running = false
+    let dirty = false
     const effect: Effect = {
       deps: new Set(),
       run: () => {
-        const deps = new Set<string>()
-        trackerStack.push(deps)
+        if (running) {
+          dirty = true
+          return
+        }
+        running = true
         try {
-          run()
+          let cycles = 0
+          do {
+            dirty = false
+            const deps = new Set<string>()
+            trackerStack.push(deps)
+            try {
+              run()
+            } finally {
+              trackerStack.pop()
+              effect.deps = deps
+            }
+          } while (dirty && ++cycles < 100)
+          // an effect that keeps writing its own dependencies used to die by
+          // stack overflow; now it is cut off and named
+          if (dirty) console.error("jq79: an effect re-woke itself 100 times in a row (it writes what it reads); giving up on it settling")
         } finally {
-          trackerStack.pop()
-          effect.deps = deps
+          running = false
         }
       },
     }
@@ -300,14 +335,27 @@ export type EffectScope = {
   // registers an arbitrary cleanup (e.g. destroying a nested component) to
   // run when this subtree is torn down
   onDispose: (fn: Unsubscribe) => void
+  // re-runs every effect registered on this scope, nested scopes excluded:
+  // how :each tells a reused, repositioned entry's dep-less bindings (the
+  // `{{ $index }}`-only case) about their move. Deps stay as they were -
+  // callers run it untracked
+  refresh: () => void
   dispose: () => void
 }
 
 export const createEffectScope = (scope: Record<string, any>): EffectScope => {
   const disposers: Unsubscribe[] = []
+  const runs: (() => void)[] = []
   return {
-    effect: run => { disposers.push(scope.$effect(run)) },
+    effect: run => {
+      disposers.push(scope.$effect(run))
+      runs.push(run)
+    },
     onDispose: fn => { disposers.push(fn) },
-    dispose: () => { disposers.splice(0).forEach(dispose => dispose()) },
+    refresh: () => { runs.forEach(run => run()) },
+    dispose: () => {
+      disposers.splice(0).forEach(dispose => dispose())
+      runs.length = 0
+    },
   }
 }

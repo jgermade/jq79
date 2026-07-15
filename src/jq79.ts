@@ -480,6 +480,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
     })
 
     const seen = new Set<any>()
+    const moved: EachEntry[] = []
     const nextEntries = pairs.map(([at, item], index): EachEntry => {
       const itemScope = Object.create(scope)
       defineScopeVar(itemScope, itemName, item)
@@ -494,6 +495,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       const existing = previous.get(key)?.shift()
 
       if (existing && Object.is(existing.item, item)) {
+        if (existing.scope.$index !== index) moved.push(existing)
         defineScopeVar(existing.scope, "$index", index)
         if (atName) defineScopeVar(existing.scope, atName, at)
         return existing
@@ -522,6 +524,12 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       if (prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
       prevNode = entry.range.last
     })
+
+    // reused entries that changed position: their tracked bindings re-run off
+    // the list notification anyway, but a binding that reads only `$index` or
+    // the named key tracked nothing - refresh them so the move reaches those
+    // too. Untracked, so these runs don't feed this list effect's own deps
+    moved.forEach(entry => untracked(() => entry.fx.refresh()))
 
     entries = nextEntries
   })

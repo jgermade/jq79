@@ -219,6 +219,35 @@ describe("$reactive", () => {
     expect(Object.keys(scope)).toEqual(["name"])
   })
 
+  // a primitive write that changes nothing notifies nobody (Object.is), so
+  // an effect that writes the value it just read - a normalizing assignment,
+  // a prop sync - settles instead of waking itself forever
+  it("does not notify a primitive write that changes nothing", () => {
+    const scope = $reactive({ n: 1 })
+    const listener = vi.fn()
+    scope.$onAny(listener)
+
+    scope.n = 1
+
+    expect(listener).not.toHaveBeenCalled()
+
+    scope.fresh = undefined // a new key announces itself, value regardless
+    expect(listener).toHaveBeenCalledWith("fresh", undefined)
+  })
+
+  it("keeps a same-reference object write loud: it is the deep-touch channel", () => {
+    // a parent's prop sync forwards a deep mutation to a child store by
+    // re-assigning the same object - the child's listeners live on the
+    // child's store and would never hear the parent's notify otherwise
+    const scope = $reactive({ list: [1] })
+    const listener = vi.fn()
+    scope.$onAny(listener)
+
+    scope.list = scope.list
+
+    expect(listener).toHaveBeenCalledWith("list", expect.anything())
+  })
+
   // A store used to rewrite the object it was handed, replacing every nested
   // object with a proxy in place. Two stores over one object then wrapped each
   // other's proxies, and since wrapping walked what it wrapped, the nesting

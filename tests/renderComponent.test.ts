@@ -488,6 +488,52 @@ describe("renderComponent", () => {
     })
   })
 
+  // the flaky seams found in the 2026-07-15 review, closed by the effect
+  // runner hardening (TODOS/2026-07-15.effect-runner-hardening.md): a
+  // reentrancy guard with a trailing re-run, no-op writes not notifying, and
+  // repositioned entries refreshing their dep-less bindings
+  describe(":each flaky seams", () => {
+    it("keeps a binding that reads ONLY $index fresh across keyed reorders", () => {
+      // $index is an untracked scope var, so this binding has no deps - the
+      // move reaches it through the repositioned entry's refresh, not through
+      // a lucky unrelated new-key sweep as before
+      const component = parseComponent(`<li :each="u in users" :key="u.id">{{ $index }}</li>`)
+      const data = $reactive({ users: [{ id: 1 }, { id: 2 }] })
+      container.appendChild(renderComponent(component, data))
+
+      data.users = [data.users[1], data.users[0]]
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["0", "1"])
+    })
+
+    it("survives a store write during item render without re-entering the diff", () => {
+      // a NEW store key created while an item renders (here by the item's own
+      // text effect; in real code, a child component's setup writing to a
+      // shared store) sweeps every effect - the list effect must finish its
+      // run and repeat, not re-enter mid-map and duplicate its rows
+      const component = parseComponent(
+        `<li :each="u in users" :key="u.id">{{ (seen["k" + u.id] ??= u.name) && u.name }}</li>`
+      )
+      const data = $reactive({ users: [{ id: 1, name: "a" }, { id: 2, name: "b" }], seen: {} })
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b"])
+    })
+
+    it("appends an item whose render writes a new store key, exactly once", () => {
+      const component = parseComponent(
+        `<li :each="u in users" :key="u.id">{{ (seen["k" + u.id] ??= u.name) && u.name }}</li>`
+      )
+      const data = $reactive({ users: [{ id: 1, name: "a" }], seen: {} })
+      container.appendChild(renderComponent(component, data))
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["a"])
+
+      data.users = [...data.users, { id: 2, name: "b" }]
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b"])
+    })
+  })
+
   describe(":each second binding", () => {
     it("names the array index, and keeps it fresh after a keyed reorder", () => {
       const component = parseComponent(`<li :each="u, i in users" :key="u.id">{{ i }}:{{ u.name }}</li>`)

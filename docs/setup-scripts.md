@@ -107,8 +107,12 @@ Worth knowing how this one fails, because it doesn't fail where you'd look: an
 effect's dependencies are recorded *after* its first run, so that first pass —
 the one during render — writes `timer` while the effect is still tracking
 nothing, and everything looks fine. It's the **next** change to `draft` that
-finds `timer` in the dependency list and recurses until the stack blows. A
-component that renders perfectly can still be carrying this.
+finds `timer` in the dependency list and re-runs the effect on repeat. The
+runtime cuts the loop after 100 rounds and says so in the console (`an effect
+re-woke itself 100 times in a row`) — but by then the side effects have run
+100 times. A component that renders perfectly can still be carrying this.
+(Re-writing the *same* primitive value doesn't count as a change, so a plain
+normalizing assignment settles on its own.)
 
 Bookkeeping like a timer handle, a cached instance or a "did I already run this"
 flag isn't state the template renders — it has no business in the store. Since
