@@ -72,7 +72,13 @@ new Component79(src)
 
 - `$self(selector)` and `$$self(selector)` are component-scoped versions of [`$` / `$$`](dom-helpers.md): they only search this component instance's own rendered nodes, so they can't accidentally match another component (or anything else in the page). They work even while the component is rendered but not yet mounted — but remember the template renders *after* the synchronous part of the script, so call them from post-`await $mounted()` code or from handlers/callbacks.
 
-Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. `let a = 1, b = 2` multi-declarators are not supported — one declaration per statement.
+Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. Multi-declarator statements (`let a = 1, b = 2`) and destructuring declarations work like any other declaration — every binding becomes a reactive store variable:
+
+```js
+let { name, email } = draft         // both reactive
+const [first, ...rest] = items      // so are these
+let { user: { id: userId } = {} } = session   // nested/renamed bind the *variable* (userId)
+```
 
 A `$:` declaration may span several lines: a line break only ends it if the next line can't continue the expression, the same call JavaScript's semicolon insertion makes. So method chains and operator chains work as written:
 

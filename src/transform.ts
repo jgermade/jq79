@@ -22,7 +22,9 @@
 
 type SetupTransform = { vars: string[]; code: string }
 
-const DECLARATION_RE = /(?:let|var|const)\s+([A-Za-z_$][\w$]*)/y
+// a declaration whose target is an identifier (`let x`), an object pattern
+// (`let { a }`, space optional) or an array pattern (`let [x]`)
+const DECLARATION_START_RE = /(?:let|var|const)(?:\s+(?=[A-Za-z_$])|\s*(?=[{[]))/y
 const REACTIVE_LABEL_RE = /\$:\s*/y
 const IMPORT_CALL_RE = /import(?=\s*\()/y
 const REACTIVE_ASSIGN_RE = /\$:\s*([A-Za-z_$][\w$]*)\s*=(?!=)/y
@@ -139,6 +141,28 @@ const skipRegex = (src: string, start: number): number => {
 // inserts the semicolon before them
 const CONTINUATION_RE = /^(\?\.|\?\?|&&|\|\||\*\*|[.,+\-*/%&|^<>=?:([])/
 
+// the last meaningful character before `at`: walks back past whitespace and
+// block comments, the way regexAllowed does. A line comment can't be skipped
+// from behind (its start is only findable forwards), so a line ending in one
+// reports the comment's text instead - callers treat that as "not the char I
+// was looking for", which degrades to ending the statement, exactly as
+// before this helper existed
+const lastMeaningfulBefore = (src: string, at: number): string => {
+  let i = at - 1
+  while (i >= 0) {
+    const ch = src[i]
+    if (/\s/.test(ch)) { i--; continue }
+    if (ch === "/" && src[i - 1] === "*") {
+      const open = src.lastIndexOf("/*", i - 2)
+      if (open === -1) return ""
+      i = open - 1
+      continue
+    }
+    return ch
+  }
+  return ""
+}
+
 // end of a statement starting at `start`: the first `;` or line break that
 // isn't inside a string/comment or unbalanced brackets. A line break only
 // ends the statement if the next line can't continue it, so leading-dot
@@ -147,6 +171,11 @@ const CONTINUATION_RE = /^(\?\.|\?\?|&&|\|\||\*\*|[.,+\-*/%&|^<>=?:([])/
 //   $: total = items
 //     .filter(item => item.active)      <- still the same statement
 //     .length
+//
+// ...and only if the current line *can* end it: a line whose last meaningful
+// character is `,` or `=` left its expression incomplete (a multi-line
+// declarator list writes exactly this), so the statement continues - the
+// same ASI call as the leading-token check, made from the other side
 const findStatementEnd = (src: string, start: number): number => {
   let depth = 0
   let i = start
@@ -161,13 +190,118 @@ const findStatementEnd = (src: string, start: number): number => {
     else if (depth <= 0 && ch === ";") return i
     else if (depth <= 0 && ch === "\n") {
       const next = skipToToken(src, i + 1)
-      if (next >= src.length || !CONTINUATION_RE.test(src.slice(next, next + 2))) return i
+      const continues =
+        next < src.length &&
+        (CONTINUATION_RE.test(src.slice(next, next + 2)) || [",", "="].includes(lastMeaningfulBefore(src, i)))
+      if (!continues) return i
       i = next
       continue
     }
     i++
   }
   return src.length
+}
+
+// ---------------------------------------------------------------------------
+// top-level declarations. `let x = 1` loses its keyword and becomes a scope
+// assignment (x pre-declared on the store). A destructuring declarator
+// becomes an *assignment pattern*: inside `with`, `({ a, b } = obj)` writes
+// every binding through the reactive proxy - which is what makes it reactive.
+// The parens keep the `{` from opening a block, and a leading `;` keeps the
+// `(` from gluing onto the previous line as a call. Multi-declarator
+// statements (`let a = 1, b = 2`) register every binding, not just the first.
+// These lean on the pattern helpers defined with the props signature below
+// (splitTopLevel, indexOfTopLevel, defaultAssignIndex); the scanner only
+// runs long after the module evaluates, so the order is cosmetic
+// ---------------------------------------------------------------------------
+
+type Declarator = { raw: string; codeEnd: number }
+
+// splits a declarator list at top-level commas, keeping each segment's raw
+// text (layout and comments included) and where its last meaningful token
+// ends - the spot a closing paren must go, so a trailing comment can't
+// swallow it
+const splitDeclarators = (src: string): Declarator[] => {
+  const parts: Declarator[] = []
+  let depth = 0
+  let start = 0
+  let lastEnd = 0
+  const flush = (end: number) => {
+    parts.push({ raw: src.slice(start, end), codeEnd: Math.max(0, lastEnd - start) })
+    start = end + 1
+    lastEnd = start
+  }
+  let i = 0
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); lastEnd = i; continue }
+    if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
+    if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if (ch === "/" && regexAllowed(src, i)) { i = skipRegex(src, i); lastEnd = i; continue }
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch)) depth--
+    else if (ch === "," && depth <= 0) { flush(i); i++; continue }
+    if (!/\s/.test(ch)) lastEnd = i + 1
+    i++
+  }
+  flush(src.length)
+  return parts
+}
+
+// the *binding* names a destructuring pattern declares - unlike
+// parsePropsPattern, which answers "which props" (the keys), this answers
+// "which variables": `{ a: x }` binds x, `{ a: { b } }` binds b,
+// `[x, ...rest]` binds x and rest. Defaults are stripped; what remains is a
+// nested pattern (recurse) or the bound identifier
+const patternBindings = (src: string): string[] => {
+  const pattern = src.trim()
+  if (!pattern.startsWith("{") && !pattern.startsWith("[")) {
+    return IDENTIFIER_RE.test(pattern) ? [pattern] : []
+  }
+  const names: string[] = []
+  for (let part of splitTopLevel(pattern.slice(1, patternCloseIndex(pattern)))) {
+    if (part.startsWith("...")) part = part.slice(3).trim()
+    const assign = defaultAssignIndex(part)
+    if (assign !== -1) part = part.slice(0, assign).trim()
+    if (pattern.startsWith("{")) {
+      const colon = indexOfTopLevel(part, ":")
+      if (colon !== -1) {
+        names.push(...patternBindings(part.slice(colon + 1)))
+        continue
+      }
+    }
+    names.push(...patternBindings(part))
+  }
+  return names
+}
+
+// one `let/var/const` declarator list, rewritten to scope assignments.
+// Each segment's initializer is re-scanned so an `import()` inside it is
+// rewritten like anywhere else - nothing else can match in there, since a
+// nested top-level declaration inside a declarator is a SyntaxError in JS
+const rewriteDeclarators = (src: string): SetupTransform => {
+  const vars: string[] = []
+  const rewritten = splitDeclarators(src).map(({ raw, codeEnd }) => {
+    const lead = raw.match(/^\s*/)![0]
+    if (codeEnd <= lead.length) return { text: raw, empty: true }
+    const body = raw.slice(lead.length, codeEnd)
+    const tail = raw.slice(codeEnd)
+    const assign = defaultAssignIndex(body)
+    const target = (assign === -1 ? body : body.slice(0, assign)).trim()
+    const isPattern = body[0] === "{" || body[0] === "["
+    if (isPattern) vars.push(...patternBindings(target))
+    else if (IDENTIFIER_RE.test(target)) vars.push(target)
+    const code = transformSetupScript(body).code
+    return { text: `${lead}${isPattern ? `(${code})` : code}${tail}`, empty: false }
+  })
+
+  // a trailing comment-only segment (`let a = 1, // note` cut at its line
+  // end) is re-attached without its comma, so the output stays a statement
+  const tail: string[] = []
+  while (rewritten.length && rewritten[rewritten.length - 1].empty) tail.unshift(rewritten.pop()!.text)
+  let code = rewritten.map(part => part.text).join(",") + tail.join("")
+  if (code.trimStart().startsWith("(")) code = `;${code}`
+  return { vars, code }
 }
 
 export const transformSetupScript = (src: string): SetupTransform => {
@@ -217,12 +351,15 @@ export const transformSetupScript = (src: string): SetupTransform => {
     }
 
     if (depth === 0 && atStatementStart) {
-      DECLARATION_RE.lastIndex = i
-      const decl = DECLARATION_RE.exec(src)
+      DECLARATION_START_RE.lastIndex = i
+      const decl = DECLARATION_START_RE.exec(src)
       if (decl) {
-        vars.push(decl[1])
-        out += decl[1]
-        i += decl[0].length
+        const start = i + decl[0].length
+        const end = findStatementEnd(src, start)
+        const { vars: names, code } = rewriteDeclarators(src.slice(start, end))
+        vars.push(...names)
+        out += code
+        i = end
         atStatementStart = false
         continue
       }
@@ -342,6 +479,24 @@ export type PropDecl = { name: string; default?: string }
 
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
+// index of the bracket that closes the one opening at src[0], skipping
+// strings, comments and regex literals; src.length when unbalanced
+const patternCloseIndex = (src: string): number => {
+  let depth = 0
+  let i = 0
+  while (i < src.length) {
+    const ch = src[i]
+    if (ch === "'" || ch === '"' || ch === "`") { i = skipString(src, i); continue }
+    if (ch === "/" && src[i + 1] === "/") { i = skipLineComment(src, i); continue }
+    if (ch === "/" && src[i + 1] === "*") { i = skipBlockComment(src, i); continue }
+    if (ch === "/" && regexAllowed(src, i)) { i = skipRegex(src, i); continue }
+    if ("([{".includes(ch)) depth++
+    else if (")]}".includes(ch) && --depth === 0) return i
+    i++
+  }
+  return src.length
+}
+
 // index of the first `ch` at bracket depth 0, skipping strings and comments
 const indexOfTopLevel = (src: string, ch: string): number => {
   let depth = 0
@@ -407,18 +562,7 @@ export const parsePropsPattern = (pattern: string | undefined): PropDecl[] | nul
 
   // to the `}` that closes the pattern, so a parameter's own default value
   // (`({ label } = {})`) is left out of it
-  let depth = 0
-  let close = 0
-  while (close < src.length) {
-    const ch = src[close]
-    if (ch === "'" || ch === '"' || ch === "`") { close = skipString(src, close); continue }
-    if (ch === "/" && src[close + 1] === "/") { close = skipLineComment(src, close); continue }
-    if (ch === "/" && src[close + 1] === "*") { close = skipBlockComment(src, close); continue }
-    if (ch === "/" && regexAllowed(src, close)) { close = skipRegex(src, close); continue }
-    if ("([{".includes(ch)) depth++
-    else if (")]}".includes(ch) && --depth === 0) break
-    close++
-  }
+  const close = patternCloseIndex(src)
   if (close >= src.length) return null // unbalanced: not a pattern we can read
 
   const props: PropDecl[] = []

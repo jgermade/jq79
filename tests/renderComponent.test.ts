@@ -949,12 +949,89 @@ describe("attribute binding edges", () => {
 
     // once the user types, value (the property) detaches from the attribute:
     // later store writes update the attribute but not what the user sees -
-    // the documented reason two-way flows go through @input, not :attrs
+    // which is what :value (the property directive) exists for
     input.value = "typed by user"
     data.name = "Grace"
 
     expect(input.getAttribute("value")).toBe("Grace")
     expect(input.value).toBe("typed by user")
+  })
+
+  it(":value writes the property, so it keeps driving an input the user has typed in", () => {
+    const component = parseComponent(`<input :value="name">`)
+    const data = $reactive({ name: "Ada" })
+
+    container.appendChild(renderComponent(component, data))
+    const input = container.querySelector("input") as HTMLInputElement
+
+    expect(input.value).toBe("Ada")
+
+    input.value = "typed by user"
+    data.name = "Grace"
+
+    expect(input.value).toBe("Grace")
+  })
+
+  it(":value falls back to an empty string for null/undefined", () => {
+    const component = parseComponent(`<input :value="missing">`)
+    const data = $reactive({ missing: null as any })
+
+    container.appendChild(renderComponent(component, data))
+    const input = container.querySelector("input") as HTMLInputElement
+
+    expect(input.value).toBe("")
+  })
+
+  it(":checked drives a checkbox's property reactively", () => {
+    const component = parseComponent(`<input type="checkbox" :checked="agreed">`)
+    const data = $reactive({ agreed: false })
+
+    container.appendChild(renderComponent(component, data))
+    const box = container.querySelector("input") as HTMLInputElement
+
+    expect(box.checked).toBe(false)
+
+    data.agreed = true
+    expect(box.checked).toBe(true)
+
+    // the user unticks it; the store is still the source of truth
+    box.checked = false
+    data.agreed = false
+    data.agreed = true
+    expect(box.checked).toBe(true)
+  })
+
+  it(":value on a <select> selects the matching option, from the first render on", () => {
+    // the property effects run after the children render - a <select> can
+    // only pick an <option> that already exists
+    const component = parseComponent(
+      `<select :value="lang"><option value="en">en</option><option value="es">es</option></select>`
+    )
+    const data = $reactive({ lang: "es" })
+
+    container.appendChild(renderComponent(component, data))
+    const select = container.querySelector("select") as HTMLSelectElement
+
+    expect(select.value).toBe("es")
+
+    data.lang = "en"
+    expect(select.value).toBe("en")
+  })
+
+  it(":selected drives an option's property reactively", () => {
+    const component = parseComponent(
+      `<select><option value="en" :selected="lang === 'en'">en</option>` +
+      `<option value="es" :selected="lang === 'es'">es</option></select>`
+    )
+    const data = $reactive({ lang: "es" })
+
+    container.appendChild(renderComponent(component, data))
+    const select = container.querySelector("select") as HTMLSelectElement
+
+    expect(select.value).toBe("es")
+
+    data.lang = "en"
+    expect(select.value).toBe("en")
   })
 
   it(":class and a class key inside :attrs degrade predictably when combined", () => {

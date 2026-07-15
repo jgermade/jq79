@@ -240,17 +240,19 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("a top-level destructuring declaration stays local: invisible to the template, not reactive", () => {
-      // the scanner only rewrites `let <identifier>` - a pattern keeps its
-      // keyword and lives inside the script's own closure. Pinned: the
-      // template renders nothing for it, silently. (A warning would be a
-      // library change - see TODOS)
+    it("a top-level destructuring declaration is reactive, like any other declaration", () => {
+      // the pattern is rewritten to an assignment pattern inside `with`, so
+      // both bindings land on the store - renamed ones under their *bound*
+      // name (see TODOS/2026-07-15.setup-destructuring.md)
       const jq79 = new Component79(
-        `<script :setup>let { a } = { a: 1 }</script><div class="out">{{ a }}</div>`
+        `<script :setup>let { a, b: renamed } = { a: 1, b: 2 }</script>` +
+        `<div class="out">{{ a }}-{{ renamed }}</div>`
       ).render().mount(host)
 
-      expect($(host, ".out")?.textContent).toBe("")
-      expect(jq79.data && ("a" in jq79.data)).toBe(false)
+      expect($(host, ".out")?.textContent).toBe("1-2")
+
+      jq79.data!.a = 9
+      expect($(host, ".out")?.textContent).toBe("9-2")
       jq79.destroy()
     })
 

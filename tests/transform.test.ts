@@ -362,22 +362,19 @@ describe("boundaries a scanner fix must respect", () => {
     expect(code).toBe(`for (let i = 0; i < 3; i++) log(i)\nafter = 1`)
   })
 
-  it("leaves a destructuring declaration as plain (non-reactive) JS", () => {
-    // a known limit: DECLARATION_RE wants an identifier after the keyword, so
-    // `let [a, b]` keeps its `let` and stays local to the compiled script -
-    // change the scanner and this pin says what you signed up for
+  it("rewrites a destructuring declaration into a reactive assignment pattern", () => {
+    // `([a, b] = pair)` inside `with` writes both bindings through the scope
+    // proxy; the `;` keeps the `(` from gluing onto the previous line
     const { vars, code } = transformSetupScript(`let [a, b] = pair\nlet after = 1`)
 
-    expect(vars).toEqual(["after"])
-    expect(code).toBe(`let [a, b] = pair\nafter = 1`)
+    expect(vars).toEqual(["a", "b", "after"])
+    expect(code).toBe(`;([a, b] = pair)\nafter = 1`)
   })
 
-  it("registers only the first name of a multi-declarator statement", () => {
-    // `b` still lands on the store at runtime (the assignment routes through
-    // the scope proxy as a new key); it just isn't pre-declared like `a`
+  it("registers every name of a multi-declarator statement", () => {
     const { vars, code } = transformSetupScript(`let a = 1, b = 2\nlet after = 1`)
 
-    expect(vars).toEqual(["a", "after"])
+    expect(vars).toEqual(["a", "b", "after"])
     expect(code).toBe(`a = 1, b = 2\nafter = 1`)
   })
 
@@ -451,14 +448,15 @@ describe("boundaries a scanner fix must respect", () => {
     expect(code).toBe(`$__effect(() => { data = await fetchData() });`)
   })
 
-  it("registers only the ASCII stem of an accented identifier", () => {
+  it("does not pre-declare an accented identifier (but no longer registers a garbage stem)", () => {
     // a known limit, pinned: the identifier regexes are ASCII (`\w`), so
-    // `café` pre-declares as `caf`. The emitted code is intact - the store
-    // key appears on first assignment through the scope - but a template
-    // reading it before that first write won't resolve the name
+    // `café` registers nothing - the emitted code is intact and the store
+    // key appears on first assignment through the scope, but a template
+    // reading it before that first write won't resolve the name. (It used
+    // to pre-declare `caf`, which helped nobody)
     const { vars, code } = transformSetupScript(`let café = 1`)
 
-    expect(vars).toEqual(["caf"])
+    expect(vars).toEqual([])
     expect(code).toBe(`café = 1`)
   })
 })
@@ -639,33 +637,69 @@ describe("parseFactoryProps", () => {
   })
 })
 
-// declaration forms the scanner deliberately (or accidentally) leaves alone,
-// pinned so a future scanner change is a conscious decision rather than a
-// silent behavior shift. The one that bites users: a destructuring
-// declaration keeps its keyword, so its bindings are locals - invisible to
-// the template, not reactive - with no warning today
-describe("setup script scanner on declarations it does not rewrite", () => {
-  it("leaves an object destructuring declaration untouched (its names stay local, not reactive)", () => {
+// destructuring declarations: rewritten into assignment patterns, which is
+// what makes their bindings reactive inside `with` - see the plan in
+// TODOS/2026-07-15.setup-destructuring.md
+describe("setup script scanner on destructuring declarations", () => {
+  it("rewrites an object pattern and registers its bindings", () => {
     const { vars, code } = transformSetupScript(`let { a, b } = obj`)
 
-    expect(vars).toEqual([])
-    expect(code).toBe(`let { a, b } = obj`)
+    expect(vars).toEqual(["a", "b"])
+    expect(code).toBe(`;({ a, b } = obj)`)
   })
 
-  it("leaves an array destructuring declaration untouched", () => {
+  it("rewrites an array pattern and registers its bindings", () => {
     const { vars, code } = transformSetupScript(`const [x, y] = pair`)
 
-    expect(vars).toEqual([])
-    expect(code).toBe(`const [x, y] = pair`)
+    expect(vars).toEqual(["x", "y"])
+    expect(code).toBe(`;([x, y] = pair)`)
   })
 
-  it("rewrites only the first name of a multi-declarator statement", () => {
-    // `b = 2` still lands on the store - as a bare assignment through `with`,
-    // via the new-key sweep - but it is not pre-declared like `a` is
-    const { vars, code } = transformSetupScript(`let a = 1, b = 2`)
+  it("registers the *bound* names of renamed, nested and defaulted entries", () => {
+    // `{ a: x }` binds x, `{ b: { c } }` binds c, `{ d = 1 }` binds d - the
+    // keys stay keys; only bindings become store variables
+    const { vars, code } = transformSetupScript(`let { a: x, b: { c }, d = 1, ...rest } = obj`)
+
+    expect(vars).toEqual(["x", "c", "d", "rest"])
+    expect(code).toBe(`;({ a: x, b: { c }, d = 1, ...rest } = obj)`)
+  })
+
+  it("handles a pattern glued to the keyword", () => {
+    const { vars, code } = transformSetupScript(`const{ a } = obj`)
 
     expect(vars).toEqual(["a"])
-    expect(code).toBe(`a = 1, b = 2`)
+    expect(code).toBe(`;({ a } = obj)`)
+  })
+
+  it("mixes identifier and pattern declarators in one statement", () => {
+    // starts with an identifier, so no leading `;` is needed
+    const { vars, code } = transformSetupScript(`let a = 1, { b } = obj`)
+
+    expect(vars).toEqual(["a", "b"])
+    expect(code).toBe(`a = 1, ({ b } = obj)`)
+  })
+
+  it("keeps a multi-line declarator list whole across its trailing commas", () => {
+    // a line ending in `,` can't end a statement - the same ASI call the
+    // scanner already made for leading tokens, now made from the other side
+    const { vars, code } = transformSetupScript(`let a = 1,\n    b = 2\nlet after = 3`)
+
+    expect(vars).toEqual(["a", "b", "after"])
+    expect(code).toBe(`a = 1,\n    b = 2\nafter = 3`)
+  })
+
+  it("closes the pattern's paren before a trailing line comment", () => {
+    const { vars, code } = transformSetupScript(`let { a } = obj // note`)
+
+    expect(vars).toEqual(["a"])
+    expect(code).toBe(`;({ a } = obj) // note`)
+  })
+
+  it("rewrites an import() inside a declarator's initializer", () => {
+    const { vars, code } = transformSetupScript(`const { mount } = await import("./widget.html")`)
+
+    expect(vars).toEqual(["mount"])
+    expect(code).toBe(`;({ mount } = await $__import("./widget.html"))`)
   })
 
   it("copies a template literal with nested backticks through unchanged", () => {

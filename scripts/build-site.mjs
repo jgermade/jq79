@@ -471,7 +471,7 @@ const sizeBadge = async (label, file, c2, c4) => {
 }
 await sizeBadge("esm", "dist/jq79.js", "goldenrod", "#778899")
 // the global/IIFE build - what unpkg/jsdelivr serve - not the cjs one
-await sizeBadge("cdn", "dist/jq79.global.js", "#6495ed", "#778899")
+await sizeBadge("cjs", "dist/jq79.global.js", "#6495ed", "#778899")
 
 const exercises = tutorial.reduce((total, section) => total + section.exercises.length, 0)
 console.log(

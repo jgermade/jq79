@@ -226,10 +226,17 @@ describe("sanitizeHTML against evasion and mutation payloads", () => {
     )
   })
 
-  it("survives deeply nested input without blowing the stack", () => {
+  it("survives input nested up to the 512 the browser parser tolerates", () => {
     const depth = 500
     const out = sanitizeHTML("<b>".repeat(depth) + "x" + "</b>".repeat(depth))
     expect(out.startsWith("<b><b>")).toBe(true)
     expect(out).toContain("x")
+  })
+
+  it("throws a named RangeError beyond 512 levels, instead of an incidental stack overflow", () => {
+    const depth = 600
+    const html = "<b>".repeat(depth) + "x" + "</b>".repeat(depth)
+    expect(() => sanitizeHTML(html)).toThrow(RangeError)
+    expect(() => sanitizeHTML(html)).toThrow(/nests deeper than 512/)
   })
 })

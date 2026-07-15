@@ -65,12 +65,22 @@ export function isSafeUrl(value: string): boolean {
   }
 }
 
+// el saneado es recursivo, así que la profundidad del input es profundidad
+// de pila. 512 es lo que toleran los parsers de los navegadores antes de
+// aplanar el anidamiento, con lo que ningún documento legítimo pierde nada -
+// y superar el límite lanza un RangeError con nombre, en vez de reventar la
+// pila en algún punto indeterminado más arriba
+const MAX_SANITIZE_DEPTH = 512;
+
 // copia los hijos de `source` en `target`, saneando los elementos y clonando
 // el texto; cualquier otra cosa (comentarios, etc.) se descarta
-function appendSanitizedChildren(source: ParentNode, target: HTMLElement): void {
+function appendSanitizedChildren(source: ParentNode, target: HTMLElement, depth: number): void {
+  if (depth > MAX_SANITIZE_DEPTH) {
+    throw new RangeError(`jq79: sanitizeHTML input nests deeper than ${MAX_SANITIZE_DEPTH} elements`);
+  }
   for (const child of Array.from(source.childNodes)) {
     if (child.nodeType === Node.ELEMENT_NODE) {
-      const sanitizedChild = sanitizeNode(child as HTMLElement);
+      const sanitizedChild = sanitizeNode(child as HTMLElement, depth);
       if (sanitizedChild) target.appendChild(sanitizedChild);
     } else if (child.nodeType === Node.TEXT_NODE) {
       target.appendChild(child.cloneNode());
@@ -79,7 +89,7 @@ function appendSanitizedChildren(source: ParentNode, target: HTMLElement): void 
 }
 
 // sanea un elemento (los llamadores solo pasan nodos ELEMENT_NODE)
-function sanitizeNode(node: HTMLElement): HTMLElement | null {
+function sanitizeNode(node: HTMLElement, depth: number): HTMLElement | null {
   const tag = node.tagName.toLowerCase();
   if (!ALLOWED_TAGS.has(tag)) return null; // tag no permitido → se descarta el nodo entero
 
@@ -99,7 +109,7 @@ function sanitizeNode(node: HTMLElement): HTMLElement | null {
   // fuerza rel seguro en enlaces (target nunca se copia: no está permitido)
   if (tag === 'a') clean.setAttribute('rel', 'noopener noreferrer');
 
-  appendSanitizedChildren(node, clean);
+  appendSanitizedChildren(node, clean, depth + 1);
 
   return clean;
 }
@@ -108,7 +118,7 @@ export function sanitizeHTML(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const container = document.createElement('div');
 
-  appendSanitizedChildren(doc.body, container);
+  appendSanitizedChildren(doc.body, container, 0);
 
   return container.innerHTML;
 }

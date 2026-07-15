@@ -91,7 +91,7 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
   template.replace(/{{\s*([\s\S]+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
 
 
-const CONTROL_ATTRS = new Set([":attrs", ":class", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
+const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
 // `item in items`, `item, i in items`, `(value, key) in props` - the second
 // binding is the array index or the object key, parens optional (Vue-style).
 // The list expression can span lines, so it matches [\s\S] rather than `.`
@@ -399,6 +399,28 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   } else {
     el.appendChild(renderNodes(node.children, scope, fx, shadow))
   }
+
+  // :value / :checked / :selected write the DOM *property*, not the
+  // attribute - the attribute is only a form control's default, and detaches
+  // the moment the user interacts (which is why :attrs="{ value }" stops
+  // driving a typed-in input). One-way, store -> DOM: the way back stays an
+  // explicit @input/@change. :value skips the write when the property
+  // already holds the string, so an unrelated re-run can't move the caret of
+  // the input the user is typing into. Registered after the children render:
+  // :value on a <select> can only pick an <option> that already exists
+  const valueExpr = node.attrs[":value"]
+  if (valueExpr !== undefined) {
+    fx.effect(() => {
+      const value = String(evalExpr(valueExpr, scope) ?? "")
+      if ((el as HTMLInputElement).value !== value) (el as HTMLInputElement).value = value
+    })
+  }
+  ;([":checked", ":selected"] as const).forEach(attr => {
+    const expr = node.attrs[attr]
+    if (expr === undefined) return
+    const prop = attr.slice(1) as "checked" | "selected"
+    fx.effect(() => { (el as any)[prop] = !!evalExpr(expr, scope) })
+  })
 
   return el
 }

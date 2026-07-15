@@ -50,6 +50,24 @@ Only classes the binding added are ever removed: the static list survives every 
 
 Don't combine it with a `class` key inside `:attrs` on the same element — `:attrs` rewrites the whole attribute on each of its runs, wiping whatever `:class` added. On a nested-component tag `:class` is ignored, like `:text`/`:html`.
 
+## `:value` / `:checked` / `:selected` — form state
+
+These write the DOM **property**, not the attribute. The difference matters on form controls: the attribute is only the control's *default*, and detaches the moment the user interacts — `:attrs="{ value }"` stops driving an input once something has been typed into it. The property directives keep driving it:
+
+```html
+<input :value="name" @input="name = $event.target.value">
+<input type="checkbox" :checked="agreed" @change="agreed = $event.target.checked">
+<select :value="lang">
+  <option value="en">en</option>
+  <option value="es">es</option>
+</select>
+```
+
+- `:value` coerces to a string (`null`/`undefined` become `""`) and skips the write when the property already holds it, so an unrelated re-run can't move the caret of the input the user is typing into. On a `<select>` it selects the matching `<option>`.
+- `:checked` / `:selected` coerce to booleans.
+- One-way, store → DOM. The way back is an explicit `@input`/`@change`, as above — the store stays the single source of truth.
+- On a nested-component tag they're ignored, like `:class`/`:text`.
+
 ## `:text` / `:html` — content
 
 Set an element's content directly from an expression, instead of interpolating inside its children.
@@ -60,7 +78,7 @@ Set an element's content directly from an expression, instead of interpolating i
 ```
 
 - `:text` sets `textContent` — safe for any string, no markup is parsed.
-- `:html` sets `innerHTML` after passing the value through `sanitizeHTML` (stripping anything not in a small allowlist of tags/attributes, and unsafe `href`/`src` protocols) — use it for untrusted or user-authored HTML.
+- `:html` sets `innerHTML` after passing the value through `sanitizeHTML` (stripping anything not in a small allowlist of tags/attributes, and unsafe `href`/`src` protocols) — use it for untrusted or user-authored HTML. Content nested deeper than 512 elements throws a `RangeError` (browser parsers flatten beyond that anyway, so no legitimate document loses anything).
 - Either one replaces the element's own children entirely; they don't combine with nested template content.
 - If both are present on the same element, `:text` wins and `:html` is ignored.
 - They apply to plain elements only; on a nested-component tag they're ignored.
