@@ -488,6 +488,66 @@ describe("renderComponent", () => {
     })
   })
 
+  describe(":each second binding", () => {
+    it("names the array index, and keeps it fresh after a keyed reorder", () => {
+      const component = parseComponent(`<li :each="u, i in users" :key="u.id">{{ i }}:{{ u.name }}</li>`)
+      const data = $reactive({ users: [{ id: 1, name: "a" }, { id: 2, name: "b" }] })
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["0:a", "1:b"])
+
+      data.users = [data.users[1], data.users[0]]
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["0:b", "1:a"])
+    })
+
+    it("lets nested loops hold both indices - what $index alone can't", () => {
+      const component = parseComponent(
+        `<ul><li :each="row, r in rows"><b :each="cell, c in row" :key="cell">{{ r }}.{{ c }}:{{ cell }}</b></li></ul>`
+      )
+      container.appendChild(renderComponent(component, $reactive({ rows: [["a", "b"], ["c"]] })))
+
+      expect($$(container, "b").map(el => el.textContent)).toEqual(["0.0:a", "0.1:b", "1.0:c"])
+    })
+
+    it("iterates a plain object as its entries, parens form included", () => {
+      const component = parseComponent(`<li :each="(value, key) in labels">{{ key }}={{ value }}</li>`)
+      const data = $reactive({ labels: { es: "Hola", en: "Hello" } })
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["es=Hola", "en=Hello"])
+
+      // per-key reactivity, deletes included (the deleteProperty trap)
+      data.labels.es = "¡Hola!"
+      expect($$(container, "li")[0].textContent).toBe("es=¡Hola!")
+      data.labels.fr = "Salut"
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["es=¡Hola!", "en=Hello", "fr=Salut"])
+      delete data.labels.en
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["es=¡Hola!", "fr=Salut"])
+    })
+
+    it("diffs object entries by property key: deleting one leaves the rest alone", () => {
+      const component = parseComponent(`<li :each="(user, id) in users">{{ id }}:{{ user.name }}</li>`)
+      const data = $reactive({ users: { u1: { name: "Ada" }, u2: { name: "Grace" }, u3: { name: "Katherine" } } })
+      container.appendChild(renderComponent(component, data))
+      const [first, , third] = $$(container, "li")
+
+      delete data.users.u2
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["u1:Ada", "u3:Katherine"])
+      // same key, same item: the survivors kept their DOM
+      expect($$(container, "li")[0]).toBe(first)
+      expect($$(container, "li")[1]).toBe(third)
+    })
+
+    it("still rejects a malformed binding list with the comment placeholder", () => {
+      const component = parseComponent(`<li :each="item, in items">{{ item }}</li>`)
+      container.appendChild(renderComponent(component, $reactive({ items: [1] })))
+
+      expect($$(container, "li")).toHaveLength(0)
+      expect(container.firstChild?.textContent).toContain("invalid :each expression")
+    })
+  })
+
   describe(":with", () => {
     it("resolves names against the object first, falling back to the outer scope", () => {
       const component = parseComponent(

@@ -64,6 +64,15 @@ Consecutive siblings form one chain; only the active branch is in the DOM.
 
 The list is diffed by key: unchanged items keep their DOM (and state) when the array is reordered, filtered or extended. Without `:key`, position is used — fine for append-only lists, wasteful for reordering. `$index` is available inside each item.
 
+A second binding names the array index — handy where nested loops would shadow `$index` — and plain objects iterate as their entries, the second binding being the property key (parens optional):
+
+```html
+<li :each="item, i in items">{{ i }}: {{ item.name }}</li>
+<li :each="(value, key) in labels">{{ key }} = {{ value }}</li>
+```
+
+Objects diff by property key out of the box: adding, changing or deleting a key touches only that entry. Anything that is neither an array nor a plain object renders nothing.
+
 ## `:with` — narrowed scope
 
 Evaluates to an object whose properties become directly addressable inside the element; anything else still resolves from the outer scope:

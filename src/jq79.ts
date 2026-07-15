@@ -92,8 +92,10 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
 
 
 const CONTROL_ATTRS = new Set([":attrs", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html"])
-// the list expression can span lines, so it matches [\s\S] rather than `.`
-const EACH_PATTERN = /^\s*(\w+)\s+in\s+([\s\S]+)$/
+// `item in items`, `item, i in items`, `(value, key) in props` - the second
+// binding is the array index or the object key, parens optional (Vue-style).
+// The list expression can span lines, so it matches [\s\S] rather than `.`
+const EACH_PATTERN = /^\s*\(?\s*(\w+)\s*(?:,\s*(\w+))?\s*\)?\s+in\s+([\s\S]+)$/
 
 type ConditionalBranch = { expr?: string; node: TemplateNode }
 
@@ -416,19 +418,30 @@ const defineScopeVar = (scope: Record<string, any>, key: string, value: any) => 
 
 type EachEntry = { key: any; item: any; scope: Record<string, any>; range: NodeRange; fx: EffectScope }
 
-// :each="item in items", optionally keyed with :key="expr". Only depends on
-// the list expression itself (e.g. "items"), and on each run diffs by key:
-// unchanged items (same key, same item reference) keep their DOM/effects,
-// changed/added ones are (re)rendered, removed ones are disposed. Without
-// :key, position is used as the key, so reordering rebuilds every item after
-// the first change - add :key for anything that gets reordered or filtered.
-// Each item gets its own scope via Object.create(scope), so `item`/`$index`
-// shadow same-named outer bindings without copying the parent scope's keys
+// what :each iterates besides arrays: dictionaries, as their entries. Class
+// instances, Maps and the rest stay out - the store doesn't wrap them
+// (isPlainData), so their contents wouldn't be tracked and the list would go
+// silently stale
+const isPlainObject = (value: any): value is Record<string, any> => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
+// :each="item in items" (or "item, i in items" / "(value, key) in props"),
+// optionally keyed with :key="expr". Only depends on what the list expression
+// reads, and on each run diffs by key: unchanged items (same key, same item
+// reference) keep their DOM/effects, changed/added ones are (re)rendered,
+// removed ones are disposed. Without :key, an array uses position - fine for
+// append-only lists, wasteful for reordering - and an object uses the
+// property key, which is already the stable identity. Each item gets its own
+// scope via Object.create(scope), so the bindings and `$index` shadow
+// same-named outer names without copying the parent scope's keys
 const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const match = node.attrs[":each"].match(EACH_PATTERN)
   if (!match) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
 
-  const [, itemName, listExpr] = match
+  const [, itemName, atName, listExpr] = match
   const keyExpr = node.attrs[":key"]
   const { [":each"]: _each, [":key"]: _key, ...itemAttrs } = node.attrs
   const itemNode: TemplateNode = { ...node, attrs: itemAttrs }
@@ -448,7 +461,13 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
   fx.effect(() => {
     const list = evalExpr(listExpr, scope)
-    const items = Array.isArray(list) ? list : []
+    // both sources normalize to [at, item] pairs: the index for an array, the
+    // property key for a plain object (insertion order). Object entries are
+    // read off the store proxy, so each value is tracked under its own key -
+    // adds, deletes and changes all wake this effect
+    const pairs: [any, any][] = Array.isArray(list)
+      ? list.map((item, index): [any, any] => [index, item])
+      : isPlainObject(list) ? Object.entries(list) : []
     // buckets rather than a key->entry map: duplicate keys (a user error, but
     // one that must degrade instead of corrupt) consume entries in order of
     // appearance, so no entry is ever matched twice - matching one twice is
@@ -461,11 +480,12 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
     })
 
     const seen = new Set<any>()
-    const nextEntries = items.map((item, index): EachEntry => {
+    const nextEntries = pairs.map(([at, item], index): EachEntry => {
       const itemScope = Object.create(scope)
       defineScopeVar(itemScope, itemName, item)
+      if (atName) defineScopeVar(itemScope, atName, at)
       defineScopeVar(itemScope, "$index", index)
-      const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : index
+      const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : at
       if (seen.has(key) && !warnedDuplicates) {
         warnedDuplicates = true
         console.warn(`jq79: duplicate :key in :each "${node.attrs[":each"]}"; duplicates pair up by position`)
@@ -475,6 +495,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
       if (existing && Object.is(existing.item, item)) {
         defineScopeVar(existing.scope, "$index", index)
+        if (atName) defineScopeVar(existing.scope, atName, at)
         return existing
       }
 
