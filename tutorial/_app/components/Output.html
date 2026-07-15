@@ -1,0 +1,143 @@
+<!--
+  The read-only output pane. A lesson with no solution/ is a demonstration, not
+  an exercise, and what its files need is to be *read* after mounting, not
+  watched: the selected tab is compiled and mounted off-screen with a normal
+  mount() - the head-mounted path the shadow-rooted <Preview> can't take, which
+  is the whole point for scoped styles - then serialized: the elements as
+  rendered, plus whatever CSS landed in document.head, destroyed again before
+  the page ever paints any of it. Editing the file re-runs it, debounced the
+  same 250ms the preview takes.
+-->
+<script :setup="{ files, active, compile, highlight }">
+  let snippet = ""
+  let error = ""
+
+  // the debounce timer lives in a closure for the same reason the preview's
+  // does: a top-level declaration is a reactive store var, and the $: effect
+  // below would wake itself on every write
+  const inspect = (() => {
+    let timer = null
+
+    // a scoped block reaches the head reserialized off the browser's CSSOM,
+    // which puts a whole rule - selector, braces, every declaration - on one
+    // line. Break simple rules back open so the pane reads like a stylesheet;
+    // at-rules and anything nested pass through rather than risk a mangling
+    const formatCss = css => {
+      const lines = css.replace(/^\s*\n|\s+$/g, "").split("\n")
+      const indents = lines.filter(line => line.trim()).map(line => /^\s*/.exec(line)[0].length)
+      const common = indents.length ? Math.min(...indents) : 0
+      return lines
+        .map(line => line.slice(common))
+        .map(line => {
+          const rule = /^([^{@]+?)\s*\{\s*(.+?);?\s*\}$/.exec(line)
+          if (!rule || rule[2].includes("{")) return `  ${line}`
+          const declarations = rule[2].split("; ").map(declaration => `    ${declaration.replace(/;$/, "")};`)
+          return [`  ${rule[1]} {`, ...declarations, "  }"].join("\n")
+        })
+        .join("\n")
+    }
+
+    const run = () => {
+      error = ""
+      const file = files[active]
+      if (!file) {
+        snippet = ""
+        return
+      }
+
+      const before = new Set(document.head.querySelectorAll("style"))
+      const stage = document.createElement("div")
+      let instance = null
+      try {
+        // the sibling tabs are the file's importable modules, same as the preview
+        const modules = {}
+        files
+          .filter(other => other.name !== file.name)
+          .forEach(other => { modules[`./${other.name}`] = compile(other.source) })
+
+        instance = compile(file.source, modules)
+        instance.mount(stage)
+
+        const rendered = [...stage.childNodes]
+          .filter(node => node.nodeType !== Node.COMMENT_NODE)
+          .map(node => (node.nodeType === Node.ELEMENT_NODE ? node.outerHTML : node.textContent))
+          .join("")
+          .trim()
+
+        const landed = [...document.head.querySelectorAll("style")]
+          .filter(style => !before.has(style))
+          .map(style => `<style>\n${formatCss(style.textContent)}\n</style>`)
+          .join("\n")
+
+        snippet = [rendered, landed && `<!-- and in document.head: -->\n${landed}`]
+          .filter(Boolean)
+          .join("\n\n")
+      } catch (failure) {
+        error = failure.message ?? String(failure)
+        snippet = ""
+      } finally {
+        // styles are refcounted per definition: destroying the instance takes
+        // its <style> back out of the head
+        instance?.destroy()
+      }
+    }
+
+    return {
+      run,
+      // the guard covers a timer that outlives the pane - navigating away
+      // mid-debounce would otherwise mount and destroy a component for nobody
+      schedule: () => {
+        clearTimeout(timer)
+        timer = setTimeout(() => { if ($self(".output")?.isConnected) run() }, 250)
+      },
+    }
+  })()
+
+  // re-runs when the selected tab or any source changes, debounced so a burst
+  // of keystrokes serializes once
+  $: inspect.schedule(active, files.map(file => file.source).join("\n"))
+
+  // the effect's first pass only armed the debounce; the pane just appeared,
+  // and its first snippet shouldn't arrive a quarter of a second late
+  inspect.run()
+</script>
+
+<div class="output">
+  <div class="result-label">what reaches the page</div>
+  <pre class="result" :if="!error"><code class="hljs" :html="highlight(snippet, 'xml')"></code></pre>
+  <pre class="error" :else>{{ error }}</pre>
+</div>
+
+<style>
+  .output { flex: 1 1 45%; overflow: auto; }
+
+  .result-label {
+    padding: 0.6rem 1rem 0;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+
+  .result {
+    margin: 0;
+    padding: 0.5rem 1rem 1rem;
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .error {
+    margin: 0;
+    padding: 0.8rem 1rem;
+    background: #ffeef0;
+    color: #b3202d;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .error { background: #3b1219; color: #ff8a9b; }
+  }
+</style>

@@ -118,10 +118,16 @@ describe("tutorial", () => {
     expect(exercises.length).toBeGreaterThan(0)
   })
 
-  describe.each(exercises)("$path", ({ files, solution }) => {
-    it(`has an ${ENTRY} to mount, and a solution`, () => {
+  // a lesson with no solution/ is a demonstration: the app hides its solution
+  // button and swaps the live preview for the resulting-html pane. The list is
+  // deliberate - a solution *forgotten* on a real exercise still fails here
+  const DEMOS = new Set(["03-components/04-scoped-styles"])
+
+  describe.each(exercises)("$path", ({ path, files, solution }) => {
+    it(`has an ${ENTRY} to mount, and a solution unless it's a demo`, () => {
       expect(Object.keys(files)).toContain(ENTRY)
-      expect(Object.keys(solution).length).toBeGreaterThan(0)
+      if (DEMOS.has(path)) expect(Object.keys(solution)).toHaveLength(0)
+      else expect(Object.keys(solution).length).toBeGreaterThan(0)
     })
 
     it("mounts its starting files without throwing", async () => {
@@ -405,36 +411,39 @@ describe("tutorial", () => {
     expect(root.querySelector("h3")?.textContent).toBe("cart (0)")
   })
 
-  it("03-components/04: an unscoped style block is global - the page heading is fair game", async () => {
-    const before = document.head.querySelectorAll("style").length
-    const instance = mountHead(startOf("03-components/04-scoped-styles"), host)
-    await tick()
+  // the demo lesson's two tabs, head-mounted the way its output pane does it:
+  // the shadow-rooted preview can't show `scoped` (mountShadow ignores it), so
+  // these hold the README's "what reaches the page" story to a real mount()
 
+  it("03-components/04: unscoped, the card's CSS lands in the head as written", () => {
+    const files = startOf("03-components/04-scoped-styles")
+    const before = document.head.querySelectorAll("style").length
     const added = () => [...document.head.querySelectorAll("style")].slice(before)
+
+    const instance = mountHead({ [ENTRY]: files[ENTRY] }, host)
+
     expect(added().map(style => style.textContent).join("\n")).toContain(".title {")
     expect(added().map(style => style.textContent).join("\n")).not.toContain("data-jq79")
     expect(host.querySelector(".card .title")?.hasAttribute("data-jq79")).toBe(false)
 
     instance.destroy()
-    expect(added().length).toBe(0)
+    expect(added()).toHaveLength(0)
   })
 
-  it("03-components/04: `scoped` stamps the card and rewrites its rule, leaving the heading alone", async () => {
+  it("03-components/04: scoped, the card is stamped and its CSS rewritten to require it", () => {
+    const files = startOf("03-components/04-scoped-styles")
     const before = document.head.querySelectorAll("style").length
-    const instance = mountHead(solutionOf("03-components/04-scoped-styles"), host)
-    await tick()
+    const added = () => [...document.head.querySelectorAll("style")].slice(before)
 
-    // the README's "what actually reaches the page" snippet, held to
+    const instance = mountHead({ [ENTRY]: files["scoped.html"] }, host)
+
     const stamp = host.querySelector(".card .title")?.getAttribute("data-jq79")
     expect(stamp).toBeTruthy()
-    expect(host.querySelector("h3")?.hasAttribute("data-jq79")).toBe(false)
-
-    const added = () => [...document.head.querySelectorAll("style")].slice(before)
     expect(added().map(style => style.textContent).join("\n")).toContain(`.title[data-jq79="${stamp}"]`)
 
     // one refcounted <style>, gone with the last instance
     instance.destroy()
-    expect(added().length).toBe(0)
+    expect(added()).toHaveLength(0)
   })
 
   it("03-components/03: every holder of the store sees a child's write", async () => {
@@ -693,6 +702,35 @@ describe("the tutorial app", () => {
     await settle()
 
     expect(previewRoot(host).textContent).toContain("1")
+  })
+
+  it("swaps a demo lesson's preview for the resulting html, per selected file", async () => {
+    linkTo(host, "03-components/04-scoped-styles").click()
+    await settle()
+
+    // nothing to solve: no solution button, no live stage - the pane is for reading
+    expect(ghostButton(host, "solution")).toBeFalsy()
+    expect(host.querySelector(".stage")).toBeFalsy()
+
+    const result = () => host.querySelector(".result")?.textContent ?? ""
+    expect(result()).toContain('<span class="title">')
+    expect(result()).toContain(".title {")
+    expect(result()).not.toContain("data-jq79")
+
+    // the scoped tab: the same card, stamped and rewritten - and mounting it
+    // to read it left nothing behind in the page's own head
+    const headBefore = document.head.querySelectorAll("style").length
+    const scopedTab = [...host.querySelectorAll(".tab")].find(tab => tab.textContent === "scoped.html")
+    ;(scopedTab as HTMLButtonElement).click()
+    await settle()
+
+    expect(result()).toMatch(/\.title\[data-jq79="[^"]+"\]/)
+    expect(result()).toContain("document.head")
+    expect(document.head.querySelectorAll("style").length).toBe(headBefore)
+
+    // the head copy arrives reserialized onto one line per rule; the pane
+    // breaks it back open - a declaration sits on its own indented line
+    expect(result()).toMatch(/\n\s+border-radius: 8px;\n/)
   })
 
   it("says so when the code already matches the solution", async () => {

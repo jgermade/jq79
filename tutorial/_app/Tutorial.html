@@ -37,6 +37,11 @@
 
   $: current = flat[index]
 
+  // an exercise without a solution/ is a demonstration: there's nothing to
+  // solve, so the solution button goes away, and the output pane shows what the
+  // selected file renders to instead of mounting it live (see Output.html)
+  $: demo = !Object.keys(current.solution).length
+
   // --- what the panes are handed ---------------------------------------------
 
   // the preview compiles a file with the page's own Component79; non-entry files
@@ -116,6 +121,7 @@
   const Editor = await import("./components/Editor.html")
   const Diff = await import("./components/Diff.html")
   const Preview = await import("./components/Preview.html")
+  const Output = await import("./components/Output.html")
 </script>
 
 <div
@@ -139,7 +145,7 @@
       >{{ file.name }}</button>
       <span class="spacer"></span>
       <button class="ghost" @click="reset">reset</button>
-      <button class="ghost" @click="review">solution</button>
+      <button class="ghost" :if="!demo" @click="review">solution</button>
     </header>
 
     <!-- the editor and the diff share one pane: the diff is an overlay, so the
@@ -152,8 +158,10 @@
 
     <!-- `exercise` isn't rendered: it's how the preview tells "the user typed"
          (recompile, debounced) from "the user went somewhere else" (drop what's
-         on screen now, it belongs to the last exercise) -->
-    <Preview :files :compile :exercise="current.path" />
+         on screen now, it belongs to the last exercise). A demo lesson swaps
+         the live preview for the resulting-html pane -->
+    <Preview :if="!demo" :files :compile :exercise="current.path" />
+    <Output :else :files :active :compile :highlight />
   </section>
 </div>
 

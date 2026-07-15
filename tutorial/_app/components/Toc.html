@@ -5,9 +5,14 @@
 -->
 <script :setup="{ sections, path }">
   const go = index => $emit("tutorial:go", index)
+
+  let collapsed = false
 </script>
 
-<aside class="toc">
+<aside class="toc" :class="{ collapsed }">
+  <!-- <div class="collapsed-menu">
+    <button @click="collapsed = !collapsed">Table of contents</button>
+  </div> -->
   <div class="chapter" :each="section in sections" :key="section.slug">
     <h3>{{ section.title }}</h3>
     <button
@@ -21,6 +26,10 @@
 
 <style>
   .toc { padding: 1.2rem 0.8rem; }
+  @media (max-width: 960px) {
+    .toc { padding: 0.8rem 0.6rem; }
+  }
+
   .chapter h3 {
     margin: 0 0 0.4em;
     padding: 0 0.6rem;
