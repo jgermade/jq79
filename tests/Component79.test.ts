@@ -240,6 +240,33 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("a top-level destructuring declaration stays local: invisible to the template, not reactive", () => {
+      // the scanner only rewrites `let <identifier>` - a pattern keeps its
+      // keyword and lives inside the script's own closure. Pinned: the
+      // template renders nothing for it, silently. (A warning would be a
+      // library change - see TODOS)
+      const jq79 = new Component79(
+        `<script :setup>let { a } = { a: 1 }</script><div class="out">{{ a }}</div>`
+      ).render().mount(host)
+
+      expect($(host, ".out")?.textContent).toBe("")
+      expect(jq79.data && ("a" in jq79.data)).toBe(false)
+      jq79.destroy()
+    })
+
+    it("a </script> inside a script string truncates the block and the mount throws", () => {
+      // the HTML parser (and RAW_BLOCK_RE with it) closes the script at the
+      // first </script>, exactly like a browser would with an inline script.
+      // The leftover `const s = "` is a SyntaxError at compile time - loud,
+      // synchronous, and pinned here so the failure mode stays known
+      const jq79 = new Component79(
+        `<script :setup>const s = "</script>"; let x = 1</script><div class="t">{{ x }}</div>`
+      )
+
+      expect(jq79.scripts[0].content).toBe(`const s = "`)
+      expect(() => jq79.mount(host)).toThrow(SyntaxError)
+    })
+
     it("makes top-level let variables reactive scope properties", () => {
       const jq79 = new Component79(
         `<script :setup>let count = 0</script><div class="count">{{ count }}</div>`
@@ -975,6 +1002,27 @@ describe("Component79", () => {
       expect(scope).toMatch(/^[a-z0-9]+$/)
       expect(scopeOf($(host, ".title"))).toBe(scope)
       expect(headCss(jq79)).toContain(`.card .title[data-jq79="${scope}"]`)
+
+      jq79.destroy()
+    })
+
+    it("does not stamp :html content: scoped rules cannot be borrowed by injected markup", () => {
+      // sanitizeHTML lets `class` through on any allowed tag, so untrusted
+      // content can *name* the component's classes - but the stamp only ever
+      // lands on template elements, so a <style scoped> rule never matches
+      // the injected node. Unscoped styles would: that is the documented
+      // trade-off this test keeps visible
+      const jq79 = new Component79(`
+        <div class="card" :html="body"></div>
+        <style scoped>.title { color: red; }</style>
+      `).render({ body: `<span class="title">injected</span>` }).mount(host)
+
+      const injected = $(host, ".title")!
+      expect(injected.textContent).toBe("injected")
+      expect(injected.getAttribute("class")).toBe("title") // survives sanitizing
+      expect(scopeOf(injected)).toBeNull() // but carries no scope stamp
+      expect(scopeOf($(host, ".card"))).toMatch(/^[a-z0-9]+$/)
+      expect(headCss(jq79)).toContain(`.title[data-jq79=`)
 
       jq79.destroy()
     })

@@ -905,3 +905,141 @@ describe("renderComponent", () => {
     })
   })
 })
+
+// sharp edges of attribute binding, pinned: what :attrs does with falsy
+// non-false values, and where the attribute/property split of form elements
+// shows through
+describe("attribute binding edges", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+
+  it(":attrs sets boolean attributes for falsy values that are not null/undefined/false", () => {
+    // only null, undefined and false remove; 0 and "" *set* the attribute,
+    // and a set boolean attribute is ON - `disabled: items.length` disables
+    // the button when the list is empty. Pinned so the trap stays documented
+    const component = parseComponent(`<button :attrs="{ disabled: n }">x</button>`)
+    const data = $reactive({ n: 0 as any })
+
+    container.appendChild(renderComponent(component, data))
+    const button = container.querySelector("button")!
+
+    expect(button.hasAttribute("disabled")).toBe(true)
+    expect(button.disabled).toBe(true)
+
+    data.n = ""
+    expect(button.disabled).toBe(true)
+
+    data.n = false
+    expect(button.disabled).toBe(false)
+  })
+
+  it(":attrs value writes the attribute, which stops driving an input the user has typed in", () => {
+    const component = parseComponent(`<input :attrs="{ value: name }">`)
+    const data = $reactive({ name: "Ada" })
+
+    container.appendChild(renderComponent(component, data))
+    const input = container.querySelector("input") as HTMLInputElement
+
+    // before any user interaction the attribute is also the visible value
+    expect(input.value).toBe("Ada")
+
+    // once the user types, value (the property) detaches from the attribute:
+    // later store writes update the attribute but not what the user sees -
+    // the documented reason two-way flows go through @input, not :attrs
+    input.value = "typed by user"
+    data.name = "Grace"
+
+    expect(input.getAttribute("value")).toBe("Grace")
+    expect(input.value).toBe("typed by user")
+  })
+
+  it(":class and a class key inside :attrs degrade predictably when combined", () => {
+    // the documented "don't": :attrs rewrites the whole attribute on each of
+    // its runs, wiping what :class added until :class happens to re-run
+    const component = parseComponent(`<div :attrs="{ class: base }" :class="{ active: on }"></div>`)
+    const data = $reactive({ base: "box", on: true })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.className).toBe("box active")
+
+    data.base = "box2"
+    expect(el.className).toBe("box2")
+
+    data.on = false
+    data.on = true
+    expect(el.className).toBe("box2 active")
+  })
+})
+
+// how :each identity behaves under the two ways of sorting a list - pinned
+// because the difference (reassignment preserves rows, in-place doesn't) is
+// invisible until an input loses its text
+describe(":each and in-place array mutation", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+
+  it("reassigning a sorted copy moves the existing rows", () => {
+    const component = parseComponent(`<li :each="u in users" :key="u.id">{{ u.name }}</li>`)
+    const data = $reactive({ users: [{ id: 1, name: "b" }, { id: 2, name: "a" }] })
+
+    container.appendChild(renderComponent(component, data))
+    const before = [...container.querySelectorAll("li")]
+
+    data.users = [...data.users].sort((x: any, y: any) => x.name.localeCompare(y.name))
+    const after = [...container.querySelectorAll("li")]
+
+    expect(after.map(li => li.textContent)).toEqual(["a", "b"])
+    expect(after[0]).toBe(before[1])
+    expect(after[1]).toBe(before[0])
+  })
+
+  it("sorting in place re-renders the rows: mid-swap writes duplicate the keys", () => {
+    // each proxy write during sort() re-runs the list effect, and halfway
+    // through a swap the array holds the same item twice - the duplicate-key
+    // degradation kicks in (warns, pairs by position) and the settled result
+    // is correct but rebuilt. Reassign a sorted copy to keep row state
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const component = parseComponent(`<li :each="u in users" :key="u.id">{{ u.name }}</li>`)
+    const data = $reactive({ users: [{ id: 1, name: "b" }, { id: 2, name: "a" }] })
+
+    container.appendChild(renderComponent(component, data))
+    const before = [...container.querySelectorAll("li")]
+
+    data.users.sort((x: any, y: any) => x.name.localeCompare(y.name))
+    const after = [...container.querySelectorAll("li")]
+
+    expect(after.map(li => li.textContent)).toEqual(["a", "b"])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("duplicate :key"))
+    expect(after).not.toContain(before[0])
+    warn.mockRestore()
+  })
+})
+
+describe("nested component recursion", () => {
+  it("a component's own tag inside its template renders one level and stops", () => {
+    // no runaway recursion by construction: the child's scope holds only its
+    // props, and prop names pass through the HTML parser lowercased - so the
+    // PascalCase key a component tag needs can never arrive via an attribute.
+    // Here the inner <A> finds no "A" in the child scope and falls back to a
+    // plain HTML <a> anchor
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const A = parseComponent(`<div class="a"><A></A></div>`)
+    const data = $reactive({ A })
+
+    container.appendChild(renderComponent(A, data))
+
+    expect(container.querySelectorAll("div.a").length).toBe(2)
+    expect(container.querySelector("div.a div.a a")).not.toBeNull()
+  })
+})

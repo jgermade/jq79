@@ -166,3 +166,70 @@ describe("sanitizeHTML", () => {
     expect(sanitizeHTML("<p>hi<!-- comment --></p>")).toBe("<p>hi</p>")
   })
 })
+
+// classic sanitizer-evasion payloads, pinned as regression tests: mutation
+// vectors that abuse parser namespace switches (math/svg), raw-text elements
+// (noscript), and URL obfuscation. The sanitizer's defense is structural -
+// disallowed tags are dropped whole, attributes are read post-parse (entities
+// already decoded) and URLs are judged by their parsed protocol - and these
+// tests hold that line
+describe("sanitizeHTML against evasion and mutation payloads", () => {
+  it("drops math-namespace mutation vectors whole", () => {
+    expect(sanitizeHTML(
+      `<math><mtext><table><mglyph><style><img src=x onerror=alert(1)></style></mglyph></table></mtext></math>hola`
+    )).toBe("hola")
+  })
+
+  it("drops svg-namespace script smuggling whole", () => {
+    expect(sanitizeHTML(`<svg><script>alert(1)</script></svg>after`)).toBe("after")
+  })
+
+  it("defuses the noscript raw-text escape", () => {
+    const out = sanitizeHTML(`<noscript><p title="</noscript><img src=x onerror=alert(1)>">x</p></noscript>`)
+    expect(out).not.toContain("onerror")
+    expect(out).not.toContain("noscript")
+  })
+
+  it("rejects entity-encoded javascript: hrefs (entities are decoded before the check)", () => {
+    expect(sanitizeHTML(`<a href="&#106;avascript:alert(1)">x</a>`)).toBe(
+      '<a rel="noopener noreferrer">x</a>'
+    )
+  })
+
+  it("rejects javascript: split by whitespace control characters", () => {
+    expect(sanitizeHTML(`<a href="jav\tascript:alert(1)">x</a>`)).toBe(
+      '<a rel="noopener noreferrer">x</a>'
+    )
+    expect(sanitizeHTML(`<a href=" javascript:alert(1)">x</a>`)).toBe(
+      '<a rel="noopener noreferrer">x</a>'
+    )
+  })
+
+  it("rejects mixed-case protocols, and normalizes uppercase tags/attributes", () => {
+    expect(sanitizeHTML(`<A HREF="JaVaScRiPt:alert(1)" ONCLICK="x()">x</A>`)).toBe(
+      '<a rel="noopener noreferrer">x</a>'
+    )
+    expect(sanitizeHTML(`<A HREF="https://ok.com">x</A>`)).toBe(
+      '<a href="https://ok.com" rel="noopener noreferrer">x</a>'
+    )
+  })
+
+  it("rejects data: URLs in img src", () => {
+    expect(sanitizeHTML(`<img src="data:image/svg+xml,<svg onload=alert(1)>">`)).toBe("<img>")
+  })
+
+  it("allows protocol-relative URLs - they resolve to https", () => {
+    // a decision, not an oversight: //host resolves under the page's scheme,
+    // which the safe-protocol list already admits
+    expect(sanitizeHTML(`<a href="//evil.com/x">x</a>`)).toBe(
+      '<a href="//evil.com/x" rel="noopener noreferrer">x</a>'
+    )
+  })
+
+  it("survives deeply nested input without blowing the stack", () => {
+    const depth = 500
+    const out = sanitizeHTML("<b>".repeat(depth) + "x" + "</b>".repeat(depth))
+    expect(out.startsWith("<b><b>")).toBe(true)
+    expect(out).toContain("x")
+  })
+})

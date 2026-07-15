@@ -448,3 +448,72 @@ describe("$reactive", () => {
     })
   })
 })
+
+// the effect runner's last line of defense (see AGENTS.md: an effect that
+// reads and writes the same key wakes itself only from its second pass), and
+// the documented limits of dot-path tracking
+describe("$effect hardening", () => {
+  it("cuts off an effect that keeps re-waking itself, with a console.error, instead of hanging", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    const store = $reactive({ obj: { n: 0 } as any })
+
+    // reads obj and writes a fresh object to it: a self-waking loop. The
+    // first pass settles (deps commit only after the run), so it must be
+    // kicked awake from outside - which is exactly how it bites in the wild
+    let runs = 0
+    store.$effect(() => {
+      runs++
+      store.obj = { n: store.obj.n + 1 }
+    })
+
+    expect(runs).toBe(1)
+    expect(spy).not.toHaveBeenCalled()
+
+    store.obj = { n: 50 }
+
+    // the kick plus 100 in-run repeats, then it gives up out loud - and the
+    // assignment that triggered it all still returns
+    expect(runs).toBe(101)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(String(spy.mock.calls[0][0])).toContain("re-woke itself 100 times")
+    spy.mockRestore()
+  })
+
+  it("truncating an array via length wakes effects reading its items", () => {
+    const store = $reactive({ list: [1, 2, 3] })
+
+    let first: any
+    let runs = 0
+    store.$effect(() => {
+      runs++
+      first = store.list[0]
+    })
+
+    store.list.length = 0
+
+    // the index reads tracked "list" on the way in, and "list.length"
+    // overlaps it - so the effect re-runs even though the dead slots are
+    // deleted on the raw target, below the proxy's deleteProperty trap
+    expect(runs).toBe(2)
+    expect(first).toBeUndefined()
+    expect(store.list).toEqual([])
+  })
+
+  it("a key that contains a dot collides with the real nested path (known limit)", () => {
+    const store = $reactive({ a: { b: 1 } })
+
+    let runs = 0
+    store.$effect(() => {
+      runs++
+      void store.a.b
+    })
+
+    // the flat key "a.b" notifies under the same dotKey as the nested a.b,
+    // so the effect wakes spuriously - dot-paths cannot tell them apart.
+    // Pinned as a documented limitation, not endorsed behavior
+    ;(store as any)["a.b"] = 99
+
+    expect(runs).toBe(2)
+    expect(store.a.b).toBe(1)
+  })
+})

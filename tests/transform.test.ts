@@ -638,3 +638,44 @@ describe("parseFactoryProps", () => {
       .toThrow(/the factory signature is \(props, ctx\)/)
   })
 })
+
+// declaration forms the scanner deliberately (or accidentally) leaves alone,
+// pinned so a future scanner change is a conscious decision rather than a
+// silent behavior shift. The one that bites users: a destructuring
+// declaration keeps its keyword, so its bindings are locals - invisible to
+// the template, not reactive - with no warning today
+describe("setup script scanner on declarations it does not rewrite", () => {
+  it("leaves an object destructuring declaration untouched (its names stay local, not reactive)", () => {
+    const { vars, code } = transformSetupScript(`let { a, b } = obj`)
+
+    expect(vars).toEqual([])
+    expect(code).toBe(`let { a, b } = obj`)
+  })
+
+  it("leaves an array destructuring declaration untouched", () => {
+    const { vars, code } = transformSetupScript(`const [x, y] = pair`)
+
+    expect(vars).toEqual([])
+    expect(code).toBe(`const [x, y] = pair`)
+  })
+
+  it("rewrites only the first name of a multi-declarator statement", () => {
+    // `b = 2` still lands on the store - as a bare assignment through `with`,
+    // via the new-key sweep - but it is not pre-declared like `a` is
+    const { vars, code } = transformSetupScript(`let a = 1, b = 2`)
+
+    expect(vars).toEqual(["a"])
+    expect(code).toBe(`a = 1, b = 2`)
+  })
+
+  it("copies a template literal with nested backticks through unchanged", () => {
+    // skipString stops at the first unescaped backtick, so the nested parts
+    // alternate string/code - the content survives by parity, and this test
+    // holds that: nothing inside may be rewritten
+    const src = "const s = `a ${ok ? `x` : `y`} c`\nlet z = 1"
+    const { vars, code } = transformSetupScript(src)
+
+    expect(vars).toEqual(["s", "z"])
+    expect(code).toBe("s = `a ${ok ? `x` : `y`} c`\nz = 1")
+  })
+})
