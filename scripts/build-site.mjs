@@ -108,6 +108,7 @@ body > header nav .npm:hover { opacity: 1; }
 body > header nav .npm img { height: 100%; display: block; }
 body > header a { color: white; text-decoration: none; }
 body > header a:hover { text-decoration: underline; }
+.pad1 { overflow-x: auto; }
 `
 
 // the istanbul report only ships light styles, so pin the page to the light
@@ -175,7 +176,6 @@ ${HLJS_CSS}
 }
 table { border-collapse: collapse; display: block; overflow-x: auto; }
 th, td { border: 1px solid var(--line); padding: 0.4em 0.8em; }
-.pad1 { overflow-x: auto; }
 img { max-width: 100%; }
 blockquote { margin: 0; padding: 0 1em; color: var(--muted); border-left: 0.25em solid var(--line); }
 footer { max-width: 860px; margin: 0 auto; padding: 1rem 1.5rem 2rem; color: white; border-top: 1px solid var(--line); font-size: 0.85rem; }
