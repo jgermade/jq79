@@ -38,6 +38,16 @@ describe("setup script scanner on unterminated input", () => {
     expect(code).toBe(`re = /never closed`)
   })
 
+  it("looks past a block comment to decide a line break does not end a statement", () => {
+    // the char before the newline is a `*/`: the scanner walks back through the
+    // whole comment to the real last token (`1`), and the leading `+` on the next
+    // line keeps it one statement, so `x` is a single declarator
+    const { vars, code } = transformSetupScript(`let x = 1 /* note */\n+ 2`)
+
+    expect(vars).toEqual(["x"])
+    expect(code).toBe(`x = 1 /* note */\n+ 2`)
+  })
+
   it("stops an unclosed regex at its line end, so the damage stays on that line", () => {
     // a literal can't contain an unescaped newline: the skip bails there and
     // the next line is scanned normally - one broken line, not a cascade
