@@ -1,0 +1,16 @@
+<script :setup>
+  let name = "Ada"
+
+  const reset = () => { name = "Ada" }
+
+  const NameField = await import("./NameField.html")
+</script>
+
+<NameField :initial="name" />
+<button @click="reset">reset</button>
+<p>the store says: "{{ name }}"</p>
+
+<style>
+  button { font: inherit; padding: 0.3em 0.9em; border-radius: 6px; cursor: pointer; }
+  p { color: #59636e; }
+</style>

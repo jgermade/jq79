@@ -356,8 +356,9 @@ describe("tutorial", () => {
 
   // these lessons stage a failure before fixing it, so their *starting* files
   // carry claims of their own - a library change that made keyless reorders
-  // keep DOM state, plain objects shared, or :html reject destinations by
-  // default, would gut the lesson without breaking its solution
+  // keep DOM state, plain objects shared, :html reject destinations by
+  // default, or a copied-once prop stay live, would gut the lesson without
+  // breaking its solution
 
   const startOf = (path: string) => exercises.find(candidate => candidate.path === path)!.files
 
@@ -431,6 +432,44 @@ describe("tutorial", () => {
     expect(root.querySelector('a[href*="evil.example"]')).toBeFalsy()
     expect(root.querySelector("img")).toBeTruthy()
     expect(root.querySelector("img")?.hasAttribute("src")).toBe(false)
+  })
+
+  it("03-components/05: a prop copied once at setup hears neither direction afterward", async () => {
+    mount(startOf("03-components/05-two-way-binding"), host)
+    await tick()
+    const root = host.shadowRoot!
+    const input = root.querySelector("input") as HTMLInputElement
+
+    expect(input.value).toBe("Ada")
+
+    input.value = "Grace"
+    input.dispatchEvent(new Event("input"))
+
+    // typed into the child's own copy - the parent never hears it
+    expect(root.querySelector("p")?.textContent).toBe('the store says: "Ada"')
+
+    root.querySelector("button")!.click()
+
+    // the parent's reset lands on `initial`, which the field copied once and
+    // never looks at again
+    expect(input.value).toBe("Grace")
+  })
+
+  it("03-components/05: :model drives the field both ways - typing and reset alike", async () => {
+    mount(solutionOf("03-components/05-two-way-binding"), host)
+    await tick()
+    const root = host.shadowRoot!
+    const input = root.querySelector("input") as HTMLInputElement
+
+    input.value = "Grace"
+    input.dispatchEvent(new Event("input"))
+
+    expect(root.querySelector("p")?.textContent).toBe('the store says: "Grace"')
+
+    root.querySelector("button")!.click()
+
+    expect(input.value).toBe("Ada")
+    expect(root.querySelector("p")?.textContent).toBe('the store says: "Ada"')
   })
 
   it("03-components/03: a plain object passed to both children falls out of sync", async () => {

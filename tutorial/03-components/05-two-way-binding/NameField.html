@@ -1,0 +1,9 @@
+<script :setup="{ initial }">
+  let value = initial
+</script>
+
+<input class="field" :value="value" @input="value = $event.target.value">
+
+<style>
+  input { font: inherit; padding: 0.3em 0.6em; border-radius: 6px; border: 1px solid #d1d9e0; }
+</style>
