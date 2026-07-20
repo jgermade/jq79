@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import net from "node:net"
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 
 import { devServer, type DevServer } from "../dev/dev"
@@ -34,6 +35,24 @@ describe("dev server", () => {
 
   const get = (path: string, headers: Record<string, string> = {}) =>
     fetch(`${server.url}${path}`, { headers })
+
+  // a raw request line, sent over a socket without going through WHATWG URL: the
+  // only way to put a literal ".." on the wire, since fetch() collapses dot
+  // segments (%2e%2e included) before the request ever leaves the client
+  const raw = (line: string) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const { hostname, port } = new URL(server.url)
+      const sock = net.connect(Number(port), hostname, () => {
+        sock.write(`GET ${line} HTTP/1.1\r\nHost: localhost\r\nsec-fetch-dest: document\r\nConnection: close\r\n\r\n`)
+      })
+      let buf = ""
+      sock.on("data", chunk => (buf += chunk))
+      sock.on("error", reject)
+      sock.on("end", () => {
+        const [head, body = ""] = buf.split("\r\n\r\n")
+        resolve({ status: Number(head.split(" ")[1]), body })
+      })
+    })
 
   // what a browser sends for a navigation, and what the runtime's fetch() sends
   // for a component - the header the server injects (or doesn't) on
@@ -133,6 +152,23 @@ describe("dev server", () => {
     // trip through the URL rather than being collapsed by fetch()
     const res = await get("/%2e%2e/%2e%2e/etc/passwd", asDocument)
     expect([403, 404]).toContain(res.status)
+  })
+
+  it("refuses a traversal that reaches outside the root with 403", async () => {
+    // sent raw so the ".." survives to the server (fetch would collapse it): the
+    // resolved path leaves the served directory, and that is a refusal, not a miss
+    const res = await raw("/../../etc/passwd")
+    expect(res.status).toBe(403)
+    // the body arrives chunk-framed (end() without a length), so match its text
+    expect(res.body).toContain("forbidden")
+  })
+
+  it("400s a path whose percent-encoding does not decode", async () => {
+    // "%c0" is a malformed UTF-8 lead byte: decodeURIComponent throws on it, and a
+    // request the server can't even read as a path is a bad request, not a 404
+    const res = await get("/%c0", asDocument)
+    expect(res.status).toBe(400)
+    expect(await res.text()).toBe("bad request")
   })
 
   it("404s a file it does not have", async () => {
