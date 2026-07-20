@@ -47,8 +47,29 @@ describe("component signature: setup mode", () => {
     const container = mount(component)
 
     expect(container.querySelector(".out")?.textContent).toBe("anonymous")
-    expect("user" in component.data).toBe(true)
+    expect("user" in (component.data as Record<string, any>)).toBe(true)
     component.destroy()
+  })
+
+  it("stays live after mount: a destructured prop name is a store key, not a copy", () => {
+    const Child = new Component79(`
+      <script :setup="{ label }"></script>
+      <p class="out">{{ label }}</p>
+    `)
+    const parent = new Component79(`
+      <script :setup>
+        const Child = $child
+        let label = "first"
+      </script>
+      <Child :label="label"></Child>
+    `)
+    const container = mount(parent, { $child: Child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("first")
+    ;(parent.data as Record<string, any>).label = "second"
+
+    expect(container.querySelector(".out")?.textContent).toBe("second")
+    parent.destroy()
   })
 })
 
