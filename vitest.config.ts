@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     coverage: {
+      provider: "istanbul",
       include: ["src/**", "dev/**"],
       // the bin entry: it runs on import (top-level await, process.exit), so it
       // is driven as a subprocess rather than imported. Its behaviour is the
