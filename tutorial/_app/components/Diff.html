@@ -1,11 +1,12 @@
 <!--
   The solution, proposed rather than applied: what the editor holds now (`files`)
-  against what it would hold after (`after`), line by line, until the user
-  accepts it (`tutorial:apply`) or doesn't (`tutorial:dismiss`). It renders over
-  the editor, so the editor keeps its state - and the preview keeps its last good
-  render - while the diff is being read.
+  against what it would hold after (`after`), line by line. It renders over the
+  editor, so the editor keeps its state - and the preview keeps its last good
+  render - while the diff is being read. It has no chrome of its own: the tab bar
+  above it carries cancel/apply, and the tab that's active picks which file's
+  diff (`name`) is on screen, so the diff follows the tabs.
 -->
-<script :setup="{ files, after, highlight, languageOf }">
+<script :setup="{ files, name, after, highlight, languageOf }">
   // a plain LCS line diff: the table is O(lines²), which for an exercise file is
   // nothing, and it keeps the common lines aligned so the change reads as a change
   const diffLines = (before, after) => {
@@ -61,46 +62,28 @@
 
   const sourceOf = name => files.find(file => file.name === name)?.source
 
-  // only the files the solution would actually change: the rest of `after` is
-  // what the editor already holds
-  $: changes = Object.entries(after)
-    .filter(([name, source]) => sourceOf(name) !== source)
-    .map(([name, source]) => ({
-      name,
-      rows: highlightRows(diffLines(sourceOf(name) ?? "", source), languageOf(name)),
-    }))
-
-  const apply = () => $emit("tutorial:apply")
-  const dismiss = () => $emit("tutorial:dismiss")
+  // the active file only: `after[name]` is what the solution would make it, and a
+  // file the solution leaves alone diffs against itself (every row `same`)
+  $: rows = highlightRows(
+    diffLines(sourceOf(name) ?? "", after[name] ?? sourceOf(name) ?? ""),
+    languageOf(name)
+  )
 </script>
 
 <div class="diff">
-  <header class="diff-bar">
-    <span class="diff-title" :if="changes.length">the solution changes:</span>
-    <span class="diff-title" :else>no changes — your code already matches the solution</span>
-    <span class="spacer"></span>
-    <button class="ghost" @click="dismiss">cancel</button>
-    <button class="accept" :if="changes.length" @click="apply">apply</button>
-  </header>
-
   <div class="diff-body">
-    <div class="diff-file" :each="file in changes" :key="file.name">
-      <div class="diff-name">{{ file.name }}</div>
-      <div class="diff-rows hljs">
-        <div
-          :each="row in file.rows"
-          :key="$index"
-          :attrs="{ class: `row ${row.type}` }"
-          :html="row.html"
-        ></div>
-      </div>
+    <div class="diff-rows hljs">
+      <div
+        :each="row in rows"
+        :key="$index"
+        :attrs="{ class: `row ${row.type}` }"
+        :html="row.html"
+      ></div>
     </div>
   </div>
 </div>
 
 <style>
-  /* the app's own .ghost button styles the cancel button: the tutorial mounts
-     into the page, not a shadow root, so its chrome is one stylesheet */
   .diff {
     position: absolute;
     inset: 0;
@@ -110,36 +93,7 @@
     background: var(--bg);
   }
 
-  .diff-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .diff-bar .spacer { flex: 1; }
-  .diff-title { color: var(--muted); font-size: 0.85rem; }
-  .accept {
-    padding: 0.3em 0.9em;
-    border: 0;
-    border-radius: 6px;
-    background: var(--accent);
-    color: #fff;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .accept:hover { filter: brightness(1.1); }
-
   .diff-body { flex: 1; overflow: auto; background: var(--code-bg); }
-  .diff-file + .diff-file { border-top: 1px solid var(--line); }
-  .diff-name {
-    padding: 0.4rem 1rem;
-    border-bottom: 1px solid var(--line);
-    color: var(--muted);
-    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
 
   .diff-rows { padding: 0.5rem 0; }
   .row {

@@ -42,6 +42,12 @@
   // selected file renders to instead of mounting it live (see Output.html)
   $: demo = !Object.keys(current.solution).length
 
+  // reviewing a solution that changes nothing (the user already got there) offers
+  // no apply, only cancel - so the tab bar knows whether to show the apply button
+  $: reviewChanges = proposal && Object.entries(proposal).some(
+    ([name, source]) => files.find(file => file.name === name)?.source !== source
+  )
+
   // --- what the panes are handed ---------------------------------------------
 
   // the preview compiles a file with the page's own Component79; non-entry files
@@ -144,16 +150,22 @@
         @click="active = $index"
       >{{ file.name }}</button>
       <span class="spacer"></span>
-      <button class="ghost" @click="reset">reset</button>
-      <button class="ghost" :if="!demo" @click="review">solution</button>
+      <!-- reviewing a solution takes the tab bar over: the diff is an overlay
+           with no chrome of its own, so cancel/apply stand where reset/solution
+           do the rest of the time -->
+      <button class="ghost" :if="proposal" @click="dismiss">cancel</button>
+      <button class="ghost" :else @click="reset">reset</button>
+      <button class="accept" :if="reviewChanges" @click="apply">apply</button>
+      <button class="ghost" :elseif="!proposal && !demo" @click="review">solution</button>
     </header>
 
     <!-- the editor and the diff share one pane: the diff is an overlay, so the
          editor keeps its state (and the preview keeps its last good render)
-         while a solution is being reviewed -->
+         while a solution is being reviewed. The diff it shows follows the active
+         tab, so switching files switches which change is on screen -->
     <div class="pane">
       <Editor :files :active :readonly="!!proposal" :highlight :language-of="languageOf" />
-      <Diff :if="proposal" :files :after="proposal" :highlight :language-of="languageOf" />
+      <Diff :if="proposal" :files :name="files[active]?.name" :after="proposal" :highlight :language-of="languageOf" />
     </div>
 
     <!-- `exercise` isn't rendered: it's how the preview tells "the user typed"
@@ -238,6 +250,20 @@
   .tab.active { background: var(--code-bg); opacity: 1; font-weight: 600; }
   .ghost { color: var(--accent); }
   .ghost:hover { background: var(--code-bg); }
+  /* apply commits the reviewed solution, so it reads as the primary action next
+     to cancel's ghost - same tab bar the diff overlays */
+  .accept {
+    padding: 0.3em 0.9em;
+    border: 0;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .accept:hover { filter: brightness(1.1); }
 
   .pane {
     position: relative;
