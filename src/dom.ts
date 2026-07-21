@@ -173,10 +173,16 @@ function sanitizeNode(node: HTMLElement, depth: number, allowUrl?: AllowUrl): HT
 }
 
 export function sanitizeHTML(html: string, options?: SanitizeOptions): string {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
+  // parsear con <template> en vez de con DOMParser: el contenido de un template
+  // es un documento inerte igual (ni scripts ni imágenes se ejecutan al asignar
+  // innerHTML), pero el parseo de fragmento conserva el espacio en blanco inicial
+  // que el modo "before body" de un documento completo descartaría - así una
+  // primera línea indentada (un diff, un <pre>) llega con su sangría intacta
+  const template = document.createElement('template');
+  template.innerHTML = html;
   const container = document.createElement('div');
 
-  appendSanitizedChildren(doc.body, container, 0, options?.allowUrl);
+  appendSanitizedChildren(template.content, container, 0, options?.allowUrl);
 
   return container.innerHTML;
 }

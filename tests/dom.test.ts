@@ -125,6 +125,10 @@ describe("sanitizeHTML", () => {
     expect(sanitizeHTML("before <b>bold</b> after")).toBe("before <b>bold</b> after")
   })
 
+  it("preserves leading whitespace (a full-document parse would drop it)", () => {
+    expect(sanitizeHTML("    indented <b>x</b>")).toBe("    indented <b>x</b>")
+  })
+
   it("strips disallowed tags entirely, including their content markup", () => {
     expect(sanitizeHTML('<p>safe</p><script>evil()</script>')).toBe("<p>safe</p>")
   })
