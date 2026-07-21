@@ -46,6 +46,14 @@ Adds classes on top of the static `class` attribute — it never replaces it. Th
 - **array** — entries normalized recursively, so strings and objects mix.
 - Anything else (`null`, `undefined`, `false`, numbers) contributes nothing — so `:class="cond && 'active'"` reads naturally.
 
+For the common case of one class gated by one condition, `:class.<name>="expr"` is a shorthand for `:class="{ <name>: expr }"` — it toggles the single class `<name>` on when `expr` is truthy:
+
+```html
+<div class="drop" :class.active="dropping"></div>
+```
+
+The name is lowercased by the HTML parser, so write it kebab-case (`:class.is-active`) — a camelCase name (`:class.isActive`) arrives as `isactive`. It coexists with `:class` and with other `:class.<name>` on the same element; the sets union.
+
 Only classes the binding added are ever removed: the static list survives every re-run, even when the expression names one of its classes and then drops it (`class="btn" :class="{ btn: cond }"` keeps `btn` when `cond` goes false).
 
 Don't combine it with a `class` key inside `:attrs` on the same element — `:attrs` rewrites the whole attribute on each of its runs, wiping whatever `:class` added. On a nested-component tag `:class` is ignored, like `:text`/`:html`.

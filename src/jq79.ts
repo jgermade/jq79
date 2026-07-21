@@ -97,6 +97,12 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
 
 
 const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed"])
+
+// a control attribute is one the static-attr loop and nested-component prop
+// collection must skip. The set holds the fixed names; `:class.<name>` (the
+// single-flag shorthand) is open-ended, so it's matched by prefix - it can't be
+// enumerated into the set
+const isControlAttr = (attr: string): boolean => CONTROL_ATTRS.has(attr) || attr.startsWith(":class.")
 // `item in items`, `item, i in items`, `(value, key) in props` - the second
 // binding is the array index or the object key, parens optional (Vue-style).
 // The list expression can span lines, so it matches [\s\S] rather than `.`
@@ -238,7 +244,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   Object.entries(node.attrs).forEach(([attr, value]) => {
     // the parent's scope stamp is stamped on every template element, this tag
     // included - it's not a prop, and the child renders under its own scope
-    if (attr === SCOPE_ATTR || CONTROL_ATTRS.has(attr)) return
+    if (attr === SCOPE_ATTR || isControlAttr(attr)) return
     if (attr.startsWith("@")) {
       events.push([attr, value])
     } else if (attr === ":model" || attr.startsWith(":model.")) {
@@ -491,7 +497,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       if (!(el instanceof HTMLUnknownElement || node.tag.includes("-"))) {
         console.warn(`jq79: ${key} on <${node.tag}> does nothing - :model binds component tags only (for now)`)
       }
-    } else if (!CONTROL_ATTRS.has(key)) el.setAttribute(key, value)
+    } else if (!isControlAttr(key)) el.setAttribute(key, value)
   })
 
   const bindExpr = node.attrs[":attrs"]
@@ -509,17 +515,27 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     })
   }
 
-  // :class="expr" adds classes on top of the static `class` attribute. Only
-  // classes this binding added are ever removed: the static list survives
-  // every re-run, even when the expression names one of its classes and then
-  // drops it (class="btn" :class="{ btn: cond }" keeps btn on false)
+  // :class="expr" adds classes on top of the static `class` attribute, and
+  // :class.<name>="expr" is the single-flag shorthand for `{ <name>: expr }`
+  // (the name routed through classNames, so an empty `:class.` can't reach
+  // classList.add, which throws on ""). Both feed one effect and one set of
+  // added classes: only classes this binding added are ever removed, so the
+  // static list survives every re-run, even when the expression names one of
+  // its classes and then drops it (class="btn" :class="{ btn: cond }" keeps
+  // btn on false)
   const classExpr = node.attrs[":class"]
-  if (classExpr !== undefined) {
+  const classToggles = Object.entries(node.attrs)
+    .filter(([key]) => key.startsWith(":class."))
+    .map(([key, expr]): [string, string] => [key.slice(":class.".length), expr])
+  if (classExpr !== undefined || classToggles.length) {
     const staticClasses = new Set(classNames(node.attrs.class ?? ""))
     let bound: string[] = []
 
     fx.effect(() => {
-      const next = classNames(evalExpr(classExpr, scope))
+      const next = classExpr !== undefined ? classNames(evalExpr(classExpr, scope)) : []
+      classToggles.forEach(([name, expr]) => {
+        if (evalExpr(expr, scope)) next.push(...classNames(name))
+      })
       bound.forEach(name => {
         if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
       })

@@ -164,6 +164,80 @@ describe("renderComponent", () => {
 
       expect($$(container, "li").map(el => el.classList.contains("done"))).toEqual([true, true])
     })
+
+    it("toggles a single class with the :class.<name> shorthand", () => {
+      const component = parseComponent(`<div class="drop" :class.active="dropping"></div>`)
+      const data = $reactive({ dropping: false })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      expect(el.className).toBe("drop")
+
+      data.dropping = true
+      expect(el.classList.contains("drop")).toBe(true)
+      expect(el.classList.contains("active")).toBe(true)
+
+      data.dropping = false
+      expect(el.className).toBe("drop")
+    })
+
+    it("unions a :class.<name> shorthand with a bare :class", () => {
+      const component = parseComponent(`<div :class="theme" :class.active="on"></div>`)
+      const data = $reactive({ theme: "dark", on: true })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      expect(el.classList.contains("dark")).toBe(true)
+      expect(el.classList.contains("active")).toBe(true)
+
+      data.theme = "light"
+      data.on = false
+      expect(el.className).toBe("light")
+    })
+
+    it("supports several :class.<name> toggles, including kebab names", () => {
+      const component = parseComponent(`<div :class.busy="busy" :class.is-open="open"></div>`)
+      const data = $reactive({ busy: true, open: false })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      expect(el.classList.contains("busy")).toBe(true)
+      expect(el.classList.contains("is-open")).toBe(false)
+
+      data.busy = false
+      data.open = true
+      expect(el.classList.contains("busy")).toBe(false)
+      expect(el.classList.contains("is-open")).toBe(true)
+    })
+
+    it("never removes a static class a :class.<name> toggle names then drops", () => {
+      const component = parseComponent(`<div class="active" :class.active="on"></div>`)
+      const data = $reactive({ on: true })
+
+      container.appendChild(renderComponent(component, data))
+      const el = container.querySelector("div")!
+
+      data.on = false
+      expect(el.classList.contains("active")).toBe(true)
+    })
+
+    it("works per item on a :each element", () => {
+      const component = parseComponent(
+        `<li :each="task in tasks" :key="task.id" :class.done="task.done">{{ task.name }}</li>`
+      )
+      const data = $reactive({ tasks: [{ id: 1, name: "a", done: false }, { id: 2, name: "b", done: true }] })
+
+      container.appendChild(renderComponent(component, data))
+
+      expect($$(container, "li").map(el => el.classList.contains("done"))).toEqual([false, true])
+
+      data.tasks[0].done = true
+
+      expect($$(container, "li").map(el => el.classList.contains("done"))).toEqual([true, true])
+    })
   })
 
   describe("multi-line expressions", () => {
