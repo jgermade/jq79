@@ -1572,6 +1572,8 @@ export class Component79 {
   }
 }
 
+export { Component79 as C79 }
+
 export const parseComponent = (component: string): Component79 => new Component79(component)
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
