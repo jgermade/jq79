@@ -742,7 +742,9 @@ describe("the tutorial app", () => {
     const added = [...host.querySelectorAll(".row.add")]
     expect(added.length).toBeGreaterThan(0)
     expect(host.querySelector(".row.add .hljs-name")).toBeTruthy()
-    expect(host.querySelector(".diff-name")?.textContent).toBe(ENTRY)
+    // the diff has no label of its own: it shows whichever file the active tab
+    // names, which on open is the entry
+    expect(host.querySelector(".tab.active")?.textContent).toBe(ENTRY)
 
     // but the editor still holds the user's code, and can't be typed into behind
     // the overlay
@@ -807,14 +809,17 @@ describe("the tutorial app", () => {
     expect(result()).toMatch(/\n\s+border-radius: 8px;\n/)
   })
 
-  it("says so when the code already matches the solution", async () => {
+  it("offers no apply when the code already matches the solution", async () => {
     await solve(host)
     ghostButton(host, "solution").click()
     await settle()
 
-    expect(host.querySelectorAll(".row").length).toBe(0)
-    expect(host.querySelector(".diff-title")?.textContent).toContain("already matches")
+    // the diff still opens on the active file, but every line is unchanged: no
+    // additions or deletions to read
+    expect(host.querySelector(".diff")).toBeTruthy()
+    expect(host.querySelectorAll(".row.add, .row.del").length).toBe(0)
     // nothing to accept, so the only way out is dismissing it
     expect(host.querySelector(".accept")).toBeFalsy()
+    expect(ghostButton(host, "cancel")).toBeTruthy()
   })
 })
