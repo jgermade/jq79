@@ -1055,11 +1055,6 @@ const releaseStyle = (content: string) => {
   }
 }
 
-// library helpers injected into setup scripts. They behave like extra
-// globals: a same-named scope property (render data or a top-level
-// declaration) shadows them
-const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive }
-
 // scripts run inside `with (scriptScope)`, where scriptScope's `has` trap
 // claims ownership of every name that is neither a real global, an injected
 // library helper, nor one of the internal helpers. This makes `with` route ALL
@@ -1575,6 +1570,11 @@ export class Component79 {
 export { Component79 as C79 }
 
 export const parseComponent = (component: string): Component79 => new Component79(component)
+
+// library helpers injected into setup scripts. They behave like extra
+// globals: a same-named scope property (render data or a top-level
+// declaration) shadows them
+const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, Component79 }
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
 // below; classic scripts run before deferred module ones, so the flag is always
