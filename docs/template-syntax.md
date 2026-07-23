@@ -215,6 +215,23 @@ The child's whole side is one emit, straight from the template if it's simple en
 - The echo terminates: the writeback re-runs the prop sync, but the store skips same-value writes and `:value` never rewrites the string an input already holds — the caret stays put.
 - Component tags only (for now): on a plain element it warns and does nothing. The `:value` + `@input` pair above is the native-element way.
 
+## `:props` — spreading an object as props
+
+Passes an object's own properties to a child as props, instead of naming each one. `...expr` is sugar for it:
+
+```html
+<SdkInfo :props="sdk" />                 <!-- name, version, arch, … as props -->
+<SdkInfo ...sdk />                        <!-- same thing -->
+<SdkInfo ...sdk :arch="'arm64'" />        <!-- spread, then override one -->
+```
+
+- **Live**, like any prop: adding, changing or removing a property of the object updates the child, and a key that disappears un-sets the prop.
+- **Precedence is source order**, the JS object-spread rule — a binding written *after* a spread wins, one written *before* it loses. `...sdk :arch="x"` is `{ ...sdk, arch: x }` (explicit wins); `:arch="x" ...sdk` is `{ ...sdk }` last (the spread wins). `:model` always wins, as its own section promises.
+- **`...expr` takes an identifier or member path** (`...sdk`, `...props.user`) and, unlike the dotted directives (`:class.`, `:model.`), **preserves camelCase** — `...userData` works. It's rewritten to `:props` before HTML parsing, from the raw source, so the parser's name-lowercasing never touches the expression. A call (`...getProps()`) isn't taken; use the value form `:props="getProps()"`.
+- **A bare `:props="x"` may appear once per tag** — two are identical attribute *names*, and the HTML parser keeps only the first. To compose several spreads use the `...` sugar (which suffixes them internally) or hand-written `:props.0`/`:props.1`: `...a ...b` merges both, `:props="a" :props="b"` silently drops the second.
+- A spread whose expression isn't an object contributes nothing (fails closed, like `:with`), so an `await`-pending value spreads once it resolves.
+- Component tags only, like `:model` — on a plain element it's ignored.
+
 ## Nested components
 
 A tag matching a **PascalCase scope variable** renders as a child component. Components reach the scope through render data, `:setup` props, or an `await import(...)` in the setup script:

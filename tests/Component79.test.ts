@@ -934,6 +934,28 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("leaves `...` alone outside attribute-name position (text, values, script)", () => {
+      const captured: any[] = []
+      const jq79 = new Component79(
+        `<script :setup>const [first, ...rest] = [1, 2, 3]; recordRest(rest)</script>` +
+          `<p class="txt">carga...espera</p>` +
+          `<button class="btn" @click="capture([...items])">go</button>`,
+      ).render({
+        items: [1, 2],
+        recordRest: (r: number[]) => captured.push(r),
+        capture: (r: number[]) => captured.push(r),
+      }).mount(host)
+
+      // text with a literal ellipsis is not an attribute - untouched
+      expect($(host, ".txt")?.textContent).toBe("carga...espera")
+      // the script's rest-destructuring ran as written
+      expect(captured[0]).toEqual([2, 3])
+      // a genuine JS spread inside a handler value still evaluates
+      ;($(host, ".btn") as HTMLButtonElement).click()
+      expect(captured[1]).toEqual([1, 2])
+      jq79.destroy()
+    })
+
     it("deduplicates identical head styles across instances via refcounting", () => {
       const parts = new Component79(`<span class="s">x</span><style>.s { color: red; }</style>`)
       const stylesBefore = document.head.querySelectorAll("style").length
@@ -1416,6 +1438,112 @@ describe("Component79", () => {
       expect(input.value).toBe("abc")
       expect(error).not.toHaveBeenCalled()
       error.mockRestore()
+      jq79.destroy()
+    })
+  })
+
+  describe(":props on component tags", () => {
+    it("spreads an object's own properties as props", () => {
+      const card = new Component79(`<div class="card">{{ name }} / {{ version }}</div>`)
+      const jq79 = new Component79(`<div><Card :props="sdk" /></div>`)
+        .render({ sdk: { name: "gba", version: "1.0" }, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("gba / 1.0")
+      jq79.destroy()
+    })
+
+    it("keeps spread props live: a change to the object reaches the child", () => {
+      const card = new Component79(`<div class="card">{{ version }}</div>`)
+      const jq79 = new Component79(`<div><Card :props="sdk" /></div>`)
+        .render({ sdk: { name: "gba", version: "1.0" }, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("1.0")
+      jq79.data!.sdk.version = "2.0"
+      expect($(host, ".card")?.textContent).toBe("2.0")
+      jq79.destroy()
+    })
+
+    it("clears a prop when the key disappears from the object", () => {
+      const card = new Component79(`<div class="card">[{{ badge }}]</div>`)
+      const jq79 = new Component79(`<div><Card :props="sdk" /></div>`)
+        .render({ sdk: { badge: "beta" }, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("[beta]")
+      delete jq79.data!.sdk.badge
+      expect($(host, ".card")?.textContent).toBe("[]")
+      jq79.destroy()
+    })
+
+    it("adds a prop when a new key appears on the object", () => {
+      const card = new Component79(`<div class="card">[{{ badge }}]</div>`)
+      const jq79 = new Component79(`<div><Card :props="sdk" /></div>`)
+        .render({ sdk: {} as Record<string, string>, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("[]")
+      jq79.data!.sdk.badge = "new"
+      expect($(host, ".card")?.textContent).toBe("[new]")
+      jq79.destroy()
+    })
+
+    it("lets an explicit prop after the spread win (JS object-spread order)", () => {
+      const card = new Component79(`<div class="card">{{ name }}</div>`)
+      const jq79 = new Component79(`<div><Card :props="sdk" :name="'override'" /></div>`)
+        .render({ sdk: { name: "spread" }, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("override")
+      jq79.destroy()
+    })
+
+    it("lets the spread after an explicit prop win (JS object-spread order)", () => {
+      const card = new Component79(`<div class="card">{{ name }}</div>`)
+      const jq79 = new Component79(`<div><Card :name="'explicit'" :props="sdk" /></div>`)
+        .render({ sdk: { name: "spread" }, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("spread")
+      jq79.destroy()
+    })
+
+    it("composes multiple spreads (the ...sugar's distinct suffixes), later winning", () => {
+      // two bare :props on one tag can't work - identical attribute names, and
+      // the HTML parser keeps only the first. The ...sugar suffixes them
+      // (:props.0/:props.1) precisely so several spreads survive parsing
+      const card = new Component79(`<div class="card">{{ a }}{{ b }}{{ c }}</div>`)
+      const jq79 = new Component79(`<div><Card ...one ...two /></div>`)
+        .render({ one: { a: "1", b: "x" }, two: { b: "2", c: "3" }, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("123")
+      jq79.destroy()
+    })
+
+    it("spreads nothing when the expression isn't an object - fails closed like :with", () => {
+      const card = new Component79(`<div class="card">[{{ name }}]</div>`)
+      const jq79 = new Component79(`<div><Card :props="maybe" /></div>`)
+        .render({ maybe: undefined as any, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("[]")
+      // and it spreads once the object arrives (an await-pending value)
+      jq79.data!.maybe = { name: "ready" }
+      expect($(host, ".card")?.textContent).toBe("[ready]")
+      jq79.destroy()
+    })
+
+    it("desugars `...expr` to a value-based spread, camelCase intact", () => {
+      const card = new Component79(`<div class="card">{{ userName }}</div>`)
+      const jq79 = new Component79(`<div><Card ...sdkInfo /></div>`)
+        .render({ sdkInfo: { userName: "ada" }, Card: card }).mount(host)
+
+      // the expression rode through DOMParser in a value, so `sdkInfo`/`userName`
+      // kept their case - a name-position `...sdkInfo` would have lowercased
+      expect($(host, ".card")?.textContent).toBe("ada")
+      jq79.destroy()
+    })
+
+    it("mixes `...expr` sugar with an explicit prop, source order deciding", () => {
+      const card = new Component79(`<div class="card">{{ label }}</div>`)
+      const jq79 = new Component79(`<div><Card :label="'first'" ...opts /></div>`)
+        .render({ opts: { label: "spread" }, Card: card }).mount(host)
+
+      expect($(host, ".card")?.textContent).toBe("spread")
       jq79.destroy()
     })
   })

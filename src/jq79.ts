@@ -96,13 +96,14 @@ const interpolate = (template: string, scope: Record<string, any>): string =>
   template.replace(/{{\s*([\s\S]+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
 
 
-const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed"])
+const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed", ":props"])
 
 // a control attribute is one the static-attr loop and nested-component prop
 // collection must skip. The set holds the fixed names; `:class.<name>` (the
-// single-flag shorthand) is open-ended, so it's matched by prefix - it can't be
-// enumerated into the set
-const isControlAttr = (attr: string): boolean => CONTROL_ATTRS.has(attr) || attr.startsWith(":class.")
+// single-flag shorthand) and `:props.<n>` (one spread among several) are
+// open-ended, so they're matched by prefix - they can't be enumerated into the set
+const isControlAttr = (attr: string): boolean =>
+  CONTROL_ATTRS.has(attr) || attr.startsWith(":class.") || attr.startsWith(":props.")
 // `item in items`, `item, i in items`, `(value, key) in props` - the second
 // binding is the array index or the object key, parens optional (Vue-style).
 // The list expression can span lines, so it matches [\s\S] rather than `.`
@@ -241,10 +242,24 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   const props: Record<string, string> = {} // prop name -> expression in parent scope
   const models: Record<string, string> = {} // model name -> assignable expression in parent scope
   const events: Array<[string, string]> = [] // @attr (modifiers included) -> handler expression
+  // named props AND spreads in source order - what a :props merge folds over so
+  // precedence follows the JS object-spread rule (later wins). `name` absent
+  // marks a spread: the whole object's properties, not one binding
+  const sources: Array<{ name?: string; expr: string }> = []
+  let hasSpread = false
   Object.entries(node.attrs).forEach(([attr, value]) => {
     // the parent's scope stamp is stamped on every template element, this tag
     // included - it's not a prop, and the child renders under its own scope
-    if (attr === SCOPE_ATTR || isControlAttr(attr)) return
+    if (attr === SCOPE_ATTR) return
+    if (attr === ":props" || attr.startsWith(":props.")) {
+      // :props="obj" spreads obj's own properties as props; :props.<n> is one
+      // spread among several (the `...obj` sugar rewrites to it - see
+      // expandPropsSpread), the suffix only keeping the attribute names distinct
+      hasSpread = true
+      sources.push({ expr: value })
+      return
+    }
+    if (isControlAttr(attr)) return
     if (attr.startsWith("@")) {
       events.push([attr, value])
     } else if (attr === ":model" || attr.startsWith(":model.")) {
@@ -257,8 +272,12 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     } else if (attr.startsWith(":")) {
       const name = kebabToCamel(attr.slice(1))
       props[name] = value || name
+      sources.push({ name, expr: value || name })
     } else {
-      props[kebabToCamel(attr)] = JSON.stringify(value)
+      const name = kebabToCamel(attr)
+      const expr = JSON.stringify(value)
+      props[name] = expr
+      sources.push({ name, expr })
     }
   })
 
@@ -286,6 +305,25 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${node.tag}> will be dropped`)
     }
   })
+
+  // the full prop set the child gets, resolved in source order: each named prop
+  // sets one key, each spread merges an object's own properties, later sources
+  // overwriting earlier (the JS object-spread rule). :model bindings apply last,
+  // so they win - the same precedence the collision warning above promises. A
+  // spread expression that isn't an object contributes nothing (fail closed,
+  // like :with), so an `await`-pending object spreads once it resolves
+  const resolveProps = (): Record<string, any> => {
+    const out: Record<string, any> = {}
+    sources.forEach(({ name, expr }) => {
+      if (name !== undefined) out[name] = evalExpr(expr, scope)
+      else {
+        const obj = evalExpr(expr, scope)
+        if (obj !== null && typeof obj === "object") Object.assign(out, obj)
+      }
+    })
+    Object.entries(models).forEach(([name, expr]) => { out[modelProp(name)] = evalExpr(expr, scope) })
+    return out
+  }
 
   let current: Component79 | null = null
   let currentDef: Component79 | null = null
@@ -352,9 +390,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // explicit re-emit)
     events.forEach(([attr, expr]) => wireTagEvent(instance, attr, expr, scope))
 
-    const seed = untracked(() =>
-      Object.fromEntries(Object.entries(props).map(([name, expr]) => [name, evalExpr(expr, scope)]))
-    )
+    const seed = untracked(resolveProps)
     // mounting into a fragment attaches no shadow root of its own: a
     // shadow-rendered child keeps its <style> elements inline, next to the DOM
     // they style, and the parent's shadow root is what scopes both
@@ -363,9 +399,27 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     endAnchor.parentNode!.insertBefore(holder, endAnchor)
 
     const syncFx = createEffectScope(scope)
-    Object.entries(props).forEach(([name, expr]) => {
-      syncFx.effect(() => { (instance.data as Record<string, any>)[name] = evalExpr(expr, scope) })
-    })
+    // without a spread the prop set is fixed and known: one effect per prop, so
+    // a change to one prop re-syncs only that prop. A spread's key set is
+    // dynamic and its precedence is positional, so it can't be resolved a key at
+    // a time across independent effects (whichever re-ran last would win) - one
+    // effect re-merges everything in order and writes the diff, clearing keys a
+    // spread has dropped since last run. Named props are always in the merge, so
+    // they're never cleared; the extra cost is confined to spread-using tags
+    if (hasSpread) {
+      let written: string[] = []
+      syncFx.effect(() => {
+        const next = resolveProps()
+        const nextKeys = Object.keys(next)
+        written.forEach(key => { if (!(key in next)) (instance.data as Record<string, any>)[key] = undefined })
+        nextKeys.forEach(key => { (instance.data as Record<string, any>)[key] = next[key] })
+        written = nextKeys
+      })
+    } else {
+      Object.entries(props).forEach(([name, expr]) => {
+        syncFx.effect(() => { (instance.data as Record<string, any>)[name] = evalExpr(expr, scope) })
+      })
+    }
 
     childFx = syncFx
     current = instance
@@ -864,6 +918,41 @@ const expandSelfClosingTags = (src: string): string =>
     )
     .join("")
 
+// a start tag with its attributes, quote-aware so a ">" inside a value doesn't
+// end it early; and a single spread attribute in name position (preceded by
+// start-or-whitespace), its expression an identifier or member path
+const OPEN_TAG_RE = /<([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
+const ATTR_SPREAD_RE = /"[^"]*"|'[^']*'|(^|\s)\.\.\.([A-Za-z_$][\w$.]*)/g
+
+// `...expr` as an attribute is sugar for :props="expr" (spread an object's
+// properties as props - see renderNestedComponent). Rewritten BEFORE DOM
+// parsing, into a value-based :props.<n>, because the HTML parser lowercases
+// attribute *names*: with the expression in the name, `...userData` would arrive
+// as `...userdata` and resolve to nothing. Moving it into a value - which the
+// parser leaves untouched - keeps camelCase intact. Same pre-parse string move
+// as expandSelfClosingTags, with the same defenses against rewriting code that
+// only looks like a spread: <script>/<style> bodies are split out (a JS `...rest`
+// there is not an attribute), only a start tag's interior is scanned (text
+// between tags is safe), and quoted values are consumed whole so a genuine JS
+// spread in a value (@click="f(...args)", :x="{ ...a }") is skipped. The <n>
+// suffix (per tag) only keeps several spreads' attribute names distinct. A call
+// (`...getProps()`) stops at the paren and is left alone - use :props="expr()"
+const expandPropsSpread = (src: string): string =>
+  src
+    .split(RAW_BLOCK_RE)
+    .map((chunk, i) =>
+      i % 2 === 1
+        ? chunk
+        : chunk.replace(OPEN_TAG_RE, (_match, tag: string, attrs: string) => {
+            let n = 0
+            const rewritten = attrs.replace(ATTR_SPREAD_RE, (whole, space: string | undefined, expr: string | undefined) =>
+              expr === undefined ? whole : `${space}:props.${n++}="${expr}"`
+            )
+            return `<${tag}${rewritten}>`
+          })
+    )
+    .join("")
+
 // <style scoped> support. Every element of the component's own template is
 // stamped with data-jq79="<hash>" and the style's selectors are rewritten to
 // require that attribute, so its rules can't reach anything the component
@@ -947,8 +1036,11 @@ const parseComponentString = (component: string): ComponentParts => {
   // </style>
 
   // parsed as the content of a <template> so leading <script>/<style> tags
-  // aren't reparented into <head> by the HTML parser
-  const parsedDOM = new DOMParser().parseFromString(`<template>${expandSelfClosingTags(component)}</template>`, "text/html")
+  // aren't reparented into <head> by the HTML parser. Both pre-DOM string
+  // rewrites run here: `...expr` -> :props.<n>="expr" first (it reads the raw
+  // camelCase before the parser can lowercase names), then self-closing tags
+  const prepared = expandSelfClosingTags(expandPropsSpread(component))
+  const parsedDOM = new DOMParser().parseFromString(`<template>${prepared}</template>`, "text/html")
   const root = parsedDOM.querySelector("template") as HTMLTemplateElement
 
   const scripts: TagBlock[] = []
