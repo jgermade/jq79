@@ -1,0 +1,17 @@
+<script :setup>
+  const Card = await import("./Card.html")
+
+  let profile = {
+    name: "Ada",
+    role: "admin",
+    status: "online",
+  }
+</script>
+
+<h2>Profile</h2>
+
+<Card ...profile />
+
+<style>
+  h2 { font: bold 1.2rem system-ui, sans-serif; margin: 0 0 0.6em; }
+</style>

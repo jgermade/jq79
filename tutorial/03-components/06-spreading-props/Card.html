@@ -1,0 +1,14 @@
+<script :setup="{ name = '—', role = '—', status = '—' }"></script>
+
+<article>
+  <strong>{{ name }}</strong>
+  <span class="role">{{ role }}</span>
+  <span class="status" :class.online="status === 'online'">{{ status }}</span>
+</article>
+
+<style>
+  article { display: flex; gap: 0.5em; align-items: baseline; padding: 0.4em 0; }
+  .role { font-size: 0.85em; color: #59636e; }
+  .status { margin-left: auto; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.04em; color: #9198a1; }
+  .status.online { color: #1a7f37; }
+</style>

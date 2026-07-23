@@ -193,6 +193,19 @@ describe("tutorial", () => {
     expect(cards[1].querySelector("strong")?.textContent).toBe("Linus")
   })
 
+  it("03-components/06: spreads the whole profile object into the card as props", async () => {
+    mount(solutionOf("03-components/06-spreading-props"), host)
+    await tick()
+
+    const card = host.shadowRoot!.querySelector("article")!
+
+    // each of the object's properties arrived as its own prop - none named on the tag
+    expect(card.querySelector("strong")?.textContent).toBe("Ada")
+    expect(card.querySelector(".role")?.textContent).toBe("admin")
+    expect(card.querySelector(".status")?.textContent).toBe("online")
+    expect(card.querySelector(".status")?.classList.contains("online")).toBe(true)
+  })
+
   it("01-basics/04: drives the button's attributes, the status text and its class", () => {
     mount(solutionOf("01-basics/04-attributes"), host)
     const button = host.shadowRoot!.querySelector("button")!
