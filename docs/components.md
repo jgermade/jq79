@@ -123,3 +123,16 @@ Notes:
 const jq79 = await Component79.fetch("/components/user-card.html")
 jq79.mount("#app", { userId: 42 })
 ```
+
+Given an array of URLs it fetches them all at once and resolves to the
+components in the same order, so one `await` destructures them:
+
+```js
+const [Header, UserCard] = await Component79.fetch([
+  "/components/header.html",
+  "/components/user-card.html",
+])
+```
+
+Like `Promise.all`, the first failure rejects the whole call — fetch the URLs
+separately if you want one 404 to leave the rest usable.

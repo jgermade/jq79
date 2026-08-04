@@ -209,6 +209,32 @@ describe("Component79", () => {
     jq79.destroy()
   })
 
+  it("fetch() takes an array of URLs and resolves to the components in order", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({ ok: true, text: async () => `<div class="f">${url}</div>` }))
+    )
+
+    const [a, b] = await Component79.fetch(["/a.html", "/b.html"])
+
+    a.render().mount(host)
+    expect($(host, ".f")?.textContent).toBe("/a.html")
+    a.destroy()
+
+    b.render().mount(host)
+    expect($(host, ".f")?.textContent).toBe("/b.html")
+    b.destroy()
+  })
+
+  it("fetch() with an array rejects if any URL fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({ ok: url !== "/missing.html", status: 404, text: async () => "<p/>" }))
+    )
+
+    await expect(Component79.fetch(["/component.html", "/missing.html"])).rejects.toThrow("404")
+  })
+
   it("fetch() rejects on a non-ok response", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, text: async () => "" })))
 

@@ -1324,6 +1324,14 @@ export const enableHotReload = (): void => {
 
 type EmitListener = (event: CustomEvent, payload: any) => void
 
+const fetchComponent = async (url: string): Promise<Component79> => {
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
+  // the URL names the component's scripts in devtools, and is where the
+  // browser will look for the source when a breakpoint lands in one
+  return new Component79(await response.text(), { filename: url })
+}
+
 // a parsed single-file component. Typical lifecycle:
 //
 //   const jq79 = new Component79(src)   // or await Component79.fetch(url)
@@ -1424,12 +1432,13 @@ export class Component79 {
     return true
   }
 
-  static async fetch(url: string): Promise<Component79> {
-    const response = await fetch(url)
-    if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
-    // the URL names the component's scripts in devtools, and is where the
-    // browser will look for the source when a breakpoint lands in one
-    return new Component79(await response.text(), { filename: url })
+  static fetch(url: string): Promise<Component79>
+  static fetch(urls: string[]): Promise<Component79[]>
+  // an array of URLs fetches them all at once and resolves to the components in
+  // the same order, so one await destructures them - and, like Promise.all, the
+  // first failure rejects the whole thing
+  static fetch(urls: string | string[]): Promise<Component79 | Component79[]> {
+    return Array.isArray(urls) ? Promise.all(urls.map(fetchComponent)) : fetchComponent(urls)
   }
 
   // subscribes to this instance's $emit events, on top of the DOM CustomEvent
