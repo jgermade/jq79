@@ -97,6 +97,16 @@ Note that ES modules are cached: every `import` of the same file yields the
 same instance. Mounting that one instance in two places *moves* it — clone
 with `new Component79(imported)` when you want independent copies.
 
+A file that declares [several components](components.md#several-components-in-one-file)
+exports them by name, next to its own as the default:
+
+```js
+import List, { Row } from "./list.html"
+```
+
+Only top-level `<template name="…">` blocks are exported, and only
+PascalCase names — the same ones the runtime accepts.
+
 ## Which imports are claimed
 
 Only imports that could not mean anything else:
@@ -165,6 +175,11 @@ Editing a component file updates it in place during `vite dev`:
 
 One caveat: an instance that is both directly mounted *and* used as a nested
 definition only refreshes the direct mount.
+
+For a file that declares several components, the edit re-renders the file's own
+component, and its children come back from the same reparse. A component
+imported **by name** from another module is the nested-definition case above:
+that module keeps the pre-edit definition until the page reloads.
 
 The swap itself is the runtime's, not the plugin's — the same one the
 [dev server](dev-server.md) drives for components fetched at runtime. There it

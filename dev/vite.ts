@@ -105,6 +105,44 @@ const hoistableImports = (source: string, include: RegExp): string[] => {
   return [...specifiers]
 }
 
+// any start or end tag, quote-aware so a ">" inside an attribute value doesn't
+// end it early
+const TAG_RE = /<(\/?)([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
+const NAME_ATTR_RE = /\bname\s*=\s*(?:"([^"]*)"|'([^']*)')/i
+const COMPONENT_NAME_RE = /^[A-Z][A-Za-z0-9]*$/
+const VOID_ELEMENTS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input",
+  "link", "meta", "param", "source", "track", "wbr",
+])
+
+// the components a file declares: its *top-level* <template name="…"> blocks,
+// which the emitted module re-exports by name. Depth is tracked because only
+// the top level declares - a <template> nested in the markup is a plain inert
+// element the runtime leaves alone, and exporting it would name something that
+// never exists. Script and style bodies are cut out first, so a "<" in JS or a
+// selector can't be read as a tag
+const declaredComponents = (source: string): string[] => {
+  const markup = source.replace(SCRIPT_BLOCK_RE, "").replace(STYLE_BLOCK_RE, "")
+  const names: string[] = []
+  let depth = 0
+
+  for (const [, closing, tag, attrs] of markup.matchAll(TAG_RE)) {
+    if (closing) {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    const selfClosing = /\/\s*$/.test(attrs) || VOID_ELEMENTS.has(tag.toLowerCase())
+    if (depth === 0 && !selfClosing && tag.toLowerCase() === "template") {
+      const declared = attrs.match(NAME_ATTR_RE)
+      const name = declared?.[1] ?? declared?.[2]
+      // the runtime warns about the ones this skips (nameless, not PascalCase)
+      if (name && COMPONENT_NAME_RE.test(name)) names.push(name)
+    }
+    if (!selfClosing) depth++
+  }
+  return names
+}
+
 // a <style> block with its attribute string, so `lang` can be read and the
 // content replaced. Attribute values are matched as quoted chunks so a ">"
 // inside one doesn't end the tag early
@@ -156,6 +194,14 @@ const compileStyleBlocks = async (
 // Component79, matching what runtime fetch resolves to); everything else as
 // a namespace (matching native import()).
 //
+// A file's <template name="…"> components are re-exported by name, so the
+// module shape is the one the file already has: default plus named. They read
+// off the instance, which is where the runtime hangs them - so in dev they are
+// bound to the *first* evaluation's definitions and a module that imports one
+// by name keeps the pre-edit child until the page reloads. The file's own
+// component patches in place, and its rendered children come from the reparse,
+// so this only shows in a component imported by name from another file.
+//
 // In dev, `hot.data` carries the exported instance across updates: importers
 // hold a reference to the *first* module evaluation's instance, so later
 // evaluations patch that same instance in place instead of exporting a new one
@@ -204,6 +250,7 @@ if (import.meta.hot) {
 }
 
 export default component
+${declaredComponents(source).map(name => `export const ${name} = component.${name}`).join("\n")}
 `
 }
 

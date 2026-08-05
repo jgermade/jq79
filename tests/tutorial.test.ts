@@ -206,6 +206,17 @@ describe("tutorial", () => {
     expect(card.querySelector(".status")?.classList.contains("online")).toBe(true)
   })
 
+  it("03-components/07: renders the tree with a component the same file declares, recursively", async () => {
+    mount(solutionOf("03-components/07-one-file"), host)
+    await tick()
+
+    const entries = [...host.shadowRoot!.querySelectorAll(".entry > span")].map(el => el.textContent)
+
+    // the nested folder's own children are rendered by the same component
+    expect(entries).toEqual(["jq79.ts", "components", "Card.html", "List.html", "dom.ts"])
+    expect(host.shadowRoot!.querySelectorAll(".folder")).toHaveLength(1)
+  })
+
   it("01-basics/04: drives the button's attributes, the status text and its class", () => {
     mount(solutionOf("01-basics/04-attributes"), host)
     const button = host.shadowRoot!.querySelector("button")!

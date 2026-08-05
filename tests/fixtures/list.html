@@ -1,0 +1,10 @@
+<script :setup>
+  let rows = ["a", "b"]
+</script>
+
+<ul class="list"><Row :each="label in rows" :label="label" /></ul>
+
+<template name="Row">
+  <script :setup="{ label }"></script>
+  <li class="row">{{ label }}</li>
+</template>

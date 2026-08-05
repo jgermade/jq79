@@ -243,6 +243,59 @@ describe("jq79 vite plugin", () => {
     })
   })
 
+  describe("multi-template files", () => {
+    it("re-exports a file's <template name> components by name", async () => {
+      const file = fixture("list.html")
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain("export default component")
+      expect(code).toContain("export const Row = component.Row")
+    })
+
+    it("only exports the top-level declarations", async () => {
+      const { code } = await plugin.load.call(
+        {},
+        `${fixture("list.html")}?jq79`
+      )
+      // one export, from the one top-level <template name="Row">
+      expect(code.match(/^export const /gm)).toHaveLength(1)
+    })
+
+    it("bundles the file, and both components render", async () => {
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        plugins: [jq79()],
+        resolve: { alias: { jq79: runtimePath } },
+        build: {
+          write: false,
+          minify: false,
+          lib: { entry: fixture("list-app.js"), formats: ["es"], fileName: "list-app" },
+        },
+      })
+      const { code } = (Array.isArray(result) ? result[0] : result).output[0]
+
+      const dir = resolve("node_modules/.cache/jq79-tests")
+      await mkdir(dir, { recursive: true })
+      const bundlePath = join(dir, "list-app.mjs")
+      await writeFile(bundlePath, code)
+      const { List, Row } = await import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+
+      // the file's own component renders the sibling it declares, no import
+      const container = document.createElement("div")
+      List.mount(container)
+      expect([...container.querySelectorAll(".row")].map(el => el.textContent)).toEqual(["a", "b"])
+      List.destroy()
+
+      // and the named export is that same definition, mountable on its own
+      expect(Row).toBe(List.siblings.Row)
+      const alone = document.createElement("div")
+      Row.mount(alone, { label: "solo" })
+      expect(alone.querySelector(".row")?.textContent).toBe("solo")
+      Row.destroy()
+    })
+  })
+
   describe("vite build integration", () => {
     it("bundles an imported .html component that mounts and renders", async () => {
       const result: any = await build({

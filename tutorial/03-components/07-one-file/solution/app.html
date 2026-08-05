@@ -1,0 +1,36 @@
+<script :setup>
+  let tree = {
+    label: "src",
+    children: [
+      { label: "jq79.ts" },
+      { label: "components", children: [{ label: "Card.html" }, { label: "List.html" }] },
+      { label: "dom.ts" },
+    ],
+  }
+</script>
+
+<h2>{{ tree.label }}</h2>
+
+<ul class="tree">
+  <Folder :each="child in tree.children" :node="child" />
+</ul>
+
+<template name="Folder">
+  <script :setup="{ node }"></script>
+
+  <li class="entry">
+    <span :class="{ folder: node.children }">{{ node.label }}</span>
+    <ul :if="node.children">
+      <Folder :each="child in node.children" :node="child" />
+    </ul>
+  </li>
+
+  <style scoped>
+    .folder { font-weight: 600; }
+  </style>
+</template>
+
+<style>
+  h2 { font: bold 1.1rem system-ui, sans-serif; margin: 0 0 0.4em; }
+  .tree, .tree ul { list-style: none; margin: 0; padding-left: 1.1em; }
+</style>

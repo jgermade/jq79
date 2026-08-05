@@ -216,6 +216,12 @@ const findComponentKey = (scope: Record<string, any>, tag: string): string | nul
   return null
 }
 
+// how deep a component may nest inside itself before the runtime calls it a
+// cycle. Deeper than any real tree, shallower than the JS stack: a truncated
+// render with an error on the console beats a stack overflow with none
+const MAX_NESTING_DEPTH = 200
+let nestingDepth = 0
+
 // <MyComponent :user :title="'str'"></MyComponent> - renders a child
 // component instance at this position. Props: `:name="expr"` evaluates expr
 // in the parent scope (`:name` alone is shorthand for `:name="name"`), plain
@@ -329,9 +335,34 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   let currentDef: Component79 | null = null
   let childFx: EffectScope | null = null
 
+  // a usage site that resolves to no component renders nothing, which is
+  // deliberate - `undefined` while an `await import(...)` is in flight has to
+  // wait quietly, and the child appears when it lands. Two cases can never
+  // resolve, though, and both are wiring mistakes worth naming: a value that
+  // isn't a component (and so will never become one by waiting), and a name
+  // the component declared as a prop that the parent passed nothing for. Once
+  // each, per usage site: an effect re-runs
+  const reported = new Set<string>()
+  const reportUnresolved = (value: any) => {
+    if (value === undefined || value === null) {
+      const unfilled: Set<string> | undefined = (scope as any)[UNFILLED_PROPS]
+      if (!unfilled?.has(key) || reported.has("unfilled")) return
+      reported.add("unfilled")
+      console.error(
+        `jq79: <${node.tag}> is declared as a prop and the parent passed nothing - nothing renders here. ` +
+        `Pass it (:${key}="…"), or drop it from the signature to use the one declared in this file.`
+      )
+      return
+    }
+    if (reported.has("type")) return
+    reported.add("type")
+    console.error(`jq79: <${node.tag}> is ${typeof value}, not a component - nothing renders here`)
+  }
+
   fx.effect(() => {
     const value = evalExpr(key, scope)
     const nextDef = value instanceof Component79 ? value : null
+    if (!nextDef) reportUnresolved(value)
     if (nextDef === currentDef) return
 
     childFx?.dispose()
@@ -349,6 +380,11 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       styles: nextDef.styles,
       modules: nextDef.modules,
       filename: nextDef.filename,
+      // its file's other components, and which of them it is: without the
+      // first a child rendered here loses the siblings its definition could
+      // see, and without the second hot reload can't tell it what it is
+      siblings: nextDef.siblings,
+      name: nextDef.name,
     })
     // the writeback half of :model - one event, one contract. The name is
     // normalized like the attribute was (kebab->camel; absent means default),
@@ -395,7 +431,24 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // shadow-rendered child keeps its <style> elements inline, next to the DOM
     // they style, and the parent's shadow root is what scopes both
     const holder = document.createDocumentFragment()
-    ;(shadow ? instance.renderShadow(seed) : instance.render(seed)).mount(holder)
+    // rendering a child happens on this same stack, so a component that
+    // renders itself recurses as deep as its data does - and a cycle in that
+    // data would recurse until the JS stack gave out, ~900 identical frames
+    // naming nothing. Cut and named instead, exactly like the effect runner
+    // cuts an effect that wakes itself
+    if (nestingDepth >= MAX_NESTING_DEPTH) {
+      console.error(
+        `jq79: <${node.tag}> is ${MAX_NESTING_DEPTH} levels deep inside itself; giving up here. ` +
+        "A component that renders itself stops when its data stops - is there a cycle in it?"
+      )
+      return
+    }
+    nestingDepth++
+    try {
+      ;(shadow ? instance.renderShadow(seed) : instance.render(seed)).mount(holder)
+    } finally {
+      nestingDepth--
+    }
     endAnchor.parentNode!.insertBefore(holder, endAnchor)
 
     const syncFx = createEffectScope(scope)
@@ -889,6 +942,15 @@ type ComponentParts = {
   // where this component came from (a URL for fetch(), a path for the vite
   // plugin). Names the setup scripts in devtools - see scriptSourceUrl
   filename?: string
+  // the components the file's <template name="..."> blocks declared, by name.
+  // Every component parsed out of one file holds this same map - itself
+  // included - which is what makes a sibling usable without an import, and
+  // what lets a <template name="TreeNode"> render a <TreeNode>
+  siblings?: Record<string, Component79>
+  // which of the file's components this is: a template's name, or undefined
+  // for the file's own. The file is the hot-reload unit, so a reparse hands
+  // each live instance the parts belonging to the component it is
+  name?: string
 }
 
 const VOID_ELEMENTS = new Set([
@@ -1015,9 +1077,16 @@ const scopeCss = (css: string, scope: string): string => {
   return Array.from(sheet.cssRules).map(rule => rule.cssText).join("\n")
 }
 
+// a component name has to be PascalCase to be usable: findComponentKey only
+// ever considers capitalized scope keys, so a lowercase name would declare a
+// component no tag could reference. It is also what keeps the named exports
+// from colliding with a definition's own fields, which are all lowercase
+const COMPONENT_NAME_RE = /^[A-Z][A-Za-z0-9]*$/
+
 // converts a string of HTML into an AST representation of the component:
 // - template: the non-script/style top-level elements, as TemplateNodes
 // - scripts/styles: { attrs, content } blocks in source order
+// - siblings: the components its top-level <template name="..."> declared
 const parseComponentString = (component: string): ComponentParts => {
   // example
   // <script :setup="{ fname, lname }">
@@ -1043,11 +1112,64 @@ const parseComponentString = (component: string): ComponentParts => {
   const parsedDOM = new DOMParser().parseFromString(`<template>${prepared}</template>`, "text/html")
   const root = parsedDOM.querySelector("template") as HTMLTemplateElement
 
+  // a top-level <template> declares another component of this file; everything
+  // else is this one's own
+  const own: Element[] = []
+  const declarations: HTMLTemplateElement[] = []
+  Array.from(root.content.children).forEach(el => {
+    if (el.tagName === "TEMPLATE") declarations.push(el as HTMLTemplateElement)
+    else own.push(el)
+  })
+
+  // the file's own component hashes the whole file: every component in it
+  // re-renders on any edit anyway (the file is the hot-reload unit), so a
+  // stamp that changes when a sibling is edited costs nothing, and scopeHash
+  // gets to keep hashing the source it was handed
+  const parts = componentPartsFrom(own, component)
+
+  // one map, shared by reference: it is filled below, after each definition
+  // has already been handed it, so every component of the file sees all the
+  // others *and itself* - which is what makes a recursive component possible
+  const siblings: Record<string, Component79> = {}
+  declarations.forEach(el => {
+    const name = el.getAttribute("name")
+    // ignored rather than fatal, like every other malformed thing here: a bad
+    // save mid-typing must not take the page down, least of all under HMR
+    if (name === null) {
+      console.warn("jq79: a top-level <template> without a name declares nothing and was ignored")
+      return
+    }
+    if (!COMPONENT_NAME_RE.test(name)) {
+      console.warn(
+        `jq79: <template name="${name}"> was ignored - a component name has to be PascalCase, ` +
+        "or no tag could ever reference it (only capitalized names resolve as components)"
+      )
+      return
+    }
+    if (name in siblings) {
+      console.warn(`jq79: two <template name="${name}"> in one file; the second was ignored`)
+      return
+    }
+    // its own source is its own scope: a named template is a shadow root
+    // inside a shadow root, so the file's scoped rules stop at its boundary
+    // and its own stop there too
+    siblings[name] = new Component79({ ...componentPartsFrom(Array.from(el.content.children), el.innerHTML), siblings, name })
+  })
+  if (Object.keys(siblings).length) parts.siblings = siblings
+
+  return parts
+}
+
+// the script/style/markup split of one component's top-level elements, with
+// <style scoped> resolved against the source those elements came from - the
+// whole file for its own component, a <template>'s contents for a named one,
+// so the two get different stamps and neither can style the other
+const componentPartsFrom = (elements: Element[], hashSource: string): ComponentParts => {
   const scripts: TagBlock[] = []
   const styles: TagBlock[] = []
   const template: TemplateNode[] = []
 
-  Array.from(root.content.children).forEach(el => {
+  elements.forEach(el => {
     const block: TagBlock = { attrs: elementAttrs(el), content: el.textContent ?? "" }
 
     if (el.tagName === "SCRIPT") scripts.push(block)
@@ -1074,7 +1196,7 @@ const parseComponentString = (component: string): ComponentParts => {
   // in something that isn't CSS yet would only garble what devtools shows
   const isScoped = (style: TagBlock) => "scoped" in style.attrs && !("lang" in style.attrs)
   if (styles.some(isScoped)) {
-    const scope = scopeHash(component)
+    const scope = scopeHash(hashSource)
     stampScope(template, scope)
     styles.forEach(style => {
       if (isScoped(style)) style.scoped = scopeCss(style.content, scope)
@@ -1193,6 +1315,50 @@ const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
   })
 }
 
+// every prop name a component's scripts declare, across both script modes.
+// Read before the store exists, because what a component declares decides
+// which of its file's sibling components it can still see: declaring a name
+// says it comes from the parent, so the file's own definition of that name is
+// deliberately not in this component's scope
+const declaredPropNames = (scripts: TagBlock[]): Set<string> => {
+  const names = new Set<string>()
+  scripts.forEach(script => {
+    const declarations = parseFactoryProps(script.content) ?? parsePropsPattern(script.attrs[":setup"])
+    declarations?.forEach(({ name }) => names.add(name))
+  })
+  return names
+}
+
+// the sibling components this one resolves by name, or null when there are
+// none left to resolve. They go on the store's *prototype* rather than in it:
+// the component-key scan walks the chain, so <Row> resolves; they stay out of
+// the data, so Object.keys, snapshots and spreads never see them; and an own
+// key shadows a prototype one, so a prop the parent did pass wins for free
+const siblingsInScope = (
+  siblings: Record<string, Component79> | undefined,
+  declared: Set<string>
+): Record<string, Component79> | null => {
+  if (!siblings) return null
+  // null-prototype, for the same reason storeApi is: `key in scope` must not
+  // start answering true for toString, constructor and the rest
+  const inScope: Record<string, Component79> = Object.create(null)
+  let any = false
+  Object.entries(siblings).forEach(([name, component]) => {
+    if (declared.has(name)) return
+    inScope[name] = component
+    any = true
+  })
+  return any ? inScope : null
+}
+
+// names a component declared as props and the parent passed nothing for. Such
+// a name can never become a component later - there is no binding on the tag
+// to update it - so a <Tag> reading one is a wiring mistake that can be named
+// on sight, unlike the `undefined` of an import still in flight. Symbol-keyed
+// and non-enumerable: it rides the scope chain (so an :each item scope finds
+// it too) without ever showing up as data
+const UNFILLED_PROPS = Symbol("jq79.unfilledProps")
+
 // default-import interop for factory scripts: real modules expose .default,
 // while importing an .html component resolves to the Component79 itself
 const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.default : mod)
@@ -1297,6 +1463,13 @@ export const hotUpdate = (filename: string, src: string): number => {
   // parsed once and shared by every instance - which is already what a
   // definition and the clones :component makes from it do
   const parts = parseComponentString(src)
+  // the file is the hot-reload unit, so one reparse serves every component it
+  // declares: an instance is handed the parts of the component it *is*, by
+  // name. A name that is no longer in the file (a <template> renamed or
+  // deleted) has no parts to be given, and only a reload can fix the page
+  let orphaned = false
+  const partsFor = (instance: Component79): ComponentParts | null =>
+    instance.name === undefined ? parts : parts.siblings?.[instance.name] ?? null
 
   let rerendered = 0
   for (const [name, refs] of hotRegistry) {
@@ -1307,11 +1480,16 @@ export const hotUpdate = (filename: string, src: string): number => {
         refs.delete(ref) // collected since the last update
         continue
       }
-      if (instance.hotReplace(parts)) rerendered++
+      const next = partsFor(instance)
+      if (!next) {
+        orphaned = true
+        continue
+      }
+      if (instance.hotReplace(next)) rerendered++
     }
     if (!refs.size) hotRegistry.delete(name)
   }
-  return rerendered
+  return orphaned ? 0 : rerendered
 }
 
 // starts tracking instances, so hotUpdate can find them. jq79/dev's client
@@ -1349,6 +1527,14 @@ export class Component79 {
   modules?: Record<string, any>
   // the component's origin, used to name its scripts in devtools
   filename?: string
+  // the other components declared in the same file, by name (see
+  // ComponentParts.siblings). They are also this definition's own properties,
+  // so `const { Row } = await Component79.fetch(url)` reaches them
+  siblings?: Record<string, Component79>
+  // this component's name inside its file, for the components a <template>
+  // declared; the file's own component has none - it is the default, and a
+  // default is named by whoever imports it
+  name?: string
 
   data: ReactiveDeepData<Record<string, any>> | null = null
 
@@ -1380,7 +1566,27 @@ export class Component79 {
     this.styles = parts.styles
     this.modules = options.modules ?? (typeof src === "string" ? undefined : src.modules)
     this.filename = options.filename ?? (typeof src === "string" ? undefined : src.filename)
+    this.siblings = parts.siblings
+    this.name = parts.name
+    this.adoptSiblings()
     hotRegister(this) // a no-op unless the page enabled hot reload
+  }
+
+  // the parser builds a file's sibling definitions before anyone has told it
+  // where the file came from, so whoever holds the parse hands its origin down
+  // - and keeps doing it after a hot reload, which parses the file afresh.
+  // Without it a reloaded child would have no filename, and an instance with
+  // no filename is not tracked: the next edit would never reach it
+  private adoptSiblings() {
+    if (!this.siblings) return
+    Object.entries(this.siblings).forEach(([name, sibling]) => {
+      sibling.filename ??= this.filename
+      sibling.modules ??= this.modules
+      // the file's own component also *is* the file: its named components hang
+      // off it as properties, which is what `const { Row } = …` reads (and
+      // what the bundler re-exports by name)
+      if (!this.name) (this as any)[name] = sibling
+    })
   }
 
   // swaps this component's parsed parts for `src`'s and, if it is on the page,
@@ -1418,6 +1624,11 @@ export class Component79 {
     this.template = parts.template
     this.scripts = parts.scripts
     this.styles = parts.styles
+    // the file's other components as they are now: the next render resolves
+    // <Row> against these, so a parent picks up an edited child even when the
+    // child's own instances are patched separately
+    this.siblings = parts.siblings
+    this.adoptSiblings()
     if (!rendered) return false // a definition: its clones re-render themselves
 
     this.renderWith(data, shadow)
@@ -1469,7 +1680,18 @@ export class Component79 {
   private renderWith(data: Record<string, any>, shadow: boolean): this {
     this.destroy()
 
-    const store = $reactive({ ...data })
+    // what this component can see of its file's other components, and which of
+    // its declared props arrived empty - both decided by the signature, before
+    // the store exists (see siblingsInScope / UNFILLED_PROPS)
+    const declared = declaredPropNames(this.scripts)
+    const siblingScope = siblingsInScope(this.siblings, declared)
+    const raw: Record<string, any> = siblingScope
+      ? Object.assign(Object.create(siblingScope), data)
+      : { ...data }
+    const unfilled = new Set([...declared].filter(name => !(name in data)))
+    if (unfilled.size) Object.defineProperty(raw, UNFILLED_PROPS, { value: unfilled })
+
+    const store = $reactive(raw)
     const fx = createEffectScope(store)
     this.data = store
     this.fx = fx
@@ -1545,7 +1767,13 @@ export class Component79 {
     const defer = (code: string) => `await $mounted();${code}`
 
     this.scripts.forEach((script, index) => {
-      const instanceHelpers = { $emit, $mounted, $self, $$self }
+      // the file's other components are passed as parameters of the compiled
+      // script, not just left on the store's prototype: a factory script runs
+      // as plain lexical JS with no `with`, so a bare `Row` in one would
+      // resolve to nothing at all. In setup mode this composes with `with` -
+      // scriptScope's `has` declines any name that is a helper, so the
+      // parameter is what the name resolves to
+      const instanceHelpers = { $emit, $mounted, $self, $$self, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
       const factoryCode = transformFactoryScript(script.content)
       if (factoryCode !== null) {

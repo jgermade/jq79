@@ -117,6 +117,95 @@ Notes:
 - `mountShadow` remains the stronger option overall: a shadow root also blocks outside CSS from coming *in*, which `scoped` deliberately doesn't.
 - `<style lang="scss">` (and `less`/`stylus`) is compiled by the [Vite plugin](vite-plugin.md#style-lang--css-preprocessors) and composes with `scoped` — but it only works for components that go through the bundler, unlike everything else here.
 
+## Several components in one file
+
+A `.html` file is one component — the markup at its top level. A `<template name="…">`
+block declares **another component of the same file**, which every component in the
+file can use by name, with no import:
+
+```html
+<!-- list.html -->
+<script :setup>
+  let rows = ["a", "b"]
+</script>
+
+<ul class="list"><Row :each="label in rows" :label="label" /></ul>
+
+<template name="Row">
+  <script :setup="{ label }"></script>
+  <li class="row">{{ label }}</li>
+</template>
+```
+
+They come out of the file too, so the shape is default plus named — the shape of a
+JS module:
+
+```js
+import List, { Row } from "./list.html"        // through the Vite plugin
+
+const List = await Component79.fetch("./list.html")   // at runtime
+const { Row } = List
+```
+
+The file's own component has no name of its own: it's the default, and a default is
+named by whoever imports it. A component that has to be referenced by name inside
+the file is a `<template name>`.
+
+Inside a `<template>` everything works as it does in a file of its own: `<script>`
+in either mode, `<style>`, props, a signature. Only the top level of the file
+declares — a `<template>` nested in the markup is left alone — and names must be
+PascalCase, which is what lets a tag reference them at all. A `<template>` that
+declares nothing usable is ignored with a warning rather than a throw.
+
+### It can render itself
+
+A named template sees every component in its file, itself included, so a component
+can recurse — which a component in a file of its own can't do:
+
+```html
+<template name="TreeNode">
+  <script :setup="{ node }"></script>
+  <li>
+    {{ node.label }}
+    <ul :if="node.children">
+      <TreeNode :each="child in node.children" :node="child" />
+    </ul>
+  </li>
+</template>
+```
+
+Recursion stops where the data stops. A **cycle** in that data would recurse until
+the JS stack gave out, so the runtime cuts it at 200 levels with a console error
+naming the tag: a truncated tree, not a dead page.
+
+### The signature decides where a name comes from
+
+If two things could answer to `<Button>` — the file's own, and one the parent
+passes — the signature says which, and you can read it off the source:
+
+```html
+<script :setup></script>              <!-- not declared: the file's own -->
+<script :setup="{ Button }">          <!-- declared: the parent's -->
+```
+
+Not declaring it doesn't lock the parent out: a prop it passes still wins, so
+that's the substitutable form, with the file's own as the default. Declaring it is
+a contract — the component is saying this one comes from outside. Use it as a tag
+and pass nothing, and that's an error on the console (and nothing rendered), because
+nothing can arrive later to fill it. A declared name that is never used as a tag is
+nobody's business, and says nothing.
+
+### Styles stop at each template
+
+A named template is a shadow root inside a shadow root: the file is a container,
+not a stylesheet. Its `<style scoped>` reaches its own elements only, and the file's
+scoped rules don't reach into it — a `li { … }` at the top of the file does **not**
+style a `Row` that renders an `<li>`, even though both are in one file that reads
+like one document.
+
+Hot reload treats the file as the unit: an edit anywhere in it re-renders every
+live component that came from it, each with its own new parts.
+
 ## Loading remote components
 
 ```js

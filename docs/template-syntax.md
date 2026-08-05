@@ -260,3 +260,22 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - `await import('/x.html')` returns a `Component79` (non-`.html` URLs fall through to native `import()`). While the promise is pending nothing renders; the child appears when it resolves. Under the [Vite plugin](vite-plugin.md), literal relative specifiers resolve from the bundle instead of fetching.
 - Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.
 - Self-closing tags work: jq79 expands `<MyComponent />` (and `<div />`) into explicit open+close pairs before HTML parsing, since the HTML parser would otherwise treat them as unclosed. Void elements (`<img />`, `<br />`) and `<script>`/`<style>` contents are left untouched.
+- A tag can also resolve to a component the same file declares with `<template name="…">`, with no import at all — see [several components in one file](components.md#several-components-in-one-file).
+
+## `<template name>` — another component in this file
+
+At the **top level** of a component file, `<template name="Row">` declares another component of that file rather than markup:
+
+```html
+<ul><Row :each="label in rows" :label="label" /></ul>
+
+<template name="Row">
+  <li class="row">{{ label }}</li>
+</template>
+```
+
+- Only the top level declares. A `<template>` nested inside the markup is not a declaration and is left as it is.
+- The name must be PascalCase, or no tag could reference it.
+- A top-level `<template>` that declares nothing usable (no name, a lowercase name, a name already taken) is dropped with a console warning — never a throw.
+
+See [components](components.md#several-components-in-one-file) for what the declared components can see, how they are exported, and how a signature decides between one of them and a prop of the same name.
