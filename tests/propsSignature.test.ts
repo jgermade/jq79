@@ -175,3 +175,88 @@ describe("component signature: factory mode", () => {
     component.destroy()
   })
 })
+
+// A signature is a contract in both directions: what the component takes, and
+// what it doesn't. A prop it never declared is dropped rather than quietly
+// added to its store, so a wrong name at the usage site fails where it was
+// written - `{{ label }}` renders empty, `{{ user.name }}` throws on the
+// member access. Only a component that declared a signature filters: a bare
+// `<script :setup>` declares nothing and stays permissive.
+describe("component signature: undeclared props are dropped", () => {
+  it("drops what a closed signature doesn't declare", () => {
+    const child = new Component79(`<script :setup="{}"></script><p class="out">[{{ extra }}]</p>`)
+    const app = new Component79(`<div><Child :extra="'x'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[]")
+    app.destroy()
+  })
+
+  it("keeps what it declares and drops the rest", () => {
+    const child = new Component79(
+      `<script :setup="{ label }"></script><p class="out">[{{ label }}][{{ extra }}]</p>`
+    )
+    const app = new Component79(`<div><Child :label="'kept'" :extra="'dropped'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[kept][]")
+    app.destroy()
+  })
+
+  it("keeps dropping on later updates, not just the first render", () => {
+    const child = new Component79(
+      `<script :setup="{ label }"></script><p class="out">[{{ label }}][{{ extra }}]</p>`
+    )
+    const app = new Component79(`<div><Child :label="a" :extra="b" /></div>`)
+    const container = mount(app, { Child: child, a: "one", b: "no" })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[one][]")
+
+    app.data!.a = "two"
+    app.data!.b = "still no"
+    expect(container.querySelector(".out")?.textContent).toBe("[two][]")
+    app.destroy()
+  })
+
+  it("narrows a spread to the declared props", () => {
+    const child = new Component79(
+      `<script :setup="{ name }"></script><p class="out">[{{ name }}][{{ version }}]</p>`
+    )
+    const app = new Component79(`<div><Child ...sdk /></div>`)
+    const container = mount(app, { Child: child, sdk: { name: "jq79", version: "0.4.16" } })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[jq79][]")
+    app.destroy()
+  })
+
+  it("stays permissive when no signature was declared", () => {
+    const child = new Component79(`<script :setup></script><p class="out">[{{ extra }}]</p>`)
+    const app = new Component79(`<div><Child :extra="'x'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[x]")
+    app.destroy()
+  })
+
+  it("filters a factory signature too", () => {
+    const child = new Component79(
+      `<script>export default ({ label }) => {}</script><p class="out">[{{ label }}][{{ extra }}]</p>`
+    )
+    const app = new Component79(`<div><Child :label="'kept'" :extra="'dropped'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[kept][]")
+    app.destroy()
+  })
+
+  it("never filters the root's own data - it isn't props", () => {
+    // render(data) seeds app state and carries the component definitions the
+    // template resolves; filtering it would break both
+    const child = new Component79(`<script :setup="{ label }"></script><p class="out">{{ label }}</p>`)
+    const app = new Component79(`<script :setup="{}"></script><div><Child :label="who" /></div>`)
+    const container = mount(app, { Child: child, who: "Ada" })
+
+    expect(container.querySelector(".out")?.textContent).toBe("Ada")
+    app.destroy()
+  })
+})

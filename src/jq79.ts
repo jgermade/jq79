@@ -680,7 +680,12 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // explicit re-emit)
     events.forEach(([attr, expr]) => wireTagEvent(instance, attr, expr, scope))
 
-    const seed = untracked(resolveProps)
+    // what this component actually takes, decided by its signature. Applied to
+    // every path that writes a prop - the seed here and both sync paths below -
+    // or an undeclared name would be filtered on the first render and reappear
+    // on the next update
+    const declared = declaredPropSet(instance.scripts)
+    const seed = pickDeclared(untracked(resolveProps), declared)
     // mounting into a fragment attaches no shadow root of its own: a
     // shadow-rendered child keeps its <style> elements inline, next to the DOM
     // they style, and the parent's shadow root is what scopes both
@@ -716,7 +721,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     if (hasSpread) {
       let written: string[] = []
       syncFx.effect(() => {
-        const next = resolveProps()
+        const next = pickDeclared(resolveProps(), declared)
         const nextKeys = Object.keys(next)
         written.forEach(key => { if (!(key in next)) (instance.data as Record<string, any>)[key] = undefined })
         nextKeys.forEach(key => { (instance.data as Record<string, any>)[key] = next[key] })
@@ -724,6 +729,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       })
     } else {
       Object.entries(props).forEach(([name, expr]) => {
+        if (declared !== null && !declared.has(name)) return
         syncFx.effect(() => { (instance.data as Record<string, any>)[name] = evalExpr(expr, scope) })
       })
     }
@@ -1648,6 +1654,36 @@ const declaredPropNames = (scripts: TagBlock[]): Set<string> => {
     declarations?.forEach(({ name }) => names.add(name))
   })
   return names
+}
+
+// the same names, but null when NO script declared a signature at all - the
+// distinction declareProps already keeps, and the only one that can decide
+// whether to filter what a parent passes: `<script :setup>` declares nothing
+// and stays permissive, `<script :setup="{}">` is a closed signature that
+// declares zero props and takes none
+const declaredPropSet = (scripts: TagBlock[]): Set<string> | null => {
+  let names: Set<string> | null = null
+  scripts.forEach(script => {
+    const declarations = parseFactoryProps(script.content) ?? parsePropsPattern(script.attrs[":setup"])
+    if (!declarations) return
+    const into = (names ??= new Set())
+    declarations.forEach(({ name }) => into.add(name))
+  })
+  return names
+}
+
+// drops the props a component didn't declare, so an undeclared name is simply
+// absent from its store rather than quietly present: `{{ label }}` renders
+// empty and `{{ user.name }}` throws on the member access, both at the usage
+// site that got the name wrong. A null signature keeps everything - see
+// declaredPropSet. Silent by design: the main source of extra keys is a
+// `:props` spread of an object wider than the component (`...sdk`), where
+// taking only the declared few is the point, not a mistake to report
+const pickDeclared = (props: Record<string, any>, declared: Set<string> | null): Record<string, any> => {
+  if (declared === null) return props
+  const out: Record<string, any> = {}
+  Object.keys(props).forEach(key => { if (declared.has(key)) out[key] = props[key] })
+  return out
 }
 
 // the sibling components this one resolves by name, or null when there are

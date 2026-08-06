@@ -55,6 +55,33 @@ The signature declares the prop names, pre-declares them on the store (so the te
 
 A default fills a prop that is `undefined` — the parent's value always wins — and it is applied **once, at setup**. If the parent later sets the prop to `undefined`, the default does not come back.
 
+### A signature is a contract both ways
+
+A component that declares a signature takes **only** what it declared. A prop it never named is dropped at the usage site rather than added to its store:
+
+```html
+<!-- Field.html -->
+<script :setup="{ label }"></script>
+<p>[{{ label }}][{{ extra }}]</p>
+```
+
+```html
+<Field :label="'kept'" :extra="'dropped'" />   <!-- renders [kept][] -->
+```
+
+That makes a wrong name fail where it was written: `{{ extra }}` renders empty, and `{{ extra.id }}` throws on the member access. It applies to updates too, not just the first render, and it narrows a spread to the props the component actually takes:
+
+```html
+<Card ...sdk />   <!-- sdk has a dozen keys; Card gets the ones it declared -->
+```
+
+Dropping is silent — narrowing a spread is the normal case, not a mistake worth reporting.
+
+Two things are never filtered:
+
+- **A component with no signature.** `<script :setup>` (or a factory's `_`) declares nothing and stays permissive, taking whatever the parent passes.
+- **The root's own `render(data)` / `mount(el, data)`.** That's app state, and it carries the component definitions the template resolves — it isn't props.
+
 ### The empty slot is part of the declaration
 
 Position is fixed, so a factory that takes no props still leaves the hole — and which hole it leaves means something:
@@ -65,7 +92,7 @@ export default ({}, { $effect }) => {}   // a closed signature: this component h
 export default ({ user })        => {}   // only props — don't write a ctx you don't use
 ```
 
-Same distinction in setup mode: `<script :setup>` declares nothing, `<script :setup="{}">` declares zero props. A component with no signature behaves exactly as it always has.
+Same distinction in setup mode: `<script :setup>` declares nothing, `<script :setup="{}">` declares zero props — and so takes none, dropping anything a parent passes. A component with no signature behaves exactly as it always has.
 
 ### Destructuring copies (the one asymmetry)
 
