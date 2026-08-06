@@ -4,6 +4,8 @@ A mini reactive component library: single-file `.html` components, Svelte-style
 setup scripts, fine-grained proxy reactivity. No compiler, no virtual DOM, no
 dependencies — `new Component79(src)` parses and mounts at runtime.
 
+Be concise in your answers. I prefer examples over long text.
+
 The source is small enough to read in a sitting: [`src/jq79.ts`](src/jq79.ts) is
 the core (parsing, rendering, components), with three leaf modules —
 [`dom.ts`](src/dom.ts), [`reactive.ts`](src/reactive.ts),

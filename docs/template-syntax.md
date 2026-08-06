@@ -52,7 +52,7 @@ For the common case of one class gated by one condition, `:class.<name>="expr"` 
 <div class="drop" :class.active="dropping"></div>
 ```
 
-The name is lowercased by the HTML parser, so write it kebab-case (`:class.is-active`) — a camelCase name (`:class.isActive`) arrives as `isactive`. It coexists with `:class` and with other `:class.<name>` on the same element; the sets union.
+Write it kebab-case (`:class.is-active`) or camelCase (`:class.isActive`) — the two are the same name (see [name casing](#name-casing)). It coexists with `:class` and with other `:class.<name>` on the same element; the sets union.
 
 Only classes the binding added are ever removed: the static list survives every re-run, even when the expression names one of its classes and then drops it (`class="btn" :class="{ btn: cond }"` keeps `btn` when `cond` goes false).
 
@@ -200,7 +200,7 @@ Props flow down, events flow up; `:model` wires both at once. The model's name r
 
 Each `:model[.name]="expr"` is two bindings:
 
-- **A live prop down**, named after the model — the modifier name (kebab-case in the attribute, camelCase in the child, like any prop), or `model` for the bare `:model`. The child reads it like any prop, and a parent write (`email = ""`) reaches the child's input.
+- **A live prop down**, named after the model — the modifier name, camelCase in the child whichever way it was written in the attribute (like any prop, see [name casing](#name-casing)), or `model` for the bare `:model`. The child reads it like any prop, and a parent write (`email = ""`) reaches the child's input.
 - **A writeback up**: the child emits `model:update` with `{ name?, value }`, and the matching model's expression is assigned the value. An omitted `name` means the default model — the bare `:model`. The expression must be an assignment target (`uname`, `user.name`); it's evaluated in the parent scope, so it writes the store reactively, and through a `:with` narrowing.
 
 The child's whole side is one emit, straight from the template if it's simple enough:
@@ -227,7 +227,7 @@ Passes an object's own properties to a child as props, instead of naming each on
 
 - **Live**, like any prop: adding, changing or removing a property of the object updates the child, and a key that disappears un-sets the prop.
 - **Precedence is source order**, the JS object-spread rule — a binding written *after* a spread wins, one written *before* it loses. `...sdk :arch="x"` is `{ ...sdk, arch: x }` (explicit wins); `:arch="x" ...sdk` is `{ ...sdk }` last (the spread wins). `:model` always wins, as its own section promises.
-- **`...expr` takes an identifier or member path** (`...sdk`, `...props.user`) and, unlike the dotted directives (`:class.`, `:model.`), **preserves camelCase** — `...userData` works. It's rewritten to `:props` before HTML parsing, from the raw source, so the parser's name-lowercasing never touches the expression. A call (`...getProps()`) isn't taken; use the value form `:props="getProps()"`.
+- **`...expr` takes an identifier or member path** (`...sdk`, `...props.user`) and **preserves camelCase exactly** — `...userData` spreads that object, and unlike a directive name it is an *expression*, so it is not kebab-normalized. It's rewritten to `:props` before HTML parsing, from the raw source, so the parser's name-lowercasing never touches it. A call (`...getProps()`) isn't taken; use the value form `:props="getProps()"`.
 - **A bare `:props="x"` may appear once per tag** — two are identical attribute *names*, and the HTML parser keeps only the first. To compose several spreads use the `...` sugar (which suffixes them internally) or hand-written `:props.0`/`:props.1`: `...a ...b` merges both, `:props="a" :props="b"` silently drops the second.
 - A spread whose expression isn't an object contributes nothing (fails closed, like `:with`), so an `await`-pending value spreads once it resolves.
 - Component tags only, like `:model` — on a plain element it's ignored.
@@ -256,7 +256,7 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - Props: `:name="expr"` evaluates in the parent scope; `:name` alone is shorthand for `:name="name"`; plain attributes pass as literal strings.
 - Props are **live**: when a parent expression's dependencies change (deeply), the new value is written into the child's store.
 - `@event` on the tag hears the child's `$emit`s, and `:model` binds two-way — see their sections above.
-- HTML lowercases everything, so matching ignores case and dashes: `<NestedComponent>` and `<nested-component>` both resolve `NestedComponent`, and `:user-name` becomes the `userName` prop.
+- HTML lowercases everything, so tag matching ignores case and dashes: `<NestedComponent>` and `<nested-component>` both resolve `NestedComponent`. Prop names are normalized too — `:user-name` and `:userName` both become the `userName` prop (see [name casing](#name-casing)).
 - `await import('/x.html')` returns a `Component79` (non-`.html` URLs fall through to native `import()`). While the promise is pending nothing renders; the child appears when it resolves. Under the [Vite plugin](vite-plugin.md), literal relative specifiers resolve from the bundle instead of fetching.
 - Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.
 - Self-closing tags work: jq79 expands `<MyComponent />` (and `<div />`) into explicit open+close pairs before HTML parsing, since the HTML parser would otherwise treat them as unclosed. Void elements (`<img />`, `<br />`) and `<script>`/`<style>` contents are left untouched.
@@ -295,7 +295,7 @@ The dot marks the named variant on both sides, like `:model.<name>` and `:class.
 | `:slot="{ item }"` on a component tag | names the default content binds |
 | `<template :slot.row="{ item }">` | content for a named slot, and its names |
 
-Names are kebab-case where written and camelCase where read: `<slot.header-bar>` ↔ `:slot.header-bar` ↔ `$slots.headerBar`.
+Names are camelCase where read, either casing where written: `<slot.header-bar>` and `<slot.headerBar>` are one slot, matched by `:slot.header-bar` or `:slot.headerBar`, asked about as `$slots.headerBar`.
 
 ### Scoped slots
 
@@ -346,3 +346,25 @@ At the **top level** of a component file, `<template name="Row">` declares anoth
 - A top-level `<template>` that declares nothing usable (no name, a lowercase name, a name already taken) is dropped with a console warning — never a throw.
 
 See [components](components.md#several-components-in-one-file) for what the declared components can see, how they are exported, and how a signature decides between one of them and a prop of the same name.
+
+## Name casing
+
+The HTML parser lowercases attribute and tag names before jq79 ever sees them, so a name written camelCase would arrive flattened (`:firstName` → `:firstname`) and land under the wrong key. jq79 rewrites camelCase names to kebab-case in the raw source, before parsing, so **both spellings mean the same name**:
+
+```html
+<Field :userName="who" />        <!-- same as :user-name -->
+<Field :model.firstName="who" /> <!-- same as :model.first-name -->
+<template :slot.headerBar>…</template>
+<slot.headerBar />               <!-- same as <slot.header-bar> -->
+```
+
+Whichever you write, the name is **camelCase where it's read** — the child's `userName` prop, `$slots.headerBar`, the `model:update` payload's `{ name: 'firstName' }`.
+
+Kebab-case is the house style in these docs, because it's what HTML looks like. camelCase is accepted so a prop doesn't have to change shape between the template and the script that reads it.
+
+What the rewrite does **not** touch:
+
+- **Expressions**, only names — a quoted value is left alone (`@click="a ? b : c"`, `style="color: red"`), and so is everything inside `<script>` and `<style>`.
+- **Component tags** (`<UserCard>`), which need no help: tag matching already ignores case and dashes.
+- **`...expr` spreads**, which are expressions, not names — `...userData` keeps its exact casing.
+- **`@event` names**, which are literal DOM event names: `@userSaved` still arrives as `usersaved` and will not match `$emit('userSaved')`. Write events kebab-case on both sides (`@user-saved` / `$emit('user-saved')`), or subscribe with `addEventListener` from a setup script.

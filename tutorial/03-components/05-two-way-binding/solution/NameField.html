@@ -1,4 +1,4 @@
-<script :setup></script>
+<script :setup="{ model = '' }"></script>
 
 <input class="field" :value="model" @input="$emit('model:update', { value: $event.target.value })">
 

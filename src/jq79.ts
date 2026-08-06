@@ -182,6 +182,12 @@ const wireTagEvent = (instance: Component79, attr: string, expr: string, scope: 
 
 const kebabToCamel = (name: string) => name.replace(/-(\w)/g, (_, c: string) => c.toUpperCase())
 
+// the inverse, used only by the pre-parse name rewrite (see expandNameCase):
+// uppercase ASCII letters only, never digits - `:props.0` is a generated
+// attribute name and splitting on digits would mangle it. Round-trips through
+// kebabToCamel, acronyms included: userID -> user-i-d -> userID
+const camelToKebab = (name: string) => name.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)
+
 // the stable boundaries of a rendered chunk. An element is its own handle, but
 // a fragment (a nested component: two anchors with the instance's DOM between
 // them) empties itself into the parent on insertion - after that its identity
@@ -289,10 +295,11 @@ type SlotMap = Record<string, SlotRenderer>
 // nested component is handed
 const SLOTS = Symbol("jq79.slots")
 
-// <slot>, <slot.header-bar>: the hole and its name. Names are kebab-case where
-// written (the HTML parser lowercases tag names and attribute modifiers alike)
-// and camelCase where read - <slot.header-bar> is :slot.header-bar is
-// $slots.headerBar
+// <slot>, <slot.header-bar>: the hole and its name. Names arrive kebab-case
+// whichever way they were authored (the HTML parser lowercases tag names and
+// attribute modifiers alike, so expandNameCase normalizes camelCase to kebab
+// before parsing) and are camelCase where read - <slot.header-bar> and
+// <slot.headerBar> are :slot.header-bar is $slots.headerBar
 const isSlotTag = (tag: string): boolean => tag === "slot" || tag.startsWith("slot.")
 
 const slotName = (suffix: string): string => (suffix ? kebabToCamel(suffix) : "default")
@@ -515,8 +522,8 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     } else if (attr === ":model" || attr.startsWith(":model.")) {
       // :model[.name]="expr" - two-way: a prop down plus a writeback listener
       // (wired below, once the instance exists). The modifier arrives
-      // lowercased from the HTML parser, so names are declared kebab-case;
-      // the bare :model binds the name "default"
+      // kebab-case whichever way it was authored (expandNameCase rewrote any
+      // camelCase before parsing); the bare :model binds the name "default"
       const name = attr === ":model" ? "default" : kebabToCamel(attr.slice(":model.".length))
       models[name] = value || (attr === ":model" ? "model" : name)
     } else if (attr.startsWith(":")) {
@@ -1277,6 +1284,53 @@ const expandPropsSpread = (src: string): string =>
     )
     .join("")
 
+// a `:`-prefixed attribute name in name position, and a </slot.name> closing
+// tag. Both quote-aware for the same reason ATTR_SPREAD_RE is: a colon inside
+// a value (@click="a ? b : c", style="color: red") is not an attribute name
+const ATTR_NAME_RE = /"[^"]*"|'[^']*'|(^|\s)(:[\w.$-]+)/g
+const CLOSE_SLOT_RE = /<\/slot\.([\w.$-]+)(\s*)>/gi
+const SLOT_TAG_RE = /^slot\./i
+
+// camelCase -> kebab-case for every name the HTML parser would lowercase,
+// BEFORE it gets the chance: `:firstName` would arrive as `:firstname` and
+// kebabToCamel (which is what reads these names back out) would have nothing
+// to un-kebab, so the prop, model or slot would silently land under the wrong
+// key. Rewriting to `:first-name` here means both spellings converge on the
+// same camelCase name downstream - the author picks, the runtime doesn't care.
+//
+// Runs FIRST among the pre-parse passes, which is what keeps it simple: it
+// never sees the `:props.<n>` that expandPropsSpread generates, and a
+// <slot.firstName /> is still one occurrence rather than the open+close pair
+// expandSelfClosingTags turns it into. Same defenses as the passes after it -
+// <script>/<style> bodies split out, only start-tag interiors scanned, quoted
+// values consumed whole.
+//
+// Two name positions, not one: attribute names (`:model.firstName`) and the
+// dotted tag names (`<slot.firstName>`), whose closing halves are rewritten
+// too or the parser sees a mismatched pair. Component tags are deliberately
+// left alone - findComponentKey already matches them case-insensitively with
+// dashes stripped, so <UserCard> needs no help and rewriting it would only
+// obscure what the author wrote
+const kebabTagName = (tag: string): string =>
+  SLOT_TAG_RE.test(tag) ? `slot.${camelToKebab(tag.slice("slot.".length))}` : tag
+
+const expandNameCase = (src: string): string =>
+  src
+    .split(RAW_BLOCK_RE)
+    .map((chunk, i) =>
+      i % 2 === 1
+        ? chunk
+        : chunk
+            .replace(OPEN_TAG_RE, (_match, tag: string, attrs: string) => {
+              const rewritten = attrs.replace(ATTR_NAME_RE, (whole, space: string | undefined, name: string | undefined) =>
+                name === undefined ? whole : `${space}${camelToKebab(name)}`
+              )
+              return `<${kebabTagName(tag)}${rewritten}>`
+            })
+            .replace(CLOSE_SLOT_RE, (_match, suffix: string, space: string) => `</slot.${camelToKebab(suffix)}${space}>`)
+    )
+    .join("")
+
 // <style scoped> support. Every element of the component's own template is
 // stamped with data-jq79="<hash>" and the style's selectors are rewritten to
 // require that attribute, so its rules can't reach anything the component
@@ -1367,10 +1421,13 @@ const parseComponentString = (component: string): ComponentParts => {
   // </style>
 
   // parsed as the content of a <template> so leading <script>/<style> tags
-  // aren't reparented into <head> by the HTML parser. Both pre-DOM string
-  // rewrites run here: `...expr` -> :props.<n>="expr" first (it reads the raw
-  // camelCase before the parser can lowercase names), then self-closing tags
-  const prepared = expandSelfClosingTags(expandPropsSpread(component))
+  // aren't reparented into <head> by the HTML parser. All three pre-DOM string
+  // rewrites run here, and the order is load-bearing: camelCase names ->
+  // kebab-case first (before `:props.<n>` exists to be mangled and while a
+  // self-closing tag is still one occurrence), then `...expr` -> :props.<n>
+  // (which reads the raw camelCase before the parser can lowercase names),
+  // then self-closing tags
+  const prepared = expandSelfClosingTags(expandPropsSpread(expandNameCase(component)))
   const parsedDOM = new DOMParser().parseFromString(`<template>${prepared}</template>`, "text/html")
   const root = parsedDOM.querySelector("template") as HTMLTemplateElement
 

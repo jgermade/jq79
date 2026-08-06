@@ -1515,6 +1515,109 @@ describe("Component79", () => {
     })
   })
 
+  describe("camelCase names in the template", () => {
+    // The HTML parser lowercases attribute and tag names, so every name jq79
+    // reads back with kebabToCamel used to have to be authored kebab-case or
+    // it landed under the wrong key, silently. expandNameCase rewrites the
+    // camelCase spelling to kebab before parsing, so both converge.
+    it("passes :userName as the prop userName, like :user-name", () => {
+      const child = new Component79(`<p class="out">{{ userName }}</p>`)
+      const camel = new Component79(`<div><Field :userName="who" /></div>`)
+        .render({ who: "Ada", Field: child }).mount(host)
+      expect($(host, ".out")?.textContent).toBe("Ada")
+      camel.destroy()
+
+      const kebab = new Component79(`<div><Field :user-name="who" /></div>`)
+        .render({ who: "Grace", Field: child }).mount(host)
+      expect($(host, ".out")?.textContent).toBe("Grace")
+      kebab.destroy()
+    })
+
+    it("binds :model.firstName as the model firstName, both ways", () => {
+      const field = new Component79(
+        `<button class="go" @click="$emit('model:update', { name: 'firstName', value: 'Grace' })">{{ firstName }}</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model.firstName="who" /></div>`)
+        .render({ who: "Ada", Field: field }).mount(host)
+
+      expect($(host, ".go")?.textContent).toBe("Ada") // the prop came down under the camel name
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.who).toBe("Grace") // ...and the writeback found the same model
+      jq79.destroy()
+    })
+
+    it("round-trips an acronym: :model.userID stays userID", () => {
+      const field = new Component79(`<p class="out">{{ userID }}</p>`)
+      const jq79 = new Component79(`<div><Field :model.userID="id" /></div>`)
+        .render({ id: 42, Field: field }).mount(host)
+
+      expect($(host, ".out")?.textContent).toBe("42")
+      jq79.destroy()
+    })
+
+    it("matches <slot.firstName> to :slot.firstName, and either spelling to the other", () => {
+      new Component79(`
+        <script :setup></script>
+        <Card><template :slot.firstName><b class="camel">Ada</b></template></Card>
+        <Card><template :slot.first-name><b class="kebab">Grace</b></template></Card>
+        <template name="Card">
+          <section><slot.firstName /></section>
+        </template>
+      `).render().mount(host)
+
+      expect($(host, ".camel")?.textContent).toBe("Ada")
+      expect($(host, ".kebab")?.textContent).toBe("Grace")
+    })
+
+    it("rewrites both halves of a <slot.firstName>…</slot.firstName> pair", () => {
+      new Component79(`
+        <script :setup></script>
+        <Card></Card>
+        <template name="Card">
+          <section class="card"><slot.firstName>fallback</slot.firstName></section>
+        </template>
+      `).render().mount(host)
+
+      // a mismatched open/close pair would have swallowed or orphaned the text
+      expect($(host, ".card")?.textContent?.trim()).toBe("fallback")
+    })
+
+    it("leaves quoted values alone - a colon in a value is not a name", () => {
+      const jq79 = new Component79(
+        `<div><button class="go" style="color: red" @click="flag ? (hit = 'yes') : (hit = 'no')">go</button></div>`
+      ).render({ flag: true, hit: "" }).mount(host)
+
+      const button = $(host, ".go") as HTMLButtonElement
+      expect(button.getAttribute("style")).toBe("color: red")
+      button.click()
+      expect(jq79.data!.hit).toBe("yes")
+      jq79.destroy()
+    })
+
+    it("leaves <script> bodies alone", () => {
+      new Component79(`
+        <script :setup>
+          const firstName = "Ada"
+          let fullName = firstName + " Lovelace"
+        </script>
+        <p class="out">{{ fullName }}</p>
+      `).render().mount(host)
+
+      expect($(host, ".out")?.textContent).toBe("Ada Lovelace")
+    })
+
+    it("still lets ...userData spread with its camelCase intact", () => {
+      const card = new Component79(`<p class="out">{{ name }}/{{ maxAge }}</p>`)
+      const jq79 = new Component79(`<div><Card ...userData :maxAge="cap" /></div>`)
+        .render({ userData: { name: "Ada" }, cap: 99, Card: card }).mount(host)
+
+      expect($(host, ".out")?.textContent).toBe("Ada/99")
+      jq79.destroy()
+    })
+  })
+
   describe(":props on component tags", () => {
     it("spreads an object's own properties as props", () => {
       const card = new Component79(`<div class="card">{{ name }} / {{ version }}</div>`)
