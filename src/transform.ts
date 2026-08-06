@@ -475,7 +475,11 @@ const staticImportToAwait = (clause: string | undefined, spec: string, n: number
 // identifier, no attribute at all) declares nothing and stays permissive.
 // ---------------------------------------------------------------------------
 
-export type PropDecl = { name: string; default?: string }
+// `as` is the local name the pattern binds the key to, when it isn't the key
+// itself (`{ item: row }`). A prop signature has no use for it - what the
+// store holds is the key - but the slot binder (`:slot="{ item: row }"`) is
+// the same pattern read for the other half: which names the content uses
+export type PropDecl = { name: string; default?: string; as?: string }
 
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
@@ -576,7 +580,13 @@ export const parsePropsPattern = (pattern: string | undefined): PropDecl[] | nul
     const colon = indexOfTopLevel(named, ":")
     const name = (colon === -1 ? named : named.slice(0, colon)).trim()
     if (!IDENTIFIER_RE.test(name)) continue
-    props.push(fallback === undefined ? { name } : { name, default: fallback })
+    const decl: PropDecl = { name }
+    if (fallback !== undefined) decl.default = fallback
+    // only a plain rename is kept: `{ user: { id } }` binds no single name, so
+    // there is nothing to record - the prop is still declared under its key
+    const local = colon === -1 ? "" : named.slice(colon + 1).trim()
+    if (IDENTIFIER_RE.test(local)) decl.as = local
+    props.push(decl)
   }
   return props
 }

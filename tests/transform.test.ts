@@ -601,7 +601,9 @@ describe("parsePropsPattern", () => {
 
   it("names the key, whatever the pattern binds it to", () => {
     expect(parsePropsPattern("{ user: renamed, config: { theme }, ...rest }")).toEqual([
-      { name: "user" },
+      // the key is the prop; `as` is the local name beside it, which only the
+      // slot binder reads. A nested pattern binds no single name, so it has none
+      { name: "user", as: "renamed" },
       { name: "config" },
     ])
   })

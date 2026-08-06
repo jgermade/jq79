@@ -1,0 +1,22 @@
+<script :setup>
+  const List = await import("./List.html")
+
+  let orders = [
+    { id: 1, label: "Keyboard", total: 4900 },
+    { id: 2, label: "Monitor", total: 22900 },
+    { id: 3, label: "Cable", total: 990 },
+  ]
+
+  const currency = cents => `€${(cents / 100).toFixed(2)}`
+</script>
+
+<h2>Orders</h2>
+
+<List :rows="orders" />
+
+<button @click="orders = []">Empty the list</button>
+
+<style>
+  h2 { font: bold 1.2rem system-ui, sans-serif; margin: 0 0 0.6em; }
+  button { margin-top: 1em; font: inherit; padding: 0.3em 0.8em; }
+</style>

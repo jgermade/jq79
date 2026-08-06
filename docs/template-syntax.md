@@ -261,6 +261,73 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.
 - Self-closing tags work: jq79 expands `<MyComponent />` (and `<div />`) into explicit open+close pairs before HTML parsing, since the HTML parser would otherwise treat them as unclosed. Void elements (`<img />`, `<br />`) and `<script>`/`<style>` contents are left untouched.
 - A tag can also resolve to a component the same file declares with `<template name="…">`, with no import at all — see [several components in one file](components.md#several-components-in-one-file).
+- A tag's children are **content for the child's slots** — see below.
+
+## `<slot>` — content projection
+
+A component's tag children render inside it, where it wrote a `<slot>`:
+
+```html
+<!-- Card.html -->
+<section>
+  <header><slot.header>Untitled</slot.header></header>
+  <slot />
+  <footer :if="$slots.footer"><slot.footer /></footer>
+</section>
+```
+
+```html
+<Card>
+  <template :slot.header><h2>{{ title }}</h2></template>
+
+  <p>{{ body }}</p>
+</Card>
+```
+
+The dot marks the named variant on both sides, like `:model.<name>` and `:class.<name>`:
+
+| written | means |
+| --- | --- |
+| `<slot />` | the default hole |
+| `<slot.header-bar>…</slot.header-bar>` | a named hole, with fallback content |
+| `<slot.row :item="item" />` | a hole that passes props to the content |
+| a component tag's own children | content for the default slot |
+| `:slot="{ item }"` on a component tag | names the default content binds |
+| `<template :slot.row="{ item }">` | content for a named slot, and its names |
+
+Names are kebab-case where written and camelCase where read: `<slot.header-bar>` ↔ `:slot.header-bar` ↔ `$slots.headerBar`.
+
+### Scoped slots
+
+A `<slot>`'s attributes are props for the content — which is what makes this composition rather than decoration:
+
+```html
+<!-- List.html -->
+<ul>
+  <li :each="item in rows" :key="item.id">
+    <slot :item="item" :index="$index" />
+  </li>
+  <p :if="!rows.length"><slot.empty>Nothing here</slot.empty></p>
+</ul>
+```
+
+```html
+<List :rows="rows" :slot="{ item, index }">
+  {{ index }}. <b>{{ item.label }}</b> — {{ currency(item.total) }}
+</List>
+```
+
+`currency` is the parent's, `item` is the child's.
+
+- **The content belongs to the parent**: its scope, its effects, its scoped styles. The child decides *where* it goes and *whether* it goes, never what the names in it mean.
+- **Slot props are declared, not injected.** `:slot="{ item }"` is what puts `item` in scope, for the same reason `:each` writes `item in rows`. It is optional: without it the content just sees the parent's scope, and a `<slot :item>` the child adds later can't capture a name the content already had. The pattern takes renames and defaults too — `:slot="{ item: row, tone = 'plain' }"`.
+- Slot props are **live**: each read re-evaluates the child's expression, so the content re-renders when either side changes. Assigning to one does nothing (and warns): it is the child's value.
+- **What isn't projected isn't rendered.** No `<slot>` for it, or one behind a false `:if`, and the content's effects never exist. Remove the `<slot>` later and they are disposed.
+- Every attribute that isn't a directive is a slot prop; `:if`/`:each`/`:with` on a `<slot>` mean what they mean anywhere else. `<slot :each="row in rows" :item="row" />` renders the content once per row.
+- `$slots` is a static map of the names the usage site filled — `<footer :if="$slots.footer">` drops a wrapper nobody filled. Setup and factory scripts get it too.
+- A `<slot>` written *inside* slot content forwards the writer's own content, so a wrapper can pass what it was handed straight through.
+- Fallback content (a `<slot>`'s own children) renders in the **child's** scope — it is the child's markup.
+- `<slot>` is reserved: a component named `Slot` no longer resolves from that tag.
 
 ## `<template name>` — another component in this file
 
@@ -274,7 +341,7 @@ At the **top level** of a component file, `<template name="Row">` declares anoth
 </template>
 ```
 
-- Only the top level declares. A `<template>` nested inside the markup is not a declaration and is left as it is.
+- Only the top level declares. A `<template>` nested inside the markup is not a declaration: it fills a slot when it carries `:slot.<name>` and is a direct child of a component tag, and otherwise it is a plain inert `<template>` element, children and all in its `.content`.
 - The name must be PascalCase, or no tag could reference it.
 - A top-level `<template>` that declares nothing usable (no name, a lowercase name, a name already taken) is dropped with a console warning — never a throw.
 

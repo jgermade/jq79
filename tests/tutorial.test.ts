@@ -217,6 +217,21 @@ describe("tutorial", () => {
     expect(host.shadowRoot!.querySelectorAll(".folder")).toHaveLength(1)
   })
 
+  it("03-components/08: fills the list's slot with the parent's own markup and helper", async () => {
+    mount(solutionOf("03-components/08-slots"), host)
+    await tick()
+
+    const rows = [...host.shadowRoot!.querySelectorAll("li")].map(el => el.textContent?.replace(/\s+/g, " ").trim())
+
+    // index and item come from the list; currency() is the page's own
+    expect(rows).toEqual(["1. Keyboard — €49.00", "2. Monitor — €229.00", "3. Cable — €9.90"])
+
+    // emptied, the list has nothing to project and its <slot.empty> fallback takes over
+    host.shadowRoot!.querySelector("button")!.click()
+
+    expect(host.shadowRoot!.querySelector(".empty")?.textContent?.trim()).toBe("Nothing to show")
+  })
+
   it("01-basics/04: drives the button's attributes, the status text and its class", () => {
     mount(solutionOf("01-basics/04-attributes"), host)
     const button = host.shadowRoot!.querySelector("button")!

@@ -85,6 +85,38 @@ Objects survive it (every read of `cart.x` still goes through the proxy). Only a
 
 Making the destructured names themselves reactive is what Svelte 5 and Vue 3.5 do, and it needs what they have — a compiler. jq79 doesn't ship a JS parser to the browser, so it doesn't pretend to.
 
+## Slots
+
+Props parameterise a component by data; slots parameterise it by markup. A tag's
+children render inside the component, where it wrote a `<slot>`:
+
+```html
+<Card :title="title">
+  <template :slot.header><h2>{{ title }}</h2></template>
+
+  <p>{{ body }}</p>
+</Card>
+```
+
+The syntax is in [template syntax](template-syntax.md#slot--content-projection).
+What matters here is whose the content is:
+
+- **The parent's.** It is written in the parent's file, so it reads the parent's
+  names, creates its effects on the parent's store, and carries the parent's
+  `scoped` stamp — the parent's styles reach it, the child's do not. The child
+  decides where it goes and whether it goes, never what it says.
+- **Except for what the child declares.** `<slot :item="item" />` passes props to
+  the content, and the content picks them up by naming them: `:slot="{ item }"` on
+  the tag, or on the `<template :slot.name="{ item }">` for a named slot. Those
+  reads run in the child's scope, so the content is reactive to both components at
+  once.
+- **It lives as long as the `<slot>` does.** No `<slot>` for a name and the content
+  never renders at all — nothing of it exists, not even its effects. A `<slot>`
+  behind an `:if` creates them when the branch turns on and disposes them when it
+  turns off.
+- **`$slots`** names what the usage site filled, so a component can drop a wrapper
+  nobody filled (`<footer :if="$slots.footer">`) or branch on it in a script.
+
 ## Styles
 
 A `<style>` block goes into `document.head` as-is, shared globally. Add `scoped` and its rules only reach the elements this component rendered:
@@ -110,6 +142,7 @@ The hash comes from the component source, so all instances of a definition share
 Notes:
 
 - **Scoping stops at the component boundary.** A nested component's elements carry their own scope, not the parent's, so a parent's scoped rules can't style a child's internals. Vue's `:deep()` escape hatch is not supported (it isn't real CSS — the browser drops the rule — and jq79 warns if it sees one).
+- **Slot content is stamped where it was written**, not where it lands: content the parent passed into a child keeps the parent's stamp, so the parent's rules style it and the child's don't — even though it renders inside the child. Which is the same rule, read from the other side: the stamp follows the file the markup is in.
 - `@keyframes` are left untouched, so animation names are still global: prefix them if two components might collide.
 - Pseudo-elements stay last (`.a::before` → `.a[data-jq79="…"]::before`), and `@media`/`@supports`/`@container` blocks are scoped inside.
 - **`mountShadow` ignores `scoped`.** A shadow root already scopes, so it gets the CSS as written — which is also what lets `:host { … }` keep working (the host element is outside the template, so it never carries the stamp, and a scoped `:host[data-jq79="…"]` would match nothing). The same component can be mounted both ways: head-mounted instances get the scoped rewrite, shadow-mounted ones get the source.

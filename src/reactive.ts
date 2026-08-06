@@ -11,8 +11,10 @@ export type ReactiveDeepData<T> = T & {
   $on: (dotKey: string, listener: ChangeListener, options?: ListenerOptions) => Unsubscribe
   $onAny: (listener: AnyChangeListener, options?: ListenerOptions) => Unsubscribe
   // runs `run` immediately, recording every dotKey it reads off this store, then
-  // re-runs it whenever a changed dotKey overlaps one of those - see pathsOverlap
-  $effect: (run: () => void) => Unsubscribe
+  // re-runs it whenever a changed dotKey overlaps one of those - see pathsOverlap.
+  // `alsoWakenBy` registers the same effect with other stores as well, so a
+  // change in any of them wakes it too (see ATTACH)
+  $effect: (run: () => void, alsoWakenBy?: Record<string, any>[]) => Unsubscribe
   // drops this store's subscriptions to the stores nested inside it (see
   // bridge). A store that outlives the one holding it - the shared-state case -
   // would otherwise keep the dead holder's listeners on its own list forever
@@ -84,6 +86,29 @@ export const untracked = <T>(fn: () => T): T => {
 }
 
 type Effect = { deps: Set<string>; run: () => void }
+
+// an effect lives in exactly one store's `effects` set - the one whose
+// $effect created it - and only that store's notify walks it. Content that
+// reads two stores at once (a component's slot content: the parent's names
+// plus the slot props the child passes it) needs one record in both sets, so
+// a store serves this attach handle beside $on/$effect. Tracking already
+// spans stores - trackerStack is module-level, so one run's deps are whatever
+// it read, wherever it read it - only the waking didn't.
+//
+// Named like the compiled scripts' internals ($__effect, $__import) because it
+// is one: `key in store` never answers true for a storeApi name, so `with`
+// can't see it and no template expression can reach it.
+//
+// The cost, accepted: deps are dot-paths with no store namespace, so a name
+// that exists in both stores wakes the effect from either. A spurious re-run,
+// never a stale render
+const ATTACH = "$__attach"
+
+// the extra stores every effect created off a scope must be attached to. Read
+// by createEffectScope off the scope it is given, so a scope can hand the
+// arrangement down to whatever renders inside it (nested :each item scopes,
+// a nested component's prop-sync effects) without every call site knowing
+export const ALSO_WAKEN_BY = Symbol("jq79.alsoWakenBy")
 
 export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepData<T> => {
   const exactListeners = new Map<string, Set<ChangeListener>>()
@@ -269,7 +294,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     return () => anyListeners.delete(listener)
   }
 
-  const $effect = (run: () => void): Unsubscribe => {
+  const $effect = (run: () => void, alsoWakenBy?: Record<string, any>[]): Unsubscribe => {
     // a notify landing while this effect runs (an item's render writing to
     // the store, waking the very effect that is rendering it) must not
     // re-enter mid-run - the half-done run would race its own repeat over
@@ -309,7 +334,28 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       },
     }
     effects.add(effect)
+    // the shared case is rare (only slot content asks for it) and this
+    // function is on the stack for as long as whatever it renders - a
+    // component that renders itself stacks 200 of these - so it keeps the
+    // shape it had, and the extra bookkeeping lives in its own frame
+    if (alsoWakenBy?.length) return attachAndRun(effect, alsoWakenBy)
     effect.run()
+    return () => { effects.delete(effect) }
+  }
+
+  // attached before the first run, so a store that notifies during it (a setup
+  // script's write, a prop sync) reaches this effect like any other
+  const attachAndRun = (effect: Effect, alsoWakenBy: Record<string, any>[]): Unsubscribe => {
+    const detach = alsoWakenBy.map(store => store?.[ATTACH]?.(effect)).filter(Boolean) as Unsubscribe[]
+    effect.run()
+    return () => {
+      effects.delete(effect)
+      detach.forEach(drop => drop())
+    }
+  }
+
+  const $__attach = (effect: Effect): Unsubscribe => {
+    effects.add(effect)
     return () => { effects.delete(effect) }
   }
 
@@ -322,6 +368,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   storeApi.$onAny = $onAny
   storeApi.$effect = $effect
   storeApi.$dispose = $dispose
+  storeApi[ATTACH] = $__attach
 
   return reactive
 }
@@ -346,9 +393,13 @@ export type EffectScope = {
 export const createEffectScope = (scope: Record<string, any>): EffectScope => {
   const disposers: Unsubscribe[] = []
   const runs: (() => void)[] = []
+  // whatever the scope was handed (slot content is the only thing that sets
+  // it today): the stores this scope's effects belong to besides their own.
+  // Left undefined when there are none, which is $effect's fast path
+  const alsoWakenBy: Record<string, any>[] | undefined = (scope as any)[ALSO_WAKEN_BY]
   return {
     effect: run => {
-      disposers.push(scope.$effect(run))
+      disposers.push(scope.$effect(run, alsoWakenBy))
       runs.push(run)
     },
     onDispose: fn => { disposers.push(fn) },

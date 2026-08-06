@@ -1,7 +1,7 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl } from "./dom"
-import { $reactive, untracked, createEffectScope } from "./reactive"
+import { $reactive, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
 
@@ -31,10 +31,16 @@ const elementAttrs = (el: Element): Record<string, string> =>
 // to decide what it's worth (nothing in a block or flex container, one space
 // between inline elements). Trimming it here, as this used to, silently glued
 // siblings together and ate the spaces in `hola <b>mundo</b> adios`
+//
+// A <template>'s children are read from its .content fragment: that is where
+// the HTML parser puts them, and its childNodes are empty. Without the descent
+// they are not in the AST at all - which is where slot content is written
+// (<template :slot.name>), and why a nested <template> used to render as an
+// empty element whatever was inside it
 const elementToAST = (el: Element): TemplateNode => ({
   tag: el.tagName.toLowerCase(),
   attrs: elementAttrs(el),
-  children: Array.from(el.childNodes).flatMap((node): (TemplateNode | string)[] => {
+  children: Array.from((el instanceof HTMLTemplateElement ? el.content : el).childNodes).flatMap((node): (TemplateNode | string)[] => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent ?? ""
       return text ? [text] : []
@@ -103,7 +109,8 @@ const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selec
 // single-flag shorthand) and `:props.<n>` (one spread among several) are
 // open-ended, so they're matched by prefix - they can't be enumerated into the set
 const isControlAttr = (attr: string): boolean =>
-  CONTROL_ATTRS.has(attr) || attr.startsWith(":class.") || attr.startsWith(":props.")
+  CONTROL_ATTRS.has(attr) || attr.startsWith(":class.") || attr.startsWith(":props.") ||
+  attr === ":slot" || attr.startsWith(":slot.")
 // `item in items`, `item, i in items`, `(value, key) in props` - the second
 // binding is the array index or the object key, parens optional (Vue-style).
 // The list expression can span lines, so it matches [\s\S] rather than `.`
@@ -222,6 +229,230 @@ const findComponentKey = (scope: Record<string, any>, tag: string): string | nul
 const MAX_NESTING_DEPTH = 200
 let nestingDepth = 0
 
+// ---------------------------------------------------------------------------
+// slots - content projection
+//
+// A component tag's children are content the child renders where it wrote a
+// <slot>. The dot marks the named variant on both sides, like :model.<name>
+// and :class.<name> already do:
+//
+//   <!-- Card.html -->        <!-- the parent -->
+//   <section>                 <Card>
+//     <header>                  <template :slot.header><h2>{{ t }}</h2></template>
+//       <slot.header>?</slot.header>
+//     </header>                 <p>{{ body }}</p>
+//   <slot />                  </Card>
+//   </section>
+//
+// Three rules decide everything below:
+//
+// 1. Content belongs to the parent - its AST, its scope, its effects, its
+//    scoped styles. The child decides *where* it goes and *whether* it goes,
+//    never what the names in it mean.
+// 2. Slot props are declared, not injected: `:slot="{ item }"` on the usage
+//    site, for the same reason :each writes `item in rows`. Every bare name in
+//    the parent's file is introduced by the parent, so a `<slot :item>` the
+//    child adds later can't silently capture one.
+// 3. What isn't projected isn't rendered. No <slot>, or one behind a false
+//    :if, and the content's effects never exist.
+//
+// The content travels as a thunk, not as DOM: an instance is replaced (a
+// definition swap, a hot reload) and one <slot> may render many times, so a
+// pre-rendered fragment would leak effects and could only be inserted once
+// ---------------------------------------------------------------------------
+
+// renders one slot's content at the position the child put the <slot>: it is
+// handed the slot's props (lazy, so each read re-evaluates in the child's
+// scope), that position's scope and effect scope, and the style mode the
+// child renders under
+type SlotRenderer = (
+  props: Record<string, () => any>,
+  slotScope: Record<string, any>,
+  fx: EffectScope,
+  shadow: boolean
+) => Node
+
+type SlotMap = Record<string, SlotRenderer>
+
+// the content an instance was handed, by slot name. Symbol-keyed and
+// non-enumerable on the store's data, like UNFILLED_PROPS: it rides the scope
+// chain (so a <slot> inside an :each or a :with finds it) and never shows up
+// as data - not in Object.keys, not in a snapshot spread, not in the props a
+// nested component is handed
+const SLOTS = Symbol("jq79.slots")
+
+// <slot>, <slot.header-bar>: the hole and its name. Names are kebab-case where
+// written (the HTML parser lowercases tag names and attribute modifiers alike)
+// and camelCase where read - <slot.header-bar> is :slot.header-bar is
+// $slots.headerBar
+const isSlotTag = (tag: string): boolean => tag === "slot" || tag.startsWith("slot.")
+
+const slotName = (suffix: string): string => (suffix ? kebabToCamel(suffix) : "default")
+
+// the content of one slot, as written at the usage site
+type SlotContent = { nodes: (TemplateNode | string)[]; binder?: string }
+
+// the :slot attribute of a <template>, if it carries one
+const slotAttrOf = (node: TemplateNode): string | undefined =>
+  Object.keys(node.attrs).find(attr => attr === ":slot" || attr.startsWith(":slot."))
+
+const slotAttrName = (name: string) => (name === "default" ? ":slot" : `:slot.${name}`)
+
+// whitespace-only text between two <template :slot> blocks is the indentation
+// between them and nothing else - the same call renderNodes makes between the
+// branches of an :if chain. It is what decides whether a tag has default
+// content at all, which is what $slots.default answers
+const isMeaningful = (node: TemplateNode | string): boolean => typeof node !== "string" || node.trim() !== ""
+
+// a component tag's children, partitioned by slot name: a direct
+// <template :slot.<name>> child fills that name, everything else is the
+// default slot's content. The attribute's value is the pattern the content
+// binds the slot's props to - on the tag itself for the default, since the
+// default content has no <template> of its own to carry it
+const partitionSlots = (node: TemplateNode): Record<string, SlotContent> => {
+  const contents: Record<string, SlotContent> = {}
+  const loose: (TemplateNode | string)[] = []
+
+  node.children.forEach(child => {
+    const attr = typeof child === "object" && child.tag === "template" ? slotAttrOf(child) : undefined
+    if (typeof child === "string" || attr === undefined) {
+      loose.push(child)
+      return
+    }
+    const name = slotName(attr.slice(":slot.".length))
+    // first wins, like two <template name="X"> in one file: a duplicate is a
+    // typo, and the fix is to delete one - not to guess which
+    if (name in contents) {
+      console.warn(`jq79: two <template ${slotAttrName(name)}> in <${node.tag}>; the second was ignored`)
+      return
+    }
+    contents[name] = { nodes: child.children, binder: child.attrs[attr] || undefined }
+  })
+
+  const hasLoose = loose.some(isMeaningful)
+  if (hasLoose && "default" in contents) {
+    console.warn(
+      `jq79: <${node.tag}> has both a <template :slot> and content outside it - ` +
+      "the <template> is the default slot's content, and the rest was ignored"
+    )
+  } else if (hasLoose) {
+    contents.default = { nodes: loose, binder: node.attrs[":slot"] || undefined }
+  }
+  return contents
+}
+
+// `:slot="{ item, index: i, total = 0 }"` - the names the content binds the
+// slot's props to. The bindings are accessors, not values: each read
+// re-evaluates the child's expression, so an effect that reads `item` tracks
+// exactly what that expression touches, on every run (createWithScope's design)
+const bindSlotProps = (scope: Record<string, any>, binder: string | undefined, props: Record<string, () => any>) => {
+  parsePropsPattern(binder)?.forEach(({ name, as, default: fallback }) => {
+    const local = as ?? name
+    Object.defineProperty(scope, local, {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        const value = props[name]?.()
+        return value === undefined && fallback !== undefined ? evalExpr(fallback, scope) : value
+      },
+      // a slot prop is the child's value: it arrives on every read and there
+      // is nowhere for a write to go. Silence would be worse - `with` swallows
+      // an assignment to a getter without a word
+      set: () => console.warn(`jq79: "${local}" is a slot prop - it comes from the component, so assigning to it does nothing`),
+    })
+  })
+}
+
+// a <template :slot> only fills a slot as a direct child of a component tag,
+// where the usage site takes it out of the children before they are ever
+// rendered (see partitionSlots). Anywhere else the position is a mistake, and
+// rendering the content in place - in the wrong scope, into a <template>
+// nobody clones - would be a strange way to say so. A comment rather than
+// nothing: an :if branch needs a node to hold on to (see boundsOf)
+const misplacedSlotContent = (node: TemplateNode): Node => {
+  const attr = slotAttrOf(node)
+  console.warn(`jq79: <template ${attr}> fills a slot only as a direct child of a component tag; here it rendered nothing`)
+  return document.createComment(`misplaced ${attr}`)
+}
+
+// what a usage site hands its instance: every slot it filled, as the thunk
+// that renders it. Built once per site, and in one call - a component tag is
+// on the stack while its whole subtree renders below it (a component that
+// renders itself does this 200 deep), so the intermediates stay in here rather
+// than in the frame that waits
+const buildSlots = (node: TemplateNode, scope: Record<string, any>): SlotMap | null => {
+  const contents = Object.entries(partitionSlots(node))
+  if (!contents.length) return null
+  const slots: SlotMap = {}
+  contents.forEach(([name, content]) => { slots[name] = makeSlotRenderer(content, scope) })
+  return slots
+}
+
+// the thunk one slot's content becomes: the usage site closes over its AST and
+// its scope, the child calls it wherever (and however many times) it renders
+// the matching <slot>
+const makeSlotRenderer = (content: SlotContent, parentScope: Record<string, any>): SlotRenderer =>
+  (props, slotScope, fx, shadow) => {
+    // the parent's scope, plus the names the content declared for the slot's
+    // props (rule 1: what the content says is decided where it was written)
+    const scope: Record<string, any> = Object.create(parentScope)
+    bindSlotProps(scope, content.binder, props)
+    // this content reads the parent's store (its own names) and the child's
+    // (through the slot props), so every effect created anywhere inside it is
+    // registered with both - see ALSO_WAKEN_BY. Appended rather than assigned:
+    // content forwarded through a <slot> inside slot content is still woken by
+    // the store it came from
+    const inherited: Record<string, any>[] = (scope as any)[ALSO_WAKEN_BY] ?? []
+    Object.defineProperty(scope, ALSO_WAKEN_BY, { value: [...inherited, slotScope] })
+
+    const contentFx = createEffectScope(scope)
+    // rule 3: the <slot> is the content's lifetime. When the child's subtree at
+    // this position goes - an :if turning false, the instance being replaced,
+    // the whole child being destroyed - the content's effects go with it
+    fx.onDispose(() => contentFx.dispose())
+    return renderNodes(content.nodes, scope, contentFx, shadow)
+  }
+
+// <slot />, <slot.name>fallback</slot.name>: where the parent's content goes.
+// Unfilled, the slot renders its own children instead - in this component's
+// scope, since that content is this component's. Every attribute that isn't a
+// directive is a slot prop: `:item="item"` evaluates here and reaches the
+// content under the name it declared, a plain attribute passes a literal
+// string, and there are no reserved names (the slot's own name is in the tag).
+// Bracketed by anchors like a nested component, so the chunk has stable bounds
+// even when it renders nothing (see boundsOf)
+const renderSlot = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
+  const name = slotName(node.tag.slice("slot.".length))
+  const wrapper = document.createDocumentFragment()
+  const anchor = document.createComment(node.tag)
+  const endAnchor = document.createComment(`/${node.tag}`)
+  wrapper.append(anchor, endAnchor)
+
+  const render = (scope as any)[SLOTS]?.[name] as SlotRenderer | undefined
+  if (!render) {
+    wrapper.insertBefore(renderNodes(node.children, scope, fx, shadow), endAnchor)
+    return wrapper
+  }
+
+  const props: Record<string, () => any> = {}
+  Object.entries(node.attrs).forEach(([attr, value]) => {
+    // the scope stamp is the component's, not a prop; @events have no element
+    // to bind here; and a directive means what it means everywhere else -
+    // :if/:each/:with decide whether and how often this slot renders, so they
+    // are the renderer's, not the content's
+    if (attr === SCOPE_ATTR || isControlAttr(attr) || attr.startsWith("@")) return
+    if (attr.startsWith(":")) {
+      const expr = value || attr.slice(1)
+      props[kebabToCamel(attr.slice(1))] = () => evalExpr(expr, scope)
+    } else {
+      props[kebabToCamel(attr)] = () => value
+    }
+  })
+
+  wrapper.insertBefore(render(props, scope, fx, shadow), endAnchor)
+  return wrapper
+}
+
 // <MyComponent :user :title="'str'"></MyComponent> - renders a child
 // component instance at this position. Props: `:name="expr"` evaluates expr
 // in the parent scope (`:name` alone is shorthand for `:name="name"`), plain
@@ -244,6 +475,11 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   const endAnchor = document.createComment(`/${key}`)
   const wrapper = document.createDocumentFragment()
   wrapper.append(anchor, endAnchor)
+
+  // the tag's children, as content for the child's <slot>s. Built once per
+  // usage site (the AST doesn't change) and closed over the parent's scope
+  // here, so every instance this site ever renders is handed the same thunks
+  const slots = buildSlots(node, scope)
 
   const props: Record<string, string> = {} // prop name -> expression in parent scope
   const models: Record<string, string> = {} // model name -> assignable expression in parent scope
@@ -386,6 +622,9 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       siblings: nextDef.siblings,
       name: nextDef.name,
     })
+    // the content this site wrote inside the tag, before the first render: a
+    // <slot> is resolved while rendering, so the map has to be there by then
+    if (slots) instance.slots = slots
     // the writeback half of :model - one event, one contract. The name is
     // normalized like the attribute was (kebab->camel; absent means default),
     // and everything off-contract warns and does nothing: an event protocol's
@@ -568,6 +807,12 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   const withExpr = node.attrs[":with"]
   const scope = withExpr !== undefined ? createWithScope(withExpr, outerScope) : outerScope
 
+  // before the component-key scan, so <slot> is <slot> even in a file that
+  // happens to have a component named Slot in scope: the tag is the library's
+  // now, and a name that resolved it away would be a very quiet surprise
+  if (isSlotTag(node.tag)) return renderSlot(node, scope, fx, shadow)
+  if (node.tag === "template" && slotAttrOf(node) !== undefined) return misplacedSlotContent(node)
+
   const componentKey = findComponentKey(scope, node.tag)
   if (componentKey) return renderNestedComponent(componentKey, node, scope, fx, shadow)
 
@@ -671,6 +916,13 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       const options = allowedExpr !== undefined ? { allowUrl: normalizeAllowUrl(evalExpr(allowedExpr, scope)) } : undefined
       el.innerHTML = sanitizeHTML(String(evalExpr(htmlExpr, scope) ?? ""), options)
     })
+  } else if (el instanceof HTMLTemplateElement) {
+    // a plain nested <template> stays what HTML says it is: an inert element
+    // whose children live in .content, which is where whoever clones it looks
+    // for them. They render (bindings and all) and go there - appended as
+    // childNodes they would be in the DOM but in no document fragment, seen by
+    // nothing and rendered by nobody
+    el.content.appendChild(renderNodes(node.children, scope, fx, shadow))
   } else {
     el.appendChild(renderNodes(node.children, scope, fx, shadow))
   }
@@ -959,8 +1211,10 @@ const VOID_ELEMENTS = new Set([
 ])
 
 // a self-closing tag with its attributes; quoted attribute values are matched
-// as whole chunks so a "/>" inside one doesn't end the tag early
-const SELF_CLOSING_RE = /<([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)\/>/g
+// as whole chunks so a "/>" inside one doesn't end the tag early. The tag name
+// admits a dot for the named forms of a tag - <slot.header /> - which is a
+// legal HTML tag name (the tokenizer reads to the first space, "/" or ">")
+const SELF_CLOSING_RE = /<([A-Za-z][\w.-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)\/>/g
 const RAW_BLOCK_RE = /(<script[\s\S]*?<\/script\s*>|<style[\s\S]*?<\/style\s*>)/gi
 
 // expands self-closing tags (<MyComponent />, <div />) into explicit
@@ -983,7 +1237,7 @@ const expandSelfClosingTags = (src: string): string =>
 // a start tag with its attributes, quote-aware so a ">" inside a value doesn't
 // end it early; and a single spread attribute in name position (preceded by
 // start-or-whitespace), its expression an identifier or member path
-const OPEN_TAG_RE = /<([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
+const OPEN_TAG_RE = /<([A-Za-z][\w.-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
 const ATTR_SPREAD_RE = /"[^"]*"|'[^']*'|(^|\s)\.\.\.([A-Za-z_$][\w$.]*)/g
 
 // `...expr` as an attribute is sugar for :props="expr" (spread an object's
@@ -1535,6 +1789,12 @@ export class Component79 {
   // declared; the file's own component has none - it is the default, and a
   // default is named by whoever imports it
   name?: string
+  // the content the usage site handed this instance, by slot name (see the
+  // slots section). Not part of a definition - it belongs to the tag that
+  // wrote it - so renderNestedComponent sets it on the instance it creates,
+  // and every render reads it from here: a hot reload re-renders from a data
+  // snapshot, which a symbol on the store would not survive
+  slots?: SlotMap
 
   data: ReactiveDeepData<Record<string, any>> | null = null
 
@@ -1690,6 +1950,11 @@ export class Component79 {
       : { ...data }
     const unfilled = new Set([...declared].filter(name => !(name in data)))
     if (unfilled.size) Object.defineProperty(raw, UNFILLED_PROPS, { value: unfilled })
+    // the slot content, for the <slot>s the template renders, and the static
+    // map of which names were filled, for the component to ask about
+    // (`<footer :if="$slots.footer">`). Filled at the usage site, so it can
+    // only change when the tag itself re-renders - which builds a new instance
+    if (this.slots) Object.defineProperty(raw, SLOTS, { value: this.slots })
 
     const store = $reactive(raw)
     const fx = createEffectScope(store)
@@ -1759,6 +2024,20 @@ export class Component79 {
     const $import = (url: string): Promise<any> =>
       modules && url in modules ? Promise.resolve(modules[url]) : importResource(url)
 
+    // the names a component answers on top of its store: $emit, so an inline
+    // handler can emit without routing through a setup function
+    // (@input="$emit('update', $event.target.value)"), and $slots, the static
+    // map of the names the usage site filled, so a wrapper can be dropped when
+    // nothing filled it (<footer :if="$slots.footer">). Both reach the
+    // template (through templateScope, below) and both script modes (as
+    // instance helpers), and a same-named store key shadows either.
+    // Null-prototype, for the same reason storeApi is: `key in injected` must
+    // not start answering true for toString, constructor and the rest
+    const injected: Record<string, any> = Object.assign(Object.create(null), {
+      $emit,
+      $slots: Object.fromEntries(Object.keys(this.slots ?? {}).map(name => [name, true])),
+    })
+
     // scripts run before the template renders so `$:` values are initialized;
     // a `:mounted` script defers entirely until mount() instead. A top-level
     // `export default` switches the script to factory mode (plain lexical JS)
@@ -1773,7 +2052,7 @@ export class Component79 {
       // resolve to nothing at all. In setup mode this composes with `with` -
       // scriptScope's `has` declines any name that is a helper, so the
       // parameter is what the name resolves to
-      const instanceHelpers = { $emit, $mounted, $self, $$self, ...siblingScope }
+      const instanceHelpers = { $mounted, $self, $$self, ...injected, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
       const factoryCode = transformFactoryScript(script.content)
       if (factoryCode !== null) {
@@ -1792,16 +2071,16 @@ export class Component79 {
     })
 
     const content = document.createDocumentFragment()
-    // the template renders under a scope that also answers $emit (unless the
-    // store shadows the name), so an inline handler can emit without routing
-    // through a setup function: @input="$emit('update', $event.target.value)".
-    // has/get only - never an own key - so Object.keys, snapshot spreads and
-    // the component-key scan don't see it, and every read still forwards
-    // through the reactive store, keeping dependency tracking intact
+    // the injected names, served by has/get only - never as own keys - so
+    // Object.keys, snapshot spreads and the component-key scan don't see them,
+    // and every read still forwards through the reactive store, keeping
+    // dependency tracking intact
     const templateScope = new Proxy(store as Record<string, any>, {
-      has: (target, key) => key === "$emit" || Reflect.has(target, key),
+      has: (target, key) => (typeof key === "string" && key in injected) || Reflect.has(target, key),
       get: (target, key, receiver) =>
-        key === "$emit" && !Reflect.has(target, key) ? $emit : Reflect.get(target, key, receiver),
+        typeof key === "string" && key in injected && !Reflect.has(target, key)
+          ? injected[key]
+          : Reflect.get(target, key, receiver),
     })
     content.append(this.startMarker, renderNodes(this.template, templateScope, fx, shadow), this.endMarker)
     this.content = content

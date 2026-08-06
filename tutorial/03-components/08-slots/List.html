@@ -1,0 +1,15 @@
+<script :setup="{ rows = [] }"></script>
+
+<ul>
+  <li :each="row in rows" :key="row.id">
+    <slot :item="row" :index="$index">{{ row.label }}</slot>
+  </li>
+  <li class="empty" :if="!rows.length"><slot.empty>Nothing to show</slot.empty></li>
+</ul>
+
+<style>
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 0.35em 0; border-bottom: 1px solid #d1d9e0; }
+  li:last-child { border-bottom: 0; }
+  .empty { color: #59636e; font-style: italic; }
+</style>
