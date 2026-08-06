@@ -72,6 +72,25 @@ Once published to npm, the package is automatically served by every major CDN �
 
 Pin a version in production: `https://cdn.jsdelivr.net/npm/jq79@0.1.0/...` (the GitHub Pages copy always tracks the latest release).
 
+Which is enough for a whole page: the library from a CDN, the component from your
+own host, no build step in between. `Component79.fetch` (or `C79`, the same class
+under a shorter name) hands back a pending component you can mount right away:
+
+```html
+<main></main>
+
+<script type="module">
+  import { C79 } from "https://jgermade.github.io/jq79/jq79.js"
+
+  C79
+    .fetch("./app.html")
+    .mount("#app")
+</script>
+```
+
+`fetchAll([...])` fetches several at once instead. See
+[loading remote components](docs/components.md#loading-remote-components).
+
 The source is small enough to read in a sitting: the core (parsing, rendering, components) lives in [`src/jq79.ts`](src/jq79.ts), with three leaf helpers — [`dom.ts`](src/dom.ts), [`reactive.ts`](src/reactive.ts) and [`transform.ts`](src/transform.ts). The published build is a single dependency-free file.
 
 ## Quick start
@@ -108,7 +127,7 @@ When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$
 ## Documentation
 
 - [Tutorial](https://jgermade.github.io/jq79/tutorial/) — learn it by doing, in the browser.
-- [Components](docs/components.md) — lifecycle (`mount`, `mountShadow`, `detach`, `destroy`), instance events (`on`/`off`), `<style scoped>`, several components in one file with `<template name>`, loading remote components with `Component79.fetch`.
+- [Components](docs/components.md) — lifecycle (`mount`, `mountShadow`, `detach`, `destroy`), instance events (`on`/`off`), `<style scoped>`, several components in one file with `<template name>`, loading remote components with `Component79.fetch` (chainable — fetch and mount in one expression) and `fetchAll`.
 - [Template syntax](docs/template-syntax.md) — `{{ }}` interpolation, `:attrs`, `:text`/`:html`, `:if`/`:elseif`/`:else`, `:each`/`:key`, `:with`, `@event` listeners and modifiers, nested components.
 - [Setup scripts](docs/setup-scripts.md) — `<script :setup>` reactive scripts, `$:` declarations, `$emit`, `await $mounted()`, `$self`/`$$self`, and `export default` factory scripts (plain-JS alternative).
 - [Reactive data](docs/reactive-data.md) — the standalone `$reactive` store: `$on`, `$onAny`, `$effect`.

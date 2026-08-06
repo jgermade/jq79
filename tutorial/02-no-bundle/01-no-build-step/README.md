@@ -12,8 +12,7 @@ and the page works:
 <script type="module">
   import { Component79 } from "https://esm.sh/jq79"
 
-  const app = await Component79.fetch("./app.html")
-  app.mount("#app", { title: "Today" })
+  Component79.fetch("./app.html").mount("#app", { title: "Today" })
 </script>
 ```
 
@@ -21,6 +20,25 @@ That is the whole deployment. No `npm install`, no bundler, no config file, no
 build output — the files you wrote are the files you shipped. `Component79.fetch`
 does what it says: a `fetch()`, then the same parse `new Component79(source)`
 does.
+
+It doesn't hand back the component, though — it can't, the download hasn't
+finished. What you get is a *pending* component, and every call you make on it
+(`mount`, `on`, `destroy`, …) queues onto the download and runs in the order you
+wrote it. That's what keeps the page above to one expression. Await it when you
+want the component itself:
+
+```js
+const parsed = await Component79.fetch("./app.html")           // the component
+const app = await Component79.fetch("./app.html").mount("#app") // mounted
+
+const [Header, Footer] = await Component79.fetchAll([           // several at once
+  "./Header.html",
+  "./Footer.html",
+])
+```
+
+`fetchAll` is the plural, and only the plural: pass an array to `fetch` and it
+throws, because there is no sensible component for it to hand back.
 
 While you're writing them, `npx jq79 dev` serves that folder and hot-reloads the
 components you edit, keeping their state — no build step there either, and it
