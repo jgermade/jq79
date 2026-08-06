@@ -1,10 +1,16 @@
 import { defineConfig } from "tsup"
+import { createRequire } from "node:module"
+
+// what Component79.version reads. Substituted here rather than imported: src/
+// ships to the browser, so it can't read package.json at runtime
+const { version } = createRequire(import.meta.url)("./package.json")
 
 export default defineConfig([
   {
     entry: { jq79: "src/jq79.ts" },
     format: ["esm", "cjs", "iife"], // jq79.js / jq79.cjs / jq79.global.js
     globalName: "jq79",             // window.jq79 for the CDN <script> build
+    define: { __JQ79_VERSION__: JSON.stringify(version) },
     dts: false,                     // emitted via tsc (tsup's dts crashes on TS 7)
     sourcemap: true,
     minify: true,

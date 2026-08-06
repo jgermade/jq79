@@ -302,3 +302,16 @@ const [Header, UserCard] = await Component79.fetchAll([
 It's a plain promise, not a chainable handle: mounting a *list* of components
 has no single meaning. Like `Promise.all`, the first failure rejects the whole
 call — fetch the URLs separately if you want one 404 to leave the rest usable.
+
+## Which build am I running?
+
+`Component79.version` is the version of the package the class came from:
+
+```js
+Component79.version // "0.4.15"
+```
+
+It's baked in at build time, so it's the same string in every build — the ESM
+and CJS bundles, and `window.jq79` from the CDN `<script>`, where nothing else
+says which release the page pulled. Running the library straight from `src/`
+(the tests do) reports `"0.0.0-dev"`, since there is no build to stamp it.

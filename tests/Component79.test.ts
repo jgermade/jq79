@@ -1,5 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { readFile } from "node:fs/promises"
 import { $, $$, Component79, $reactive } from "../src/jq79"
 
 describe("Component79", () => {
@@ -13,6 +14,11 @@ describe("Component79", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     host.remove()
+  })
+
+  it("exposes the package version", async () => {
+    const pkg = JSON.parse(await readFile("package.json", "utf8"))
+    expect(Component79.version).toBe(pkg.version)
   })
 
   it("constructs from a source string or from a parts object", () => {

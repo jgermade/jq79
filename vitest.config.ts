@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config"
+import { createRequire } from "node:module"
+
+// the same substitution the build makes (see tsup.config.ts), so tests see the
+// version the released bundle would carry rather than the "0.0.0-dev" fallback
+const { version } = createRequire(import.meta.url)("./package.json")
 
 export default defineConfig({
+  define: { __JQ79_VERSION__: JSON.stringify(version) },
   test: {
     environment: "jsdom",
     coverage: {

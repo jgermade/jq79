@@ -7,6 +7,14 @@ import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseF
 
 export { $, $$, $create } from "./dom"
 export { $reactive } from "./reactive"
+
+// the package version, substituted at build time (tsup/vitest `define`, read
+// from package.json - releases bump it there and nowhere else). The typeof
+// guard is what keeps the raw source runnable: tests and any bundler that
+// doesn't define it see a bare identifier, not a ReferenceError
+declare const __JQ79_VERSION__: string
+const VERSION = typeof __JQ79_VERSION__ === "string" ? __JQ79_VERSION__ : "0.0.0-dev"
+
 type TemplateNode = {
   tag: string
   attrs: Record<string, string>
@@ -1775,6 +1783,10 @@ const fetchComponent = async (url: string): Promise<Component79> => {
 //   jq79.detach()                       // detach, keeping state - mount() re-attaches
 //      .destroy()                      // dispose effects and remove styles
 export class Component79 {
+  // the version of jq79 this class came from, so a page can tell which build it
+  // loaded (a CDN <script> pins nothing on its own)
+  static readonly version: string = VERSION
+
   template: TemplateNode[]
   scripts: TagBlock[]
   styles: TagBlock[]
