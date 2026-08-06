@@ -230,6 +230,7 @@ Passes an object's own properties to a child as props, instead of naming each on
 - **`...expr` takes an identifier or member path** (`...sdk`, `...props.user`) and **preserves camelCase exactly** — `...userData` spreads that object, and unlike a directive name it is an *expression*, so it is not kebab-normalized. It's rewritten to `:props` before HTML parsing, from the raw source, so the parser's name-lowercasing never touches it. A call (`...getProps()`) isn't taken; use the value form `:props="getProps()"`.
 - **A bare `:props="x"` may appear once per tag** — two are identical attribute *names*, and the HTML parser keeps only the first. To compose several spreads use the `...` sugar (which suffixes them internally) or hand-written `:props.0`/`:props.1`: `...a ...b` merges both, `:props="a" :props="b"` silently drops the second.
 - A spread whose expression isn't an object contributes nothing (fails closed, like `:with`), so an `await`-pending value spreads once it resolves.
+- **Narrowed by the child's signature.** A component that declares its props takes only those, so spreading an object wider than the component is normal — see [a signature is a contract both ways](components.md#a-signature-is-a-contract-both-ways). A component with no signature takes every key.
 - Component tags only, like `:model` — on a plain element it's ignored.
 
 ## Nested components
