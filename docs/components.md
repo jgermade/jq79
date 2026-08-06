@@ -241,20 +241,64 @@ live component that came from it, each with its own new parts.
 
 ## Loading remote components
 
+`Component79.fetch(url)` downloads a component and mounts it, no build step in
+sight — a whole page in one expression:
+
+```js
+import { C79 } from "https://jgermade.github.io/jq79/jq79.js"
+
+C79.fetch("./app.html").mount(document.querySelector("main"))
+```
+
+What it hands back is a *pending* component: `mount`, `mountShadow`, `render`,
+`renderShadow`, `on`, `off`, `detach` and `destroy` all queue onto the download
+and run in the order they were written, so a listener registered before `mount`
+is in place by the time the component renders:
+
+```js
+C79.fetch("/components/user-card.html")
+  .on("save", (event, user) => persist(user))
+  .mount("#app", { userId: 42 })
+```
+
+It's also awaitable, resolving to the component itself — awaiting the chain
+gives you the mounted component:
+
 ```js
 const jq79 = await Component79.fetch("/components/user-card.html")
 jq79.mount("#app", { userId: 42 })
+
+const card = await Component79.fetch("/components/user-card.html").mount("#app")
 ```
 
-Given an array of URLs it fetches them all at once and resolves to the
+Which you'll want sooner or later, because on a pending component `mount()`
+returns the pending component — there is no component yet for it to return.
+That's the one asymmetry with `new Component79(src).mount(el)`, which hands back
+the component itself. It's also why the whole lifecycle is on the handle: you
+should never have to `await` just to `destroy()` something.
+
+A chain nobody awaits reports a failed download the way a dropped `.then()`
+chain does, as an unhandled rejection. `catch` and `finally` are there for when
+you'd rather handle it:
+
+```js
+C79.fetch("./app.html")
+  .mount("main")
+  .catch(failure => showOfflineNotice(failure))
+```
+
+### Several at once
+
+`fetchAll` takes an array of URLs, fetches them all at once, and resolves to the
 components in the same order, so one `await` destructures them:
 
 ```js
-const [Header, UserCard] = await Component79.fetch([
+const [Header, UserCard] = await Component79.fetchAll([
   "/components/header.html",
   "/components/user-card.html",
 ])
 ```
 
-Like `Promise.all`, the first failure rejects the whole call — fetch the URLs
-separately if you want one 404 to leave the rest usable.
+It's a plain promise, not a chainable handle: mounting a *list* of components
+has no single meaning. Like `Promise.all`, the first failure rejects the whole
+call — fetch the URLs separately if you want one 404 to leave the rest usable.

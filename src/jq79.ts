@@ -1460,9 +1460,11 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
   return { template, scripts, styles }
 }
 
-// loads .html URLs as components, delegating anything else to native import()
+// loads .html URLs as components, delegating anything else to native import().
+// Goes to fetchComponent rather than Component79.fetch because an import wants
+// the component, not the chainable handle the public entry point returns
 const importResource = (url: string): Promise<any> =>
-  /\.html?([?#]|$)/.test(url) ? Component79.fetch(url) : import(url)
+  /\.html?([?#]|$)/.test(url) ? fetchComponent(url) : import(url)
 
 // ---------------------------------------------------------------------------
 // naming scripts for devtools
@@ -1903,13 +1905,23 @@ export class Component79 {
     return true
   }
 
-  static fetch(url: string): Promise<Component79>
-  static fetch(urls: string[]): Promise<Component79[]>
-  // an array of URLs fetches them all at once and resolves to the components in
-  // the same order, so one await destructures them - and, like Promise.all, the
-  // first failure rejects the whole thing
-  static fetch(urls: string | string[]): Promise<Component79 | Component79[]> {
-    return Array.isArray(urls) ? Promise.all(urls.map(fetchComponent)) : fetchComponent(urls)
+  // downloads and parses a component, handing back a PendingComponent79: a
+  // handle that can be mounted right away, and that awaits to this component -
+  // so both of these are the whole program
+  //
+  //   Component79.fetch("./app.html").mount("main")
+  //   const app = await Component79.fetch("./app.html")
+  static fetch(url: string): PendingComponent79 {
+    if (Array.isArray(url)) throw new TypeError("Component79.fetch takes one URL; use fetchAll for an array")
+    return new PendingComponent79(fetchComponent(url))
+  }
+
+  // fetches them all at once and resolves to the components in the same order,
+  // so one await destructures them - and, like Promise.all, the first failure
+  // rejects the whole thing. A plain promise, not a handle: mounting a *list*
+  // of components has no single meaning
+  static fetchAll(urls: string[]): Promise<Component79[]> {
+    return Promise.all(urls.map(fetchComponent))
   }
 
   // subscribes to this instance's $emit events, on top of the DOM CustomEvent
@@ -2172,6 +2184,90 @@ export class Component79 {
     this.data = null
     this.resolveMounted = null
     return this
+  }
+}
+
+// what Component79.fetch() hands back: a component that hasn't arrived yet.
+//
+// Every method queues onto the fetch and returns the handle, so a whole page
+// is one expression and the calls run in the order they were written:
+//
+//   C79.fetch("./app.html").on("save", persist).mount("main", { user })
+//
+// It is also thenable, resolving to the Component79 itself - which is what
+// keeps `await Component79.fetch(url)` (and importResource, and a handle
+// dropped into Promise.all) working exactly as before. Queued calls keep the
+// resolved value, so awaiting a chain gives the mounted component.
+//
+// The catch: mount() here returns the handle, not the component - there is no
+// component yet to return. That's why the whole lifecycle is on the handle and
+// not just mount(): nobody should have to await merely to destroy something.
+export class PendingComponent79 {
+  // the fetch with every queued call chained onto it, each passing the
+  // component through - so `chain` always settles to the component, however
+  // many calls were queued, and a failure anywhere rejects the rest
+  private chain: Promise<Component79>
+
+  constructor(component: Promise<Component79>) {
+    this.chain = component
+  }
+
+  private queue(action: (component: Component79) => void): this {
+    this.chain = this.chain.then(component => {
+      action(component)
+      return component
+    })
+    return this
+  }
+
+  then<TResult1 = Component79, TResult2 = never>(
+    onfulfilled?: ((value: Component79) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    return this.chain.then(onfulfilled, onrejected)
+  }
+
+  // a chain nobody awaits reports a failed fetch as an unhandled rejection,
+  // like any dropped promise chain - these are for callers who'd rather handle
+  // it. catch() returns a promise, not a handle: the chain ends here
+  catch<TResult = never>(onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | null): Promise<Component79 | TResult> {
+    return this.chain.catch(onrejected)
+  }
+
+  finally(onfinally?: (() => void) | null): Promise<Component79> {
+    return this.chain.finally(onfinally)
+  }
+
+  mount(parent: Element | ShadowRoot | DocumentFragment | string, data?: Record<string, any>): this {
+    return this.queue(component => component.mount(parent, data))
+  }
+
+  mountShadow(parent: Element | ShadowRoot | DocumentFragment | string, data?: Record<string, any>): this {
+    return this.queue(component => component.mountShadow(parent, data))
+  }
+
+  render(data: Record<string, any> = {}): this {
+    return this.queue(component => component.render(data))
+  }
+
+  renderShadow(data: Record<string, any> = {}): this {
+    return this.queue(component => component.renderShadow(data))
+  }
+
+  on(eventName: string, listener: EmitListener): this {
+    return this.queue(component => component.on(eventName, listener))
+  }
+
+  off(eventName: string, listener: EmitListener): this {
+    return this.queue(component => component.off(eventName, listener))
+  }
+
+  detach(): this {
+    return this.queue(component => component.detach())
+  }
+
+  destroy(): this {
+    return this.queue(component => component.destroy())
   }
 }
 

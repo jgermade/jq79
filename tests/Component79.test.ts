@@ -209,13 +209,54 @@ describe("Component79", () => {
     jq79.destroy()
   })
 
-  it("fetch() takes an array of URLs and resolves to the components in order", async () => {
+  it("fetch() mounts without an await", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => `<div class="f">fetched</div>` })))
+
+    const pending = Component79.fetch("/component.html")
+    expect(pending.mount(host)).toBe(pending) // chainable: no component to hand back yet
+
+    const jq79 = await pending
+    expect($(host, ".f")?.textContent).toBe("fetched")
+    jq79.destroy()
+  })
+
+  it("fetch() runs queued calls in the order they were written", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      text: async () => `<button @click="$emit('picked', 7)">go</button>`,
+    })))
+
+    const seen: any[] = []
+    // on() before mount(): the listener has to be registered by the time the
+    // render it precedes wires the template up
+    const jq79 = await Component79.fetch("/component.html")
+      .on("picked", (_event, payload) => seen.push(payload))
+      .mount(host)
+
+    $(host, "button")?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }))
+
+    expect(seen).toEqual([7])
+    jq79.destroy()
+  })
+
+  it("fetch() rejects the chain when the fetch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, text: async () => "" })))
+
+    await expect(Component79.fetch("/missing.html").mount(host)).rejects.toThrow("404")
+    expect(host.innerHTML).toBe("")
+  })
+
+  it("fetch() refuses an array, naming fetchAll", () => {
+    expect(() => Component79.fetch(["/a.html", "/b.html"] as any)).toThrow("fetchAll")
+  })
+
+  it("fetchAll() takes an array of URLs and resolves to the components in order", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => ({ ok: true, text: async () => `<div class="f">${url}</div>` }))
     )
 
-    const [a, b] = await Component79.fetch(["/a.html", "/b.html"])
+    const [a, b] = await Component79.fetchAll(["/a.html", "/b.html"])
 
     a.render().mount(host)
     expect($(host, ".f")?.textContent).toBe("/a.html")
@@ -226,13 +267,13 @@ describe("Component79", () => {
     b.destroy()
   })
 
-  it("fetch() with an array rejects if any URL fails", async () => {
+  it("fetchAll() rejects if any URL fails", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => ({ ok: url !== "/missing.html", status: 404, text: async () => "<p/>" }))
     )
 
-    await expect(Component79.fetch(["/component.html", "/missing.html"])).rejects.toThrow("404")
+    await expect(Component79.fetchAll(["/component.html", "/missing.html"])).rejects.toThrow("404")
   })
 
   it("fetch() rejects on a non-ok response", async () => {
