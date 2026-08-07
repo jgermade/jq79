@@ -57,11 +57,16 @@ describe("no bundle", () => {
     server = await serve(fixtures)
     origin = `http://localhost:${(server.address() as any).port}`
 
-    // a browser resolves a relative URL against the document; Node's fetch
-    // only takes absolute ones, so give it the page's origin to resolve from.
-    // This is the only stand-in for a browser in the whole file
+    // the static host stands in for the page's own origin: jsdom serves the
+    // document from localhost:3000 and the fixtures come off a server on a
+    // random port, so every request is re-pointed at the latter, keeping its
+    // path. A browser needs none of this - it has one origin for both - and it
+    // is the only stand-in for a browser in the whole file
     const nodeFetch = globalThis.fetch
-    vi.stubGlobal("fetch", (url: any, init?: any) => nodeFetch(new URL(String(url), origin), init))
+    vi.stubGlobal("fetch", (url: any, init?: any) => {
+      const { pathname, search } = new URL(String(url), document.baseURI)
+      return nodeFetch(new URL(pathname + search, origin), init)
+    })
   })
 
   afterAll(async () => {

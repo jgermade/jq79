@@ -208,10 +208,25 @@ next to the library. It works out of a subdirectory, off a CDN, and with no
 build step. A component built from an inline string has no location of its own,
 so its relative imports fall back to the page.
 
-`./` and `../` are the only forms resolved. A **bare** specifier (`lodash-es`)
-is left to the import map or the bundler, which is what owns it, and an
-already-absolute one (`/x.js`, `https://…/x.js`) means the same thing under any
-base.
+**A root-absolute one (`/x.js`) resolves against the page**, and both come back
+as fully absolute URLs. That matters when the library is served from somewhere
+else — a CDN, most often:
+
+```
+page   http://localhost:8024/craft/app.html
+jq79   https://jgermade.github.io/jq79/jq79.js
+```
+
+The non-`.html` branch is a native `import()`, and a native `import()` inside
+the library resolves anything short of an absolute URL against **the library's**
+URL. Left as a path, `/craft/services/opfs.service.js` would be requested from
+`jgermade.github.io` and come back a CORS error naming a host the app never
+mentioned. Resolving to an absolute URL up front is what keeps `fetch` and
+`import()` pointing at the same file.
+
+A **bare** specifier (`lodash-es`) is the exception, left untouched for the
+import map or the bundler to answer — that is who owns it, and resolving it
+would quietly turn it into a path.
 
 Under the [Vite plugin](vite-plugin.md), literal specifiers are hoisted into
 real module imports at build time and never reach any of this — the bundler

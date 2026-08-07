@@ -219,7 +219,10 @@ describe("factory scripts (<script> with export default)", () => {
         component.mount(container)
 
         await tick()
-        expect(fetchSpy).toHaveBeenCalledWith("/cards/remote.html")
+        // anchored to the page: the runtime resolves every non-bare specifier
+        // to an absolute URL, so the native import() branch can't drift to the
+        // library module's origin
+        expect(fetchSpy).toHaveBeenCalledWith(new URL("/cards/remote.html", document.baseURI).href)
         expect(container.querySelector(".fetched")?.textContent).toBe("f")
         component.destroy()
       } finally {

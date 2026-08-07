@@ -852,7 +852,7 @@ describe("Component79", () => {
 
       await new Promise(resolve => setTimeout(resolve, 0))
 
-      expect(globalThis.fetch).toHaveBeenCalledWith("/components/foobar.html")
+      expect(globalThis.fetch).toHaveBeenCalledWith(new URL("/components/foobar.html", document.baseURI).href)
       expect($(host, ".imported")?.textContent).toBe("User: Ada")
       jq79.destroy()
     })
@@ -1051,10 +1051,10 @@ describe("Component79", () => {
   // the same `./x` meant two different places depending on the extension, and
   // neither was the component
   describe("relative imports in a script", () => {
-    // what the setup script's import() resolved to, whichever branch took it:
-    // fetch for .html, and for anything else the specifier the failed native
-    // import names back
-    const specifierFrom = async (source: string, filename?: string): Promise<string> => {
+    // runs a setup script and reports both of the places its import() could
+    // show up: the URL fetch was handed (the .html branch) and whatever the
+    // native import() rejected with (every other branch)
+    const runImport = async (source: string, filename?: string) => {
       const fetched = vi.fn(async () => ({ ok: true, text: async () => `<i class="child"></i>` }))
       vi.stubGlobal("fetch", fetched)
       const failed: string[] = []
@@ -1072,62 +1072,81 @@ describe("Component79", () => {
       consoleError.mockRestore()
       jq79.destroy()
 
-      if (fetched.mock.calls.length) return String((fetched.mock.calls[0] as any[])[0])
-      // "Cannot find module '<specifier>' imported from …" - the wording is the
-      // runtime's, but the specifier in it is the one this resolved to
-      return failed.join("\n").match(/'([^']+)'/)?.[1] ?? failed.join("\n")
+      return {
+        fetched: fetched.mock.calls.length ? String((fetched.mock.calls[0] as any[])[0]) : null,
+        error: failed.join("\n"),
+      }
     }
 
-    it("resolves a .js module against the component's directory, not the library's", async () => {
-      // the bug this describe exists for: the import used to land in
-      // /node_modules/jq79/dist/services/, because that is where the native
-      // import() doing the resolving lives
-      expect(
-        await specifierFrom(`const mod = await import("./services/opfs.service.js")`, "/components/app.html")
-      ).toBe("/components/services/opfs.service.js")
-    })
+    // where a .html specifier was fetched from - the one branch that says out
+    // loud what it resolved to
+    const fetchedFrom = async (spec: string, filename?: string): Promise<string | null> =>
+      (await runImport(`const Row = await import(${JSON.stringify(spec)})`, filename)).fetched
 
-    it("resolves a .html component against the same directory, not the page", async () => {
-      expect(
-        await specifierFrom(`const Row = await import("./row.html")`, "/components/app.html")
-      ).toBe("/components/row.html")
+    // a resolved specifier is fully absolute, because a path would send the
+    // native import() branch to the *library's* origin - see resolveSpecifier
+    const onPage = (path: string) => new URL(path, document.baseURI).href
+
+    it("resolves a .html component against its own directory, not the page", async () => {
+      expect(await fetchedFrom("./row.html", "/components/app.html")).toBe(onPage("/components/row.html"))
     })
 
     it("walks up out of the component's directory with ../", async () => {
-      expect(
-        await specifierFrom(`const Row = await import("../shared/row.html")`, "/components/app.html")
-      ).toBe("/shared/row.html")
+      expect(await fetchedFrom("../shared/row.html", "/components/app.html")).toBe(onPage("/shared/row.html"))
     })
 
     it("resolves a filename that is itself relative, by way of the page", async () => {
       // what an import() in a *parent* records: fetchComponent stores the URL
       // it was handed, and a relative URL cannot be a base
-      expect(
-        await specifierFrom(`const Row = await import("./row.html")`, "./components/app.html")
-      ).toBe("/components/row.html")
+      expect(await fetchedFrom("./row.html", "./components/app.html")).toBe(onPage("/components/row.html"))
     })
 
     it("keeps a component served from another origin on that origin", async () => {
-      expect(
-        await specifierFrom(`const Row = await import("./row.html")`, "https://cdn.example.com/pkg/app.html")
-      ).toBe("https://cdn.example.com/pkg/row.html")
+      expect(await fetchedFrom("./row.html", "https://cdn.example.com/pkg/app.html"))
+        .toBe("https://cdn.example.com/pkg/row.html")
     })
 
     it("falls back to the page for a component with no filename", async () => {
       // an inline component came from a string, so it has nowhere else to be
-      expect(await specifierFrom(`const Row = await import("./row.html")`)).toBe("/row.html")
+      expect(await fetchedFrom("./row.html")).toBe(onPage("/row.html"))
     })
 
-    it("leaves bare and already-absolute specifiers alone", async () => {
-      // a bare specifier belongs to the import map or the native resolver;
-      // resolving it would quietly turn it into a path
-      expect(await specifierFrom(`await import("lodash-es")`, "/components/app.html")).toBe("lodash-es")
-      expect(
-        await specifierFrom(`const Row = await import("/row.html")`, "/components/app.html")
-      ).toBe("/row.html")
-      expect(
-        await specifierFrom(`const Row = await import("https://cdn.example.com/row.html")`, "/components/app.html")
-      ).toBe("https://cdn.example.com/row.html")
+    it("leaves a full URL as written", async () => {
+      expect(await fetchedFrom("https://cdn.example.com/row.html", "/components/app.html"))
+        .toBe("https://cdn.example.com/row.html")
+    })
+
+    // the .js branch cannot say where it went - node's loader refuses an http
+    // URL before naming it ("Received protocol 'http:'") - but that refusal is
+    // itself the assertion: it only happens to an *absolute* specifier. A path
+    // or a bare name gets the loader's other error, naming the specifier
+    // unresolved. Which is the whole bug: a path handed to the native import()
+    // is resolved against the library module's origin, and the library is the
+    // one file on the page most likely to sit on a CDN
+    describe("a .js module, which the native import() takes", () => {
+      it("is absolutized when relative, so it can't drift to the library's origin", async () => {
+        const { error } = await runImport(
+          `const mod = await import("./services/opfs.service.js")`, "/components/app.html"
+        )
+        expect(error).toContain("protocol 'http:'")
+      })
+
+      it("is absolutized when root-absolute too", async () => {
+        // `/x.js` means the page's root to whoever wrote it. Passed through, the
+        // native import() would resolve it against the library's origin - which
+        // is a CDN often enough that this is the CORS error users actually hit
+        const { error } = await runImport(
+          `const mod = await import("/craft/services/opfs.service.js")`, "/craft/app.html"
+        )
+        expect(error).toContain("protocol 'http:'")
+      })
+
+      it("is left alone when bare, for the import map or the bundler to answer", async () => {
+        // resolving a bare specifier would quietly turn it into a path
+        const { error } = await runImport(`await import("lodash-es")`, "/components/app.html")
+        expect(error).toContain("'lodash-es'")
+        expect(error).not.toContain("protocol 'http:'")
+      })
     })
 
     it("consults the bundler's modules map before resolving anything", async () => {

@@ -1688,31 +1688,33 @@ const importResource = (url: string): Promise<any> =>
 // fetch() against the document; a component in a subdirectory gets a 404 from
 // the first and the page's directory from the second.
 //
-// Only `./` and `../` are resolved. A bare specifier ("lodash") belongs to the
-// import map or the native resolver, and resolving it would quietly turn it
-// into a path; anything already absolute means one thing under any base. That
-// keeps this the browser's rule rather than a third one of our own.
+// What comes back is always a fully absolute URL, and that is the load-bearing
+// part rather than a detail of formatting. A *path* would be resolved by that
+// same native import() against the library module's ORIGIN - and the library
+// is the one file on the page most likely to come from somewhere else:
+//
+//   page   http://localhost:8024/craft/app.html
+//   jq79   https://jgermade.github.io/jq79/jq79.js
+//   "/craft/services/x.js"  ->  https://jgermade.github.io/craft/services/x.js
+//
+// which is a CORS error naming a host the app never mentioned. Only an
+// absolute URL means the same thing to both branches.
+//
+// For the same reason a *root-absolute* specifier is resolved too, not passed
+// through: `/x.js` means the page's root to whoever wrote it, and the page is
+// the only base under which the two branches agree. Bare specifiers ("lodash")
+// are the exception that stays untouched - they belong to the import map or
+// the bundler, and resolving one would quietly turn it into a path.
 //
 // The base is absolutized first, the way hotKey does and for the same reason:
 // the filename may itself be relative ("./card.html", from an import() in a
-// parent), and a relative URL cannot be a base.
-//
-// What comes back is a path whenever it lands on the page's own origin, and a
-// full URL only when it doesn't (a component served from a CDN resolves its
-// siblings on that CDN). Both are the same request, but the path keeps the
-// value the shape everything downstream already sees - what hotKey keys on,
-// what devtools shows as the script's name - so only the cross-origin case,
-// which has no path form, introduces a new one
+// parent), and a relative URL cannot be a base
+const RESOLVABLE_SPECIFIER_RE = /^(?:\.\.?\/|\/|[a-z][a-z0-9+.-]*:)/i
+
 const resolveSpecifier = (spec: string, filename: string | undefined): string => {
-  if (!/^\.\.?\//.test(spec)) return spec
+  if (!RESOLVABLE_SPECIFIER_RE.test(spec)) return spec
   try {
-    const page = new URL(document.baseURI)
-    const url = new URL(spec, new URL(filename ?? "", page))
-    // "null" is what an opaque origin (file:, blob:) reports, for both sides
-    // and for anything else - it says the origins are unknown, not equal
-    return url.origin !== "null" && url.origin === page.origin
-      ? `${url.pathname}${url.search}${url.hash}`
-      : url.href
+    return new URL(spec, new URL(filename ?? "", document.baseURI)).href
   } catch {
     return spec
   }
