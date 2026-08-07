@@ -689,6 +689,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // or an undeclared name would be filtered on the first render and reappear
     // on the next update
     const declared = declaredPropSet(instance.scripts)
+    warnUndeclared(node, key, Object.keys(props), declared)
     const seed = pickDeclared(untracked(resolveProps), declared)
     // mounting into a fragment attaches no shadow root of its own: a
     // shadow-rendered child keeps its <style> elements inline, next to the DOM
@@ -819,6 +820,41 @@ const normalizeAllowUrl = (policy: any): AllowUrl => {
   return () => false
 }
 
+// HTML's boolean attributes, verbatim from the spec's list. Presence is the
+// whole message for these: `disabled="false"` and `disabled="0"` both disable,
+// so the value they carry is noise. This is a table of a fact, not of a jq79
+// convention - nobody in this repo decides what belongs in it, which is what
+// earns it a place in a codebase that otherwise has no name tables
+const BOOLEAN_ATTRS = new Set([
+  "allowfullscreen", "async", "autofocus", "autoplay", "checked", "controls",
+  "default", "defer", "disabled", "formnovalidate", "inert", "ismap",
+  "itemscope", "loop", "multiple", "muted", "nomodule", "novalidate", "open",
+  "playsinline", "readonly", "required", "reversed", "selected",
+])
+
+// the one value rule, shared by `:attr="expr"` and `:attrs` so the two forms
+// can never disagree:
+//
+// - a boolean attribute is removed by ANY falsy value and set to "" when
+//   truthy, so `:disabled="items.length"` enables the button on an empty list
+//   (with `value !== false` as the only test, 0 set the attribute and disabled
+//   it - the trap renderComponent.test.ts used to pin);
+// - every other attribute is removed only by null/undefined, so `false`, `0`
+//   and `""` are written. `aria-expanded="false"` and a `data-` flag mean
+//   something that absent cannot say.
+//
+// Asking the DOM which family a name belongs to (`typeof el[name] ===
+// "boolean"`) is deliberately not what this does: jsdom and Chrome disagree on
+// `autofocus` and every `aria-*`, so the tests would pin a semantics the
+// browser doesn't have - and `readonly`/`novalidate`/`ismap` reflect under
+// camelCase property names no kebab->camel pass can produce, failing toward
+// `readonly="false"`, which is read-only
+const applyAttr = (el: Element, name: string, value: any) => {
+  const boolean = BOOLEAN_ATTRS.has(name)
+  if (boolean ? !value : value == null) el.removeAttribute(name)
+  else el.setAttribute(name, boolean ? "" : String(value))
+}
+
 // renders a single element node: static attrs, @event listeners, a reactive
 // :attrs object, and its content - :text/:html override the element's own
 // children with a reactive textContent/innerHTML, otherwise children render
@@ -848,7 +884,11 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // imported component after `await`). Watch for the key: the effect tracks
   // no deps, so it only re-runs on the store's new-key sweep, and swaps the
   // placeholder element for the component exactly once
-  if (el instanceof HTMLUnknownElement || node.tag.includes("-")) {
+  // dashes included, because findComponentKey matches them case-insensitively
+  // with dashes stripped: <drop-area> resolves DropArea, so a dashed tag is a
+  // possible component too, not only a custom element
+  const mayUpgrade = el instanceof HTMLUnknownElement || node.tag.includes("-")
+  if (mayUpgrade) {
     let upgraded = false
     fx.effect(() => {
       if (upgraded) return
@@ -871,10 +911,30 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // the native-element form is parked there). Warn on a real element, but
       // not on a tag that may still upgrade into a component - the upgrade
       // re-renders through renderNestedComponent, models and all
-      if (!(el instanceof HTMLUnknownElement || node.tag.includes("-"))) {
+      if (!mayUpgrade) {
         console.warn(`jq79: ${key} on <${node.tag}> does nothing - :model binds component tags only (for now)`)
       }
-    } else if (!isControlAttr(key)) el.setAttribute(key, value)
+    } else if (isControlAttr(key)) {
+      // a directive of its own, bound further down (or by renderNodes)
+    } else if (key.startsWith(":")) {
+      // :name="expr" binds that one attribute, reactively - the single-key
+      // case :attrs="{ name: expr }" was carrying. `:name` alone is shorthand
+      // for `:name="name"`, like props and :model.<name>, and the shorthand
+      // reads the camelCase variable while the attribute keeps its written
+      // (kebab) name: `:aria-expanded` binds `ariaExpanded`, because
+      // `aria-expanded` as an expression is a subtraction.
+      //
+      // On a tag that may still upgrade this is a *parameter*, not an
+      // attribute: leave it written verbatim, as before, so the upgrade's
+      // renderNestedComponent still finds it. A component tag has no single
+      // root for an attribute to land on anyway (TODOS/2026-07-15.class-directive.md)
+      if (mayUpgrade) el.setAttribute(key, value)
+      else {
+        const name = key.slice(1)
+        const expr = value || kebabToCamel(name)
+        fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
+      }
+    } else el.setAttribute(key, value)
   })
 
   const bindExpr = node.attrs[":attrs"]
@@ -885,10 +945,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       boundKeys.forEach(key => el.removeAttribute(key))
       const bound = evalExpr(bindExpr, scope)
       boundKeys = bound && typeof bound === "object" ? Object.keys(bound) : []
-      boundKeys.forEach(key => {
-        const value = bound[key]
-        if (value != null && value !== false) el.setAttribute(key, String(value))
-      })
+      boundKeys.forEach(key => applyAttr(el, key, bound[key]))
     })
   }
 
@@ -1646,6 +1703,22 @@ const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
   })
 }
 
+// a setup script's signature. A bare `<script :setup>` is a CLOSED signature -
+// the same as `<script :setup="{}">`, declaring zero props and taking none -
+// because the difference between "takes nothing" and "takes anything" should
+// not be a pair of braces somebody didn't type. Permissive is still reachable,
+// it just has to be asked for: `<script :setup="_">`, the same `_` convention
+// factory scripts already use, which parsePropsPattern reads as no signature.
+//
+// Only the empty *value* is closed. An absent attribute (a factory <script>
+// with no :setup at all) stays `null`, so its signature is still read from the
+// factory's first parameter
+const setupSignature = (script: TagBlock): PropDecl[] | null => {
+  const pattern = script.attrs[":setup"]
+  if (pattern === undefined) return null
+  return pattern.trim() === "" ? [] : parsePropsPattern(pattern)
+}
+
 // every prop name a component's scripts declare, across both script modes.
 // Read before the store exists, because what a component declares decides
 // which of its file's sibling components it can still see: declaring a name
@@ -1654,7 +1727,7 @@ const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
 const declaredPropNames = (scripts: TagBlock[]): Set<string> => {
   const names = new Set<string>()
   scripts.forEach(script => {
-    const declarations = parseFactoryProps(script.content) ?? parsePropsPattern(script.attrs[":setup"])
+    const declarations = parseFactoryProps(script.content) ?? setupSignature(script)
     declarations?.forEach(({ name }) => names.add(name))
   })
   return names
@@ -1662,13 +1735,13 @@ const declaredPropNames = (scripts: TagBlock[]): Set<string> => {
 
 // the same names, but null when NO script declared a signature at all - the
 // distinction declareProps already keeps, and the only one that can decide
-// whether to filter what a parent passes: `<script :setup>` declares nothing
-// and stays permissive, `<script :setup="{}">` is a closed signature that
-// declares zero props and takes none
+// whether to filter what a parent passes. `<script :setup>` and
+// `<script :setup="{}">` are both closed signatures that take nothing (see
+// setupSignature); `<script :setup="_">` is the permissive one
 const declaredPropSet = (scripts: TagBlock[]): Set<string> | null => {
   let names: Set<string> | null = null
   scripts.forEach(script => {
-    const declarations = parseFactoryProps(script.content) ?? parsePropsPattern(script.attrs[":setup"])
+    const declarations = parseFactoryProps(script.content) ?? setupSignature(script)
     if (!declarations) return
     const into = (names ??= new Set())
     declarations.forEach(({ name }) => into.add(name))
@@ -1688,6 +1761,30 @@ const pickDeclared = (props: Record<string, any>, declared: Set<string> | null):
   const out: Record<string, any> = {}
   Object.keys(props).forEach(key => { if (declared.has(key)) out[key] = props[key] })
   return out
+}
+
+// names already reported by warnUndeclared, keyed by the template node - which
+// is the usage site itself, built once and shared by every instance it ever
+// renders. So a :each over 200 rows says it once, not once per row, and a
+// definition swap doesn't repeat what the last one already said
+const undeclaredWarned = new WeakMap<TemplateNode, Set<string>>()
+
+// a parameter the child's signature doesn't declare is dropped by pickDeclared
+// and never reaches its store - `{{ bar }}` renders empty at the other end of
+// the file. Written parameters only: this is handed the named ones (`:bar`,
+// and the prop each :model binds), never a `:props` spread's keys, because a
+// spread of an object wider than the component is the documented, intended use
+// and taking only the declared few is its point - see pickDeclared. A
+// component with no signature at all declares nothing to compare against
+const warnUndeclared = (node: TemplateNode, name: string, written: string[], declared: Set<string> | null) => {
+  if (declared === null) return
+  const said = undeclaredWarned.get(node) ?? new Set<string>()
+  undeclaredWarned.set(node, said)
+  written.forEach(prop => {
+    if (declared.has(prop) || said.has(prop)) return
+    said.add(prop)
+    console.warn(`jq79: :${prop} is not declared by <${name}> - add it to the :setup signature, or drop it`)
+  })
 }
 
 // the sibling components this one resolves by name, or null when there are
@@ -2217,7 +2314,7 @@ export class Component79 {
         return
       }
       const { vars, code } = transformSetupScript(script.content)
-      declareProps(store, parsePropsPattern(script.attrs[":setup"]))
+      declareProps(store, setupSignature(script))
       // pre-declare script vars on the store so `with` resolves assignments
       // to them (and reads of them) through the reactive proxy
       vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })

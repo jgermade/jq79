@@ -1470,7 +1470,7 @@ describe("Component79", () => {
 
     it("lets a setup-script update initialize the parent binding - wired before the child renders", () => {
       const field = new Component79(
-        `<script :setup>$updateModel('init')</script><span class="c">{{ model }}</span>`
+        `<script :setup="{ model }">$updateModel('init')</script><span class="c">{{ model }}</span>`
       )
       const jq79 = new Component79(`<div><Field :model="user.name" /></div>`)
         .render({ user: { name: "" }, Field: field }).mount(host)
@@ -1493,7 +1493,7 @@ describe("Component79", () => {
     it("settles a $: effect that writes its model back without looping", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {})
       const child = new Component79(
-        `<script :setup>let n = 1\n$: $updateModel(n)</script><i class="c"></i>`
+        `<script :setup="{ model }">let n = 1\n$: $updateModel(n)</script><i class="c"></i>`
       )
       const jq79 = new Component79(`<div><Field :model="hits" /></div>`)
         .render({ hits: 0, Field: child }).mount(host)
@@ -1525,7 +1525,7 @@ describe("Component79", () => {
     it("stops writing back once the usage site tears the child down", () => {
       let fire: ((value: string) => void) | null = null
       const field = new Component79(
-        `<script :setup>register(v => $updateModel(v))</script><i class="c"></i>`
+        `<script :setup="{ model, register }">register(v => $updateModel(v))</script><i class="c"></i>`
       )
       const jq79 = new Component79(`<div><Field :model="text" :register /></div>`)
         .render({ text: "start", register: (fn: any) => { fire = fn }, Field: field }).mount(host)

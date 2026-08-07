@@ -75,11 +75,17 @@ That makes a wrong name fail where it was written: `{{ extra }}` renders empty, 
 <Card ...sdk />   <!-- sdk has a dozen keys; Card gets the ones it declared -->
 ```
 
-Dropping is silent — narrowing a spread is the normal case, not a mistake worth reporting.
+A prop you **wrote** and the component doesn't declare is warned, once per usage site:
+
+```
+jq79: :extra is not declared by <Field> - add it to the :setup signature, or drop it
+```
+
+A **spread's** extra keys are not — narrowing `...sdk` to the few a component takes is the normal case, and the reason to write it.
 
 Two things are never filtered:
 
-- **A component with no signature.** `<script :setup>` (or a factory's `_`) declares nothing and stays permissive, taking whatever the parent passes.
+- **A component with no signature.** A factory's `_`, or `<script :setup="_">`, declares nothing and stays permissive, taking whatever the parent passes.
 - **The root's own `render(data)` / `mount(el, data)`.** That's app state, and it carries the component definitions the template resolves — it isn't props.
 
 ### The empty slot is part of the declaration
@@ -92,7 +98,16 @@ export default ({}, { $effect }) => {}   // a closed signature: this component h
 export default ({ user })        => {}   // only props — don't write a ctx you don't use
 ```
 
-Same distinction in setup mode: `<script :setup>` declares nothing, `<script :setup="{}">` declares zero props — and so takes none, dropping anything a parent passes. A component with no signature behaves exactly as it always has.
+Setup mode reads the same three, in the attribute's value:
+
+```html
+<script :setup="_">          <!-- declares nothing: permissive -->
+<script :setup="{}">         <!-- a closed signature: this component has no props -->
+<script :setup>              <!-- the same closed signature, written short -->
+<script :setup="{ user }">   <!-- takes one prop -->
+```
+
+A **bare `:setup` is closed**, like `{}` — the difference between "takes nothing" and "takes anything" shouldn't be a pair of braces somebody didn't type. Permissive is still there, it just has to be asked for with `_`.
 
 ### Destructuring copies (the one asymmetry)
 

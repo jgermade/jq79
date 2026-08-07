@@ -1,7 +1,11 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { Component79 } from "../src/jq79"
 
 const tick = () => new Promise(resolve => setTimeout(resolve))
+
+// the console.warn spies below stack otherwise: spyOn returns the mock already
+// installed, so its call log would carry the previous test's warns
+afterEach(() => { vi.restoreAllMocks() })
 
 const mount = (component: Component79, data?: Record<string, any>) => {
   const container = document.createElement("div")
@@ -180,8 +184,8 @@ describe("component signature: factory mode", () => {
 // what it doesn't. A prop it never declared is dropped rather than quietly
 // added to its store, so a wrong name at the usage site fails where it was
 // written - `{{ label }}` renders empty, `{{ user.name }}` throws on the
-// member access. Only a component that declared a signature filters: a bare
-// `<script :setup>` declares nothing and stays permissive.
+// member access, and the usage site is warned by name. A bare `<script :setup>`
+// is closed, like `{}`; `<script :setup="_">` is the permissive one.
 describe("component signature: undeclared props are dropped", () => {
   it("drops what a closed signature doesn't declare", () => {
     const child = new Component79(`<script :setup="{}"></script><p class="out">[{{ extra }}]</p>`)
@@ -229,12 +233,25 @@ describe("component signature: undeclared props are dropped", () => {
     app.destroy()
   })
 
-  it("stays permissive when no signature was declared", () => {
-    const child = new Component79(`<script :setup></script><p class="out">[{{ extra }}]</p>`)
+  it("stays permissive when the signature is `_`", () => {
+    const child = new Component79(`<script :setup="_"></script><p class="out">[{{ extra }}]</p>`)
     const app = new Component79(`<div><Child :extra="'x'" /></div>`)
     const container = mount(app, { Child: child })
 
     expect(container.querySelector(".out")?.textContent).toBe("[x]")
+    app.destroy()
+  })
+
+  it("treats a bare :setup as a closed signature, like `{}`", () => {
+    // the difference between "takes nothing" and "takes anything" must not be
+    // a pair of braces somebody didn't type
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup></script><p class="out">[{{ extra }}]</p>`)
+    const app = new Component79(`<div><Child :extra="'x'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[]")
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":extra is not declared by <Child>"))
     app.destroy()
   })
 
@@ -246,6 +263,55 @@ describe("component signature: undeclared props are dropped", () => {
     const container = mount(app, { Child: child })
 
     expect(container.querySelector(".out")?.textContent).toBe("[kept][]")
+    app.destroy()
+  })
+
+  it("stays silent about a spread's extra keys", () => {
+    // `...sdk` wider than the component is the documented, intended use -
+    // taking only the declared few is its point, not a mistake to report
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="{ name }"></script><p class="out">{{ name }}</p>`)
+    const app = new Component79(`<div><Child ...sdk /></div>`)
+    const container = mount(app, { Child: child, sdk: { name: "jq79", version: "0.4.18" } })
+
+    expect(container.querySelector(".out")?.textContent).toBe("jq79")
+    expect(warn).not.toHaveBeenCalled()
+    app.destroy()
+  })
+
+  it("says it once per usage site, not once per :each item", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="{ label }"></script><p class="out">{{ label }}</p>`)
+    const app = new Component79(`<div><Child :each="n in rows" :label="n" :extra="n" /></div>`)
+    const container = mount(app, { Child: child, rows: [1, 2, 3] })
+
+    expect(container.querySelectorAll(".out").length).toBe(3)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":extra is not declared by <Child>"))
+    app.destroy()
+  })
+
+  it("warns for a :model whose prop the child never declared", () => {
+    // the model's prop is written by hand too, and a child that doesn't
+    // declare it never sees the value coming down
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="{}"></script><i class="out"></i>`)
+    const app = new Component79(`<div><Child :model.uname="who" /></div>`)
+    const container = mount(app, { Child: child, who: "Ada" })
+
+    expect(container.querySelector(".out")).toBeTruthy()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":uname is not declared by <Child>"))
+    app.destroy()
+  })
+
+  it("says nothing when the component declared no signature", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="_"></script><p class="out">{{ extra }}</p>`)
+    const app = new Component79(`<div><Child :extra="'x'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("x")
+    expect(warn).not.toHaveBeenCalled()
     app.destroy()
   })
 

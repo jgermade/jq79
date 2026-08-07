@@ -23,13 +23,46 @@ A template is HTML, and its whitespace is HTML's: it reaches the DOM as written,
 
 The one exception is the indentation *between* the branches of an `:if`/`:elseif`/`:else` chain, which is dropped: only one branch is ever in the DOM, so there's nothing for it to be a space between.
 
-## `:attrs` — dynamic attributes
+## `:attr` — one dynamic attribute
 
-Evaluates to an object; each entry becomes an attribute. `null`, `undefined` and `false` values remove the attribute.
+`:<name>="expr"` binds a single attribute, reactively:
+
+```html
+<button :disabled="isSaving">Save</button>
+<a :href="`/users/${user.id}`">profile</a>
+<div :aria-expanded="open"></div>
+```
+
+- `:name` alone is shorthand for `:name="name"`, like props and `:model.<name>`. The attribute keeps its written (kebab) name while the expression reads the camelCase variable, so `:aria-expanded` binds `ariaExpanded` — `aria-expanded` as an expression would be a subtraction.
+- Every name listed on this page is reserved and keeps its own meaning: `:if`, `:each`, `:class`, `:text`, `:attrs`, `:model`, `:value`/`:checked`/`:selected`, and the rest. So `:value` is the form-state directive (the DOM *property*), never the `value` attribute.
+- On a **component tag** `:name` is a prop, not an attribute — a jq79 component has no single root for one to land on. See [nested components](#nested-components).
+
+### The value rule
+
+Shared with `:attrs`, so the two forms can never disagree:
+
+| value | boolean attribute (`disabled`, `checked`, `readonly`, …) | any other attribute |
+| ----- | --- | --- |
+| `null` / `undefined` | removed | removed |
+| `false`, `0`, `""` | removed | written (`"false"`, `"0"`, `""`) |
+| truthy | written as `""` | written as `String(value)` |
+
+A boolean attribute counts as *present*, whatever its value — `disabled="false"` disables — so anything falsy removes it and a truthy value writes nothing. `:disabled="items.length"` enables the button on an empty list, which is what it reads like.
+
+Everything else keeps `false` and `0`, because absent and `"false"` are different things: `aria-expanded="false"` is meaningful ARIA, and so is a `data-` flag.
+
+The boolean names are [HTML's list](https://html.spec.whatwg.org/multipage/indices.html#attributes-3): `allowfullscreen`, `async`, `autofocus`, `autoplay`, `checked`, `controls`, `default`, `defer`, `disabled`, `formnovalidate`, `inert`, `ismap`, `itemscope`, `loop`, `multiple`, `muted`, `nomodule`, `novalidate`, `open`, `playsinline`, `readonly`, `required`, `reversed`, `selected`.
+
+## `:attrs` — several dynamic attributes at once
+
+Evaluates to an object; each entry becomes an attribute, under the value rule above. Reach for it when the key set is dynamic (a spread, a computed object); for one known attribute, `:attr` says it in less.
 
 ```html
 <button :attrs="{ disabled: isSaving, title: tooltip }">Save</button>
+<div :attrs="theme.wrapperAttrs"></div>
 ```
+
+`:attrs` is wholesale — each run removes what it set and writes the new object — so don't bind the same name with both forms on one element: the `:attrs` re-run would wipe what `:attr` wrote until it happened to re-run too.
 
 ## `:class` — reactive classes
 

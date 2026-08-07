@@ -37,7 +37,8 @@ describe("renderComponent", () => {
     data.disabled = true
 
     expect(el.getAttribute("title")).toBe("bye")
-    expect(el.getAttribute("disabled")).toBe("true")
+    // a boolean attribute carries nothing in its value, so it's set to ""
+    expect(el.getAttribute("disabled")).toBe("")
   })
 
   describe(":class", () => {
@@ -998,6 +999,107 @@ describe("renderComponent", () => {
 // sharp edges of attribute binding, pinned: what :attrs does with falsy
 // non-false values, and where the attribute/property split of form elements
 // shows through
+// `:name="expr"` binds one attribute reactively - the single-key case
+// :attrs="{ name: expr }" was carrying. Same value rule as :attrs, because two
+// similar-but-different rules would be worse than either.
+describe(":attr - the single-attribute form", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+
+  it("binds one attribute and keeps it in sync", () => {
+    const component = parseComponent(`<a :href="url">link</a>`)
+    const data = $reactive({ url: "/first" })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("a")!
+
+    expect(el.getAttribute("href")).toBe("/first")
+    data.url = "/second"
+    expect(el.getAttribute("href")).toBe("/second")
+  })
+
+  it("removes the attribute when a non-boolean value goes null", () => {
+    const component = parseComponent(`<div :title="tip"></div>`)
+    const data = $reactive({ tip: "hi" as any })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.getAttribute("title")).toBe("hi")
+    data.tip = null
+    expect(el.hasAttribute("title")).toBe(false)
+    data.tip = ""
+    expect(el.getAttribute("title")).toBe("")
+  })
+
+  it("removes a boolean attribute for any falsy value and sets it to \"\"", () => {
+    const component = parseComponent(`<button :disabled="busy">x</button>`)
+    const data = $reactive({ busy: 0 as any })
+
+    container.appendChild(renderComponent(component, data))
+    const button = container.querySelector("button")!
+
+    expect(button.disabled).toBe(false)
+    data.busy = true
+    expect(button.getAttribute("disabled")).toBe("")
+    expect(button.disabled).toBe(true)
+    data.busy = false
+    expect(button.disabled).toBe(false)
+  })
+
+  it("writes false for an attribute that is not a boolean one", () => {
+    const component = parseComponent(`<div :aria-expanded="open" :data-flag="open"></div>`)
+    const data = $reactive({ open: false })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.getAttribute("aria-expanded")).toBe("false")
+    expect(el.getAttribute("data-flag")).toBe("false")
+  })
+
+  it(":name alone is shorthand for :name=\"name\", reading the camelCase variable", () => {
+    // the attribute keeps its written (kebab) name; the expression can't -
+    // `aria-expanded` as an expression is a subtraction
+    const component = parseComponent(`<input :disabled /><div :aria-expanded></div>`)
+    const data = $reactive({ disabled: true, ariaExpanded: true })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect(container.querySelector("input")!.disabled).toBe(true)
+    expect(container.querySelector("div")!.getAttribute("aria-expanded")).toBe("true")
+  })
+
+  it("leaves reserved directives alone", () => {
+    const component = parseComponent(`<input :value="name" :class.on="flag" />`)
+    const data = $reactive({ name: "Ada", flag: true })
+
+    container.appendChild(renderComponent(component, data))
+    const input = container.querySelector("input")!
+
+    // :value is the property directive, not the value attribute
+    expect(input.value).toBe("Ada")
+    expect(input.hasAttribute("value")).toBe(false)
+    expect(input.className).toBe("on")
+  })
+
+  it("leaves a tag that may still become a component written as-is", () => {
+    // <drop-area> resolves DropArea, so its :foo is a parameter the upgrade
+    // re-reads - not an attribute to bind now
+    const component = parseComponent(`<div><Later :foo="n" /><drop-area :foo="n"></drop-area></div>`)
+    const data = $reactive({ n: 1 })
+
+    container.appendChild(renderComponent(component, data))
+
+    expect(container.querySelector("later")!.getAttribute(":foo")).toBe("n")
+    expect(container.querySelector("drop-area")!.getAttribute(":foo")).toBe("n")
+  })
+})
+
 describe("attribute binding edges", () => {
   let container: HTMLDivElement
 
@@ -1006,24 +1108,44 @@ describe("attribute binding edges", () => {
     document.body.appendChild(container)
   })
 
-  it(":attrs sets boolean attributes for falsy values that are not null/undefined/false", () => {
-    // only null, undefined and false remove; 0 and "" *set* the attribute,
-    // and a set boolean attribute is ON - `disabled: items.length` disables
-    // the button when the list is empty. Pinned so the trap stays documented
+  it(":attrs removes a boolean attribute for any falsy value, 0 and \"\" included", () => {
+    // presence is the whole message for a boolean attribute, so the value is
+    // never worth writing: `disabled: items.length` enables the button on an
+    // empty list, which is what it reads like
     const component = parseComponent(`<button :attrs="{ disabled: n }">x</button>`)
     const data = $reactive({ n: 0 as any })
 
     container.appendChild(renderComponent(component, data))
     const button = container.querySelector("button")!
 
-    expect(button.hasAttribute("disabled")).toBe(true)
-    expect(button.disabled).toBe(true)
+    expect(button.hasAttribute("disabled")).toBe(false)
 
     data.n = ""
-    expect(button.disabled).toBe(true)
+    expect(button.disabled).toBe(false)
 
     data.n = false
     expect(button.disabled).toBe(false)
+
+    data.n = 3
+    expect(button.getAttribute("disabled")).toBe("")
+    expect(button.disabled).toBe(true)
+  })
+
+  it(":attrs writes false and 0 for an attribute that is not a boolean one", () => {
+    // absent and "false" are different things to a screen reader, so the rule
+    // that removes a falsy boolean attribute must not reach aria-* or data-*
+    const component = parseComponent(`<div :attrs="{ 'aria-expanded': open, 'data-count': n, title: t }"></div>`)
+    const data = $reactive({ open: false, n: 0, t: null as any })
+
+    container.appendChild(renderComponent(component, data))
+    const el = container.querySelector("div")!
+
+    expect(el.getAttribute("aria-expanded")).toBe("false")
+    expect(el.getAttribute("data-count")).toBe("0")
+    expect(el.hasAttribute("title")).toBe(false)
+
+    data.open = true
+    expect(el.getAttribute("aria-expanded")).toBe("true")
   })
 
   it(":attrs value writes the attribute, which stops driving an input the user has typed in", () => {
