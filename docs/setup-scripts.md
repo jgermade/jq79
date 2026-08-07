@@ -45,6 +45,16 @@ new Component79(src)
 
   Events emitted before the component is mounted have no ancestors to bubble to, so no DOM listener hears them (`$emit` is meant for handlers and async code, not synchronous top-level setup) — but instance `on()` listeners are notified even while detached. `on()` listeners (which is what `@event` on the component's tag uses) run *before* the DOM dispatch — one of them calling `stopPropagation()` keeps the event off the DOM entirely.
 
+- `$updateModel(value)` / `$updateModel(name, value)` writes back through the [`:model` binding](template-syntax.md#model--two-way-component-binding) the parent's tag declared — one argument for the default model (the bare `:model`), two for a named one. **Arity is what tells them apart**, so the value is never inspected: `$updateModel({ name: "a", value: 1 })` sets the default model to that object, no ambiguity. It's not an event — the parent's tag handed the child this writeback, so nothing bubbles — and like `$emit` it works from template expressions (`@input="$updateModel($event.target.value)"`). Returns `true` when a bound model took the update, `false` when the name binds nothing on the tag (which also warns), when the bound expression isn't assignable, or when the usage site declared no `:model` at all — a child can be used bound or unbound, and unbound is silent.
+
+```html
+<!-- EmailField.html -->
+<input :value="model" @input="$updateModel($event.target.value)">
+
+<!-- LoginForm.html -->
+<input :value="uname" @input="$updateModel('uname', $event.target.value)">
+```
+
 - `await $mounted()` suspends the script until the component is attached to the DOM, so everything below it can use `querySelector` (or `$`/`$$`) directly:
 
 ```html
@@ -226,7 +236,7 @@ The context is everything the library provides — the `$` is what says so:
   your local binding; read it through `$props` when you need the live value.
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
-- `$emit`, `$mounted`, `$self`, `$$self` — same as in setup scripts. `$`,
+- `$emit`, `$updateModel`, `$mounted`, `$self`, `$$self` — same as in setup scripts. `$`,
   `$$`, `$create` and `$reactive` are available lexically in the module body.
 - The **returned object is merged into the store**, making its entries
   visible to the template — that's how imported components and methods are

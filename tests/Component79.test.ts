@@ -1046,9 +1046,9 @@ describe("Component79", () => {
   })
 
   describe(":model on component tags", () => {
-    it("binds the default model both ways: prop down as `model`, model:update back up", () => {
+    it("binds the default model both ways: prop down as `model`, $updateModel back up", () => {
       const field = new Component79(
-        `<input class="field" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+        `<input class="field" :value="model" @input="$updateModel($event.target.value)">`
       )
       const jq79 = new Component79(
         `<div><EmailField :model="email" /><p class="echo">{{ email }}</p></div>`
@@ -1070,16 +1070,13 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("routes named models by the payload's name, multi-line emit expressions included", () => {
+    it("routes named models by name, multi-line update expressions included", () => {
       const form = new Component79(
         `<form>` +
           `<input class="u" :value="uname" @input="
-            $emit('model:update', {
-              name: 'uname',
-              value: $event.target.value
-            })
+            $updateModel('uname', $event.target.value)
           ">` +
-          `<input class="p" :value="password" @input="$emit('model:update', { name: 'password', value: $event.target.value })">` +
+          `<input class="p" :value="password" @input="$updateModel('password', $event.target.value)">` +
           `</form>`
       )
       const jq79 = new Component79(
@@ -1095,9 +1092,9 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("matches an explicit { name: 'default' } to the bare :model", () => {
+    it("matches an explicit 'default' name to the bare :model", () => {
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { name: 'default', value: 'yes' })">go</button>`
+        `<button class="go" @click="$updateModel('default', 'yes')">go</button>`
       )
       const jq79 = new Component79(`<div><Field :model="flag" /></div>`)
         .render({ flag: "no", Field: field }).mount(host)
@@ -1108,9 +1105,9 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("normalizes kebab-case model names to camelCase, payload included", () => {
+    it("normalizes kebab-case model names to camelCase, update names included", () => {
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { name: 'userName', value: 'grace' })">{{ userName }}</button>`
+        `<button class="go" @click="$updateModel('userName', 'grace')">{{ userName }}</button>`
       )
       const jq79 = new Component79(`<div><Field :model.user-name="who" /></div>`)
         .render({ who: "ada", Field: field }).mount(host)
@@ -1125,7 +1122,7 @@ describe("Component79", () => {
 
     it("assigns through a member path, reactively", () => {
       const field = new Component79(
-        `<button class="set" @click="$emit('model:update', { value: 'Grace' })">set</button>`
+        `<button class="set" @click="$updateModel('Grace')">set</button>`
       )
       const jq79 = new Component79(
         `<div><Field :model="user.name" /><p class="who">{{ user.name }}</p></div>`
@@ -1141,7 +1138,7 @@ describe("Component79", () => {
 
     it("expands the shorthand like props do: :model.uname alone binds the variable uname", () => {
       const field = new Component79(
-        `<button class="got" @click="$emit('model:update', { name: 'uname', value: 'turing' })">{{ uname }}</button>`
+        `<button class="got" @click="$updateModel('uname', 'turing')">{{ uname }}</button>`
       )
       const jq79 = new Component79(`<div><Field :model.uname /></div>`)
         .render({ uname: "ada", Field: field }).mount(host)
@@ -1154,10 +1151,10 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("warns on a model:update whose name nothing on the tag binds, assigning nothing", () => {
+    it("warns on an update whose name nothing on the tag binds, assigning nothing", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { name: 'passwrod', value: 'x' })">go</button>`
+        `<button class="go" @click="$updateModel('passwrod', 'x')">go</button>`
       )
       const jq79 = new Component79(`<div><Field :model.password="password" /></div>`)
         .render({ password: "keep", Field: field }).mount(host)
@@ -1177,7 +1174,7 @@ describe("Component79", () => {
     it("warns at wiring time when the expression is not assignable, and drops updates", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { value: 'x' })">{{ model }}</button>`
+        `<button class="go" @click="$updateModel('x')">{{ model }}</button>`
       )
       const jq79 = new Component79(`<div><Field :model="a + b" /></div>`)
         .render({ a: 1, b: 2, Field: field }).mount(host)
@@ -1193,10 +1190,61 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("warns and ignores a payload that isn't a { name?, value } object", () => {
+    it("treats a one-argument object as the value, not as a payload", () => {
+      // the whole reason this is a call and not an emit: arity decides, so a
+      // value that happens to look like the old { name, value } payload is
+      // just a value. The shape can no longer be misread
+      const field = new Component79(
+        `<button class="go" @click="$updateModel({ name: 'nope', value: 'inner' })">go</button>`
+      )
+      const jq79 = new Component79(`<div><Field :model="sel" /></div>`)
+        .render({ sel: null, Field: field }).mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+
+      expect(jq79.data!.sel).toEqual({ name: "nope", value: "inner" })
+      jq79.destroy()
+    })
+
+    it("returns whether a bound model took the update", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const taken: any[] = []
+      const field = new Component79(
+        `<script :setup="{ report, model, ok }">report([$updateModel('x'), $updateModel('nope', 'x'), $updateModel('ok', 'y')])</script><i class="c"></i>`
+      )
+      const jq79 = new Component79(`<div><Field :model="a + b" :model.ok="landed" :report /></div>`)
+        .render({ a: 1, b: 2, landed: "", report: (r: any[]) => taken.push(...r), Field: field })
+        .mount(host)
+
+      // the unassignable default model and the name nothing binds both report
+      // false - and only the third actually wrote
+      expect(taken).toEqual([false, false, true])
+      expect(jq79.data!.landed).toBe("y")
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("is a silent no-op when the usage site binds no :model at all", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const took: boolean[] = []
+      const field = new Component79(
+        `<script :setup="{ report }">report($updateModel('anything'))</script><i class="c"></i>`
+      )
+      // a child may be designed to work bound or unbound: unbound is a
+      // legitimate usage, so it returns false without a lecture
+      const jq79 = new Component79(`<div><Field :report /></div>`)
+        .render({ report: (r: boolean) => took.push(r), Field: field }).mount(host)
+
+      expect(took).toEqual([false])
+      expect(warn).not.toHaveBeenCalled()
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("warns once when a child still emits the old model:update event, and writes nothing", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', 'bare-string')">go</button>`
+        `<button class="go" @click="$emit('model:update', { value: 'x' })">go</button>`
       )
       const jq79 = new Component79(`<div><Field :model="flag" /></div>`)
         .render({ flag: "keep", Field: field }).mount(host)
@@ -1204,8 +1252,10 @@ describe("Component79", () => {
       ;($(host, ".go") as HTMLButtonElement).click()
       ;($(host, ".go") as HTMLButtonElement).click()
 
+      // the event feeds nothing now - which must not be silent, or a component
+      // written against the old contract just stops updating its parent
       expect(jq79.data!.flag).toBe("keep")
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("{ name?, value }"))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("$updateModel"))
       expect(warn).toHaveBeenCalledTimes(1) // per instance, not per emit
       warn.mockRestore()
       jq79.destroy()
@@ -1237,8 +1287,8 @@ describe("Component79", () => {
 
     it("routes default and named models independently on the same tag", () => {
       const field = new Component79(
-        `<button class="d" @click="$emit('model:update', { value: 'D' })">{{ model }}</button>` +
-          `<button class="n" @click="$emit('model:update', { name: 'extra', value: 'N' })">{{ extra }}</button>`
+        `<button class="d" @click="$updateModel('D')">{{ model }}</button>` +
+          `<button class="n" @click="$updateModel('extra', 'N')">{{ extra }}</button>`
       )
       const jq79 = new Component79(`<div><Field :model="main" :model.extra="extra" /></div>`)
         .render({ main: "m", extra: "e", Field: field }).mount(host)
@@ -1254,9 +1304,9 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("accepts the payload name in kebab-case too", () => {
+    it("accepts the update name in kebab-case too", () => {
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { name: 'user-name', value: 'grace' })">go</button>`
+        `<button class="go" @click="$updateModel('user-name', 'grace')">go</button>`
       )
       const jq79 = new Component79(`<div><Field :model.user-name="who" /></div>`)
         .render({ who: "ada", Field: field }).mount(host)
@@ -1267,9 +1317,9 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("assigns undefined when the payload carries no value - one rule, no special case", () => {
+    it("assigns undefined when the update carries no value - one rule, no special case", () => {
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { name: 'uname' })">go</button>`
+        `<button class="go" @click="$updateModel('uname', undefined)">go</button>`
       )
       const jq79 = new Component79(`<div><Field :model.uname /></div>`)
         .render({ uname: "ada", Field: field }).mount(host)
@@ -1282,7 +1332,7 @@ describe("Component79", () => {
 
     it("round-trips object values, both directions", () => {
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { value: { id: model.id + 1 } })">{{ model.id }}</button>`
+        `<button class="go" @click="$updateModel({ id: model.id + 1 })">{{ model.id }}</button>`
       )
       const jq79 = new Component79(`<div><Field :model="sel" /></div>`)
         .render({ sel: { id: 1 }, Field: field }).mount(host)
@@ -1300,7 +1350,7 @@ describe("Component79", () => {
     it("keeps every tag bound to the same variable in sync", () => {
       const viewer = new Component79(`<span class="view">{{ model }}</span>`)
       const editor = new Component79(
-        `<button class="edit" @click="$emit('model:update', { value: 'edited' })">go</button>`
+        `<button class="edit" @click="$updateModel('edited')">go</button>`
       )
       const jq79 = new Component79(`<div><Viewer :model="shared" /><Editor :model="shared" /></div>`)
         .render({ shared: "start", Viewer: viewer, Editor: editor }).mount(host)
@@ -1317,7 +1367,7 @@ describe("Component79", () => {
 
     it("follows the item, not the position, through a keyed :each reorder", () => {
       const field = new Component79(
-        `<button class="f" @click="$emit('model:update', { value: model + '!' })">{{ model }}</button>`
+        `<button class="f" @click="$updateModel(model + '!')">{{ model }}</button>`
       )
       const jq79 = new Component79(
         `<div><Field :each="item in items" :key="item.id" :model="item.text" /></div>`
@@ -1351,7 +1401,7 @@ describe("Component79", () => {
 
     it("writes through a :with narrowing, and reads the prop through it", () => {
       const field = new Component79(
-        `<input class="i" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+        `<input class="i" :value="model" @input="$updateModel($event.target.value)">`
       )
       const jq79 = new Component79(`<div :with="form"><Field :model="uname" /></div>`)
         .render({ form: { uname: "ada" }, Field: field }).mount(host)
@@ -1371,7 +1421,7 @@ describe("Component79", () => {
     it("wires :model through the late-upgrade path, without the plain-element warn", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
       const field = new Component79(
-        `<input class="i" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+        `<input class="i" :value="model" @input="$updateModel($event.target.value)">`
       )
       const jq79 = new Component79(`<div><late-field :model="email"></late-field></div>`)
         .render({ email: "ada@lovelace.dev" }).mount(host)
@@ -1395,7 +1445,7 @@ describe("Component79", () => {
     it("rewires a swapped definition: the new instance seeds from and writes to the same binding", () => {
       const first = new Component79(`<span class="v1">{{ model }}</span>`)
       const second = new Component79(
-        `<button class="v2" @click="$emit('model:update', { value: model + '+' })">{{ model }}</button>`
+        `<button class="v2" @click="$updateModel(model + '+')">{{ model }}</button>`
       )
       const jq79 = new Component79(`<div><Field :model="text" /></div>`)
         .render({ text: "hi", Field: first }).mount(host)
@@ -1412,20 +1462,20 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    // emits that fire while an effect is mid-run: the writeback and the tag
+    // updates that fire while an effect is mid-run: the writeback and the tag
     // handlers run untracked (a handler's reads are nobody's dependency), and
     // even without that the damage is contained twice over - cross-store deps
     // are never notified, and the creation effect's definition guard no-ops a
     // spurious wake. These pin the visible behavior either way
 
-    it("lets a setup-script emit initialize the parent binding - wired before the child renders", () => {
+    it("lets a setup-script update initialize the parent binding - wired before the child renders", () => {
       const field = new Component79(
-        `<script :setup>$emit('model:update', { value: 'init' })</script><span class="c">{{ model }}</span>`
+        `<script :setup>$updateModel('init')</script><span class="c">{{ model }}</span>`
       )
       const jq79 = new Component79(`<div><Field :model="user.name" /></div>`)
         .render({ user: { name: "" }, Field: field }).mount(host)
 
-      // the emit ran inside the parent's creation effect, and still landed -
+      // the update ran inside the parent's creation effect, and still landed -
       // on the parent and, through the prop sync, back on the child itself
       expect(jq79.data!.user.name).toBe("init")
       expect($(host, ".c")?.textContent).toBe("init")
@@ -1440,15 +1490,15 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("settles a $: effect that emits its writeback without looping", () => {
+    it("settles a $: effect that writes its model back without looping", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {})
       const child = new Component79(
-        `<script :setup>let n = 1\n$: $emit('model:update', { value: n })</script><i class="c"></i>`
+        `<script :setup>let n = 1\n$: $updateModel(n)</script><i class="c"></i>`
       )
       const jq79 = new Component79(`<div><Field :model="hits" /></div>`)
         .render({ hits: 0, Field: child }).mount(host)
 
-      // the emit runs inside the child's own $: effect; the writeback writes
+      // the update runs inside the child's own $: effect; the writeback writes
       // the parent's store - one pass, no self-wake (the runtime would cut a
       // loop at 100 rounds with a console.error)
       expect(error).not.toHaveBeenCalled()
@@ -1459,7 +1509,7 @@ describe("Component79", () => {
 
     it("keeps the writeback alive when the expression carries a trailing comment", () => {
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { value: 'sent' })">go</button>`
+        `<button class="go" @click="$updateModel('sent')">go</button>`
       )
       // glued on one line, `= $value` would vanish into the comment and the
       // writeback would compile as a bare read - every update silently lost
@@ -1475,7 +1525,7 @@ describe("Component79", () => {
     it("stops writing back once the usage site tears the child down", () => {
       let fire: ((value: string) => void) | null = null
       const field = new Component79(
-        `<script :setup>register(v => $emit('model:update', { value: v }))</script><i class="c"></i>`
+        `<script :setup>register(v => $updateModel(v))</script><i class="c"></i>`
       )
       const jq79 = new Component79(`<div><Field :model="text" :register /></div>`)
         .render({ text: "start", register: (fn: any) => { fire = fn }, Field: field }).mount(host)
@@ -1484,7 +1534,7 @@ describe("Component79", () => {
       expect(jq79.data!.text).toBe("live")
 
       // the swap destroys the instance; a closure the old child leaked (a
-      // timer, this captured emitter) must not keep writing the parent -
+      // timer, a registered callback) must not keep writing the parent -
       // destroy() nulls the marker, so the stale-generation guard eats it
       jq79.data!.Field = null
       fire!("ghost")
@@ -1496,7 +1546,7 @@ describe("Component79", () => {
     it("settles a burst of writebacks without effect-loop errors", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {})
       const field = new Component79(
-        `<input class="i" :value="model" @input="$emit('model:update', { value: $event.target.value })">`
+        `<input class="i" :value="model" @input="$updateModel($event.target.value)">`
       )
       const jq79 = new Component79(`<div><Field :model="text" /></div>`)
         .render({ text: "", Field: field }).mount(host)
@@ -1535,7 +1585,7 @@ describe("Component79", () => {
 
     it("binds :model.firstName as the model firstName, both ways", () => {
       const field = new Component79(
-        `<button class="go" @click="$emit('model:update', { name: 'firstName', value: 'Grace' })">{{ firstName }}</button>`
+        `<button class="go" @click="$updateModel('firstName', 'Grace')">{{ firstName }}</button>`
       )
       const jq79 = new Component79(`<div><Field :model.firstName="who" /></div>`)
         .render({ who: "Ada", Field: field }).mount(host)

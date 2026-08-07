@@ -26,20 +26,19 @@ separate directions, both broken, from the same shortcut.
 
 ```html
 <!-- NameField.html -->
-<input :value="model" @input="$emit('model:update', { value: $event.target.value })">
+<input :value="model" @input="$updateModel($event.target.value)">
 ```
 
 `:model="name"` passes `name` down as the prop `model` — live, like any prop,
 so a parent write reaches the input for as long as the component holds it. The
-child's `$emit('model:update', { value })` is the way back: the parent
-receives it and assigns `name` for you, no listener to write by hand. Give the
-model a name — `:model.uname="uname"` — and the payload names it too:
-`$emit('model:update', { name: 'uname', value })`; several models can share
-one tag that way.
+child's `$updateModel(value)` is the way back: the parent assigns `name` for
+you, no listener to write by hand. Give the model a name —
+`:model.uname="uname"` — and name it in the call too:
+`$updateModel('uname', value)`; several models can share one tag that way.
 
 > **Your turn:** in `app.html`, drop `:initial` for `:model="name"`. In
 > `NameField.html`, drop the local `value` copy — bind the input straight to
-> `model`, and emit `model:update` on input instead of assigning `value`
+> `model`, and call `$updateModel` on input instead of assigning `value`
 > directly. Then type into the field (the paragraph below should track every
 > keystroke) and hit reset (the field itself should snap back to "Ada").
 

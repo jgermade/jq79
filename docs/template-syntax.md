@@ -201,17 +201,17 @@ Props flow down, events flow up; `:model` wires both at once. The model's name r
 Each `:model[.name]="expr"` is two bindings:
 
 - **A live prop down**, named after the model — the modifier name, camelCase in the child whichever way it was written in the attribute (like any prop, see [name casing](#name-casing)), or `model` for the bare `:model`. The child reads it like any prop, and a parent write (`email = ""`) reaches the child's input.
-- **A writeback up**: the child emits `model:update` with `{ name?, value }`, and the matching model's expression is assigned the value. An omitted `name` means the default model — the bare `:model`. The expression must be an assignment target (`uname`, `user.name`); it's evaluated in the parent scope, so it writes the store reactively, and through a `:with` narrowing.
+- **A writeback up**: the child calls [`$updateModel`](setup-scripts.md) — `$updateModel(value)` for the default model (the bare `:model`), `$updateModel(name, value)` for a named one — and the matching model's expression is assigned the value. The expression must be an assignment target (`uname`, `user.name`); it's evaluated in the parent scope, so it writes the store reactively, and through a `:with` narrowing.
 
-The child's whole side is one emit, straight from the template if it's simple enough:
+The child's whole side is one call, straight from the template if it's simple enough:
 
 ```html
 <!-- EmailField.html -->
-<input :value="model" @input="$emit('model:update', { value: $event.target.value })">
+<input :value="model" @input="$updateModel($event.target.value)">
 ```
 
 - `:model.uname` alone is shorthand for `:model.uname="uname"`, like props.
-- Everything off-contract warns and does nothing: a payload that isn't a `{ name?, value }` object, a `name` that nothing on the tag binds (a typo must not type into the void), an expression that can't be assigned to (warned when the tag renders, not on the first update that would vanish).
+- A `name` that nothing on the tag binds warns and writes nothing — a typo must not type into the void — as does an expression that can't be assigned to (warned when the tag renders, not on the first update that would vanish). Both make `$updateModel` return `false`.
 - The echo terminates: the writeback re-runs the prop sync, but the store skips same-value writes and `:value` never rewrites the string an input already holds — the caret stays put.
 - Component tags only (for now): on a plain element it warns and does nothing. The `:value` + `@input` pair above is the native-element way.
 
@@ -359,7 +359,7 @@ The HTML parser lowercases attribute and tag names before jq79 ever sees them, s
 <slot.headerBar />               <!-- same as <slot.header-bar> -->
 ```
 
-Whichever you write, the name is **camelCase where it's read** — the child's `userName` prop, `$slots.headerBar`, the `model:update` payload's `{ name: 'firstName' }`.
+Whichever you write, the name is **camelCase where it's read** — the child's `userName` prop, `$slots.headerBar`. (A model name is normalized on arrival, so `$updateModel('first-name', v)` and `$updateModel('firstName', v)` find the same binding.)
 
 Kebab-case is the house style in these docs, because it's what HTML looks like. camelCase is accepted so a prop doesn't have to change shape between the template and the script that reads it.
 

@@ -550,6 +550,11 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // the assignment would vanish into the comment and compile as a bare read,
   // dropping every update without a word
   const assignment = (expr: string) => `${expr}\n= $value`
+  // the models whose expression will never take an update, decided here rather
+  // than at update time: an assignment that landed and one that was dropped
+  // both evaluate to the value assigned, so the result can't tell them apart -
+  // which is what $updateModel's return has to report
+  const unassignable = new Set<string>()
   Object.entries(models).forEach(([name, expr]) => {
     const prop = modelProp(name)
     if (props[prop] !== undefined) {
@@ -559,6 +564,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // an expression that can't be an assignment target is a wiring mistake -
     // say so now, not on the first update that silently goes nowhere
     if (compileExpr(assignment(expr), ["$value"]) === null) {
+      unassignable.add(name)
       console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${node.tag}> will be dropped`)
     }
   })
@@ -640,39 +646,37 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // the content this site wrote inside the tag, before the first render: a
     // <slot> is resolved while rendering, so the map has to be there by then
     if (slots) instance.slots = slots
-    // the writeback half of :model - one event, one contract. The name is
-    // normalized like the attribute was (kebab->camel; absent means default),
-    // and everything off-contract warns and does nothing: an event protocol's
-    // failure mode has to be loud, or a typo'd name is an input that types
-    // into the void
+    // the writeback half of :model - the function the child's $updateModel
+    // calls, handed over before the first render. Not an event: nothing about
+    // a parent-child assignment wants a CustomEvent bubbling through the page
+    // on every keystroke, and a direct call has no payload shape to get wrong.
+    // The name is normalized like the attribute was (kebab->camel; absent
+    // means the default model), and a name nothing binds warns: a typo must
+    // not be an input that types into the void
     if (Object.keys(models).length) {
       // each mistake is warned once per instance, not once per keystroke: an
-      // input emitting a typo'd name would otherwise flood the console on
+      // input updating a typo'd name would otherwise flood the console on
       // every character typed into it
       const warned = new Set<string>()
-      const warnOnce = (key: string, message: string) => {
-        if (warned.has(key)) return
-        warned.add(key)
-        console.warn(message)
-      }
-      instance.on("model:update", (_event, payload) => {
-        if (payload === null || typeof payload !== "object") {
-          warnOnce("payload", `jq79: model:update expects a { name?, value } payload, got ${payload === null ? "null" : typeof payload}`)
-          return
-        }
-        const name = payload.name == null ? "default" : kebabToCamel(String(payload.name))
+      instance.modelWriteback = (rawName, value) => {
+        const name = rawName == null ? "default" : kebabToCamel(String(rawName))
         const expr = models[name]
         if (expr === undefined) {
-          warnOnce(name, `jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
-          return
+          if (!warned.has(name)) {
+            warned.add(name)
+            console.warn(`jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
+          }
+          return false
         }
-        // untracked, like the tag handlers: a child emitting from its setup
+        if (unassignable.has(name)) return false // already warned, at wiring time
+        // untracked, like the tag handlers: a child updating from its setup
         // script runs inside the parent's *creation* effect, and the reads a
         // path assignment makes (`user` in `user.name = $value`) would land
         // in its deps - donating that effect one wasted (guard-stopped) wake
         // per later write. An imperative writeback is nobody's dependency
-        untracked(() => evalExpr(assignment(expr), scope, { $value: payload.value }))
-      })
+        untracked(() => evalExpr(assignment(expr), scope, { $value: value }))
+        return true
+      }
     }
 
     // @event on the tag listens to this instance's $emit channel (and only
@@ -1902,6 +1906,13 @@ export class Component79 {
   // and every render reads it from here: a hot reload re-renders from a data
   // snapshot, which a symbol on the store would not survive
   slots?: SlotMap
+  // the writeback half of :model, same story: the function that assigns into
+  // the parent, set by renderNestedComponent before the first render and
+  // called by this instance's $updateModel. Kept outside the render generation
+  // so it survives re-render and hot reload. Absent means no :model on the tag
+  // (or no tag at all - a root mount), which makes every $updateModel a no-op.
+  // Internal: set by the usage site, not part of the public API
+  modelWriteback?: (name: string | undefined, value: any) => boolean
 
   data: ReactiveDeepData<Record<string, any>> | null = null
 
@@ -2094,7 +2105,16 @@ export class Component79 {
     // event is cancelable so preventDefault() - from either channel - flips
     // the return to false, telling the emitting child "the parent vetoed"
     const marker = this.startMarker
+    // model:update used to be the writeback's event name; it is a direct call
+    // now ($updateModel), so an emit under that name reaches nothing. Said
+    // once per generation rather than per keystroke, and said at all because
+    // the alternative is a child whose edits silently stop arriving
+    let warnedModelUpdate = false
     const $emit = (eventName: string, payload?: any): boolean => {
+      if (eventName === "model:update" && !warnedModelUpdate) {
+        warnedModelUpdate = true
+        console.warn("jq79: $emit('model:update', …) no longer feeds :model - call $updateModel(value) or $updateModel(name, value) instead")
+      }
       const event = new CustomEvent(eventName, { detail: payload, bubbles: true, composed: true, cancelable: true })
       if (marker === this.startMarker) {
         this.emitListeners.get(eventName)?.forEach(listener => listener(event, payload))
@@ -2141,17 +2161,35 @@ export class Component79 {
     const $import = (url: string): Promise<any> =>
       modules && url in modules ? Promise.resolve(modules[url]) : importResource(url)
 
+    // the writeback half of :model, from the child's side: one argument is the
+    // value for the default model (the bare :model), two are a name and a
+    // value. Arity is what tells them apart, so the value is never inspected -
+    // an object with `name`/`value` keys is just a value, which is exactly
+    // what a payload-shaped contract could not promise. Returns whether a
+    // bound model took it; no :model at the usage site is a silent no-op,
+    // since a child may be designed to work bound or unbound
+    const $updateModel = (...args: [value?: any] | [name: string, value: any]): boolean => {
+      const [name, value] = args.length > 1 ? args as [string, any] : [undefined, args[0]]
+      // the same stale-generation guard $emit has: destroy() nulls the marker,
+      // so a closure the old child leaked (a timer, a registered callback)
+      // cannot keep writing a parent that replaced it
+      if (marker !== this.startMarker) return false
+      return this.modelWriteback?.(name, value) ?? false
+    }
+
     // the names a component answers on top of its store: $emit, so an inline
     // handler can emit without routing through a setup function
-    // (@input="$emit('update', $event.target.value)"), and $slots, the static
-    // map of the names the usage site filled, so a wrapper can be dropped when
-    // nothing filled it (<footer :if="$slots.footer">). Both reach the
+    // (@input="$emit('update', $event.target.value)"), $updateModel, the
+    // writeback a :model binding listens for, and $slots, the static map of
+    // the names the usage site filled, so a wrapper can be dropped when
+    // nothing filled it (<footer :if="$slots.footer">). All reach the
     // template (through templateScope, below) and both script modes (as
-    // instance helpers), and a same-named store key shadows either.
+    // instance helpers), and a same-named store key shadows any of them.
     // Null-prototype, for the same reason storeApi is: `key in injected` must
     // not start answering true for toString, constructor and the rest
     const injected: Record<string, any> = Object.assign(Object.create(null), {
       $emit,
+      $updateModel,
       $slots: Object.fromEntries(Object.keys(this.slots ?? {}).map(name => [name, true])),
     })
 
