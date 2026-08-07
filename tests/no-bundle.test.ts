@@ -136,6 +136,22 @@ describe("no bundle", () => {
     expect(document.querySelector(".heading")?.textContent).toBe("Today — 3 left")
   })
 
+  it("fetches a component's sibling from the component's own directory", async () => {
+    const { Component79 } = await import(pathToFileURL(dist("jq79.js")).href)
+
+    // the fixtures above are flat, so a relative import lands in the page's
+    // directory and the component's alike - which is what hid this for so
+    // long. /components/panel.html imports "./badge.html", and only one of
+    // those two directories has it
+    const panel = await Component79.fetch("/components/panel.html")
+    panel.mount(host(), { heading: "Inbox" })
+
+    await vi.waitFor(() => expect(document.querySelectorAll(".panel .badge")).toHaveLength(2))
+    expect([...document.querySelectorAll(".panel .badge")].map(el => el.textContent))
+      .toEqual(["draft", "urgent"])
+    expect(document.querySelector(".panel-heading")?.textContent).toBe("Inbox")
+  })
+
   it("runs the page a static host would serve, verbatim", async () => {
     // tests/fixtures/no-bundle/index.html is a deployable page: a #app div and
     // a module script that imports jq79 from a CDN and mounts a fetched

@@ -1,0 +1,12 @@
+<script :setup="{ heading }">
+  const Badge = await import("./badge.html")
+
+  let tags = ["draft", "urgent"]
+</script>
+
+<section class="panel">
+  <h2 class="panel-heading">{{ heading }}</h2>
+  <p :each="tag in tags">
+    <Badge :label="tag"></Badge>
+  </p>
+</section>

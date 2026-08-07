@@ -188,6 +188,35 @@ The fix is to do the first pass yourself, after the DOM is there:
 `await $mounted()` were its first line), which is simpler when *nothing* in the
 script needs to run before render.
 
+## Imports
+
+`await import(...)` works in a setup script. A `.html` specifier resolves to a
+component (fetched and parsed); anything else goes to the native `import()`:
+
+```html
+<!-- /components/panel.html -->
+<script :setup>
+  const Badge = await import("./badge.html")              // /components/badge.html
+  const { format } = await import("./format.js")          // /components/format.js
+  const { debounce } = await import("lodash-es")          // the import map
+</script>
+```
+
+**A relative specifier resolves against the component's own file**, the same as
+in any module — `./` means "next to this `.html`", not next to the page and not
+next to the library. It works out of a subdirectory, off a CDN, and with no
+build step. A component built from an inline string has no location of its own,
+so its relative imports fall back to the page.
+
+`./` and `../` are the only forms resolved. A **bare** specifier (`lodash-es`)
+is left to the import map or the bundler, which is what owns it, and an
+already-absolute one (`/x.js`, `https://…/x.js`) means the same thing under any
+base.
+
+Under the [Vite plugin](vite-plugin.md), literal specifiers are hoisted into
+real module imports at build time and never reach any of this — the bundler
+resolves them, so an npm package works whether or not the page has an import map.
+
 ## Debugging a script
 
 Setup scripts are compiled with `new Function` — they need `with`, which is a `SyntaxError` inside an ES module — so they aren't part of any bundle and no bundler source map reaches them. To keep them debuggable, each compiled script is named after the component it came from:
@@ -244,10 +273,10 @@ The context is everything the library provides — the `$` is what says so:
 
 Details worth knowing:
 
-- **Imports are real**: static `import` statements work (rewritten at runtime
-  to awaited dynamic imports — `.html` files resolve to components via fetch,
-  everything else via native `import()`; under the [Vite plugin](vite-plugin.md)
-  they're bundled). Only `export default` is supported — no named exports.
+- **Imports are real**: static `import` statements work, rewritten at runtime to
+  awaited dynamic imports and resolved exactly as [above](#imports) — relative
+  to the component's own file. Only `export default` is supported — no named
+  exports.
 - Import bindings are lexical, not scope vars: to use an imported component
   in the template, expose it via the return value or `$data`.
 - A fully synchronous module body runs before the first render, like a setup

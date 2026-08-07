@@ -1681,6 +1681,43 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
 const importResource = (url: string): Promise<any> =>
   /\.html?([?#]|$)/.test(url) ? fetchComponent(url) : import(url)
 
+// a relative specifier means "next to the file that wrote it", so it is
+// resolved against the component's own URL before importResource sees it -
+// neither of that function's two branches would otherwise land there. The
+// native import() inside it resolves against *this module* (dist/jq79.js), and
+// fetch() against the document; a component in a subdirectory gets a 404 from
+// the first and the page's directory from the second.
+//
+// Only `./` and `../` are resolved. A bare specifier ("lodash") belongs to the
+// import map or the native resolver, and resolving it would quietly turn it
+// into a path; anything already absolute means one thing under any base. That
+// keeps this the browser's rule rather than a third one of our own.
+//
+// The base is absolutized first, the way hotKey does and for the same reason:
+// the filename may itself be relative ("./card.html", from an import() in a
+// parent), and a relative URL cannot be a base.
+//
+// What comes back is a path whenever it lands on the page's own origin, and a
+// full URL only when it doesn't (a component served from a CDN resolves its
+// siblings on that CDN). Both are the same request, but the path keeps the
+// value the shape everything downstream already sees - what hotKey keys on,
+// what devtools shows as the script's name - so only the cross-origin case,
+// which has no path form, introduces a new one
+const resolveSpecifier = (spec: string, filename: string | undefined): string => {
+  if (!/^\.\.?\//.test(spec)) return spec
+  try {
+    const page = new URL(document.baseURI)
+    const url = new URL(spec, new URL(filename ?? "", page))
+    // "null" is what an opaque origin (file:, blob:) reports, for both sides
+    // and for anything else - it says the origins are unknown, not equal
+    return url.origin !== "null" && url.origin === page.origin
+      ? `${url.pathname}${url.search}${url.hash}`
+      : url.href
+  } catch {
+    return spec
+  }
+}
+
 // ---------------------------------------------------------------------------
 // naming scripts for devtools
 //
@@ -2353,10 +2390,15 @@ export class Component79 {
 
     // import() calls whose specifier was pre-resolved by a bundler (the
     // modules map) get the bundled module; everything else falls back to the
-    // runtime importResource (fetch for .html, native import otherwise)
+    // runtime importResource (fetch for .html, native import otherwise),
+    // relative to this component's file. The map is keyed by the literal
+    // specifier the script wrote, so it is consulted *before* resolution -
+    // what the bundler hoisted and what the source says are the same string
     const modules = this.modules
     const $import = (url: string): Promise<any> =>
-      modules && url in modules ? Promise.resolve(modules[url]) : importResource(url)
+      modules && url in modules
+        ? Promise.resolve(modules[url])
+        : importResource(resolveSpecifier(url, this.filename))
 
     // the writeback half of :model, from the child's side: one argument is the
     // value for the default model (the bare :model), two are a name and a

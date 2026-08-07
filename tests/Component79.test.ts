@@ -1045,6 +1045,112 @@ describe("Component79", () => {
     })
   })
 
+  // a relative specifier means "next to the file that wrote it". Neither branch
+  // of importResource would land there on its own: native import() resolves
+  // against the library module (dist/jq79.js) and fetch() against the page, so
+  // the same `./x` meant two different places depending on the extension, and
+  // neither was the component
+  describe("relative imports in a script", () => {
+    // what the setup script's import() resolved to, whichever branch took it:
+    // fetch for .html, and for anything else the specifier the failed native
+    // import names back
+    const specifierFrom = async (source: string, filename?: string): Promise<string> => {
+      const fetched = vi.fn(async () => ({ ok: true, text: async () => `<i class="child"></i>` }))
+      vi.stubGlobal("fetch", fetched)
+      const failed: string[] = []
+      const consoleError = vi.spyOn(console, "error").mockImplementation((...args: any[]) => {
+        failed.push(String(args[1]))
+      })
+
+      const src = `<script :setup>\n${source}\n</script>\n<p>x</p>`
+      const jq79 = new Component79(src, filename === undefined ? {} : { filename }).render({}).mount(host)
+      // a fetch lands next tick; a native import() that finds nothing takes
+      // the module loader a few more, so wait for whichever arrives
+      await vi.waitFor(() => {
+        if (!fetched.mock.calls.length && !failed.length) throw new Error("the import is still in flight")
+      })
+      consoleError.mockRestore()
+      jq79.destroy()
+
+      if (fetched.mock.calls.length) return String((fetched.mock.calls[0] as any[])[0])
+      // "Cannot find module '<specifier>' imported from …" - the wording is the
+      // runtime's, but the specifier in it is the one this resolved to
+      return failed.join("\n").match(/'([^']+)'/)?.[1] ?? failed.join("\n")
+    }
+
+    it("resolves a .js module against the component's directory, not the library's", async () => {
+      // the bug this describe exists for: the import used to land in
+      // /node_modules/jq79/dist/services/, because that is where the native
+      // import() doing the resolving lives
+      expect(
+        await specifierFrom(`const mod = await import("./services/opfs.service.js")`, "/components/app.html")
+      ).toBe("/components/services/opfs.service.js")
+    })
+
+    it("resolves a .html component against the same directory, not the page", async () => {
+      expect(
+        await specifierFrom(`const Row = await import("./row.html")`, "/components/app.html")
+      ).toBe("/components/row.html")
+    })
+
+    it("walks up out of the component's directory with ../", async () => {
+      expect(
+        await specifierFrom(`const Row = await import("../shared/row.html")`, "/components/app.html")
+      ).toBe("/shared/row.html")
+    })
+
+    it("resolves a filename that is itself relative, by way of the page", async () => {
+      // what an import() in a *parent* records: fetchComponent stores the URL
+      // it was handed, and a relative URL cannot be a base
+      expect(
+        await specifierFrom(`const Row = await import("./row.html")`, "./components/app.html")
+      ).toBe("/components/row.html")
+    })
+
+    it("keeps a component served from another origin on that origin", async () => {
+      expect(
+        await specifierFrom(`const Row = await import("./row.html")`, "https://cdn.example.com/pkg/app.html")
+      ).toBe("https://cdn.example.com/pkg/row.html")
+    })
+
+    it("falls back to the page for a component with no filename", async () => {
+      // an inline component came from a string, so it has nowhere else to be
+      expect(await specifierFrom(`const Row = await import("./row.html")`)).toBe("/row.html")
+    })
+
+    it("leaves bare and already-absolute specifiers alone", async () => {
+      // a bare specifier belongs to the import map or the native resolver;
+      // resolving it would quietly turn it into a path
+      expect(await specifierFrom(`await import("lodash-es")`, "/components/app.html")).toBe("lodash-es")
+      expect(
+        await specifierFrom(`const Row = await import("/row.html")`, "/components/app.html")
+      ).toBe("/row.html")
+      expect(
+        await specifierFrom(`const Row = await import("https://cdn.example.com/row.html")`, "/components/app.html")
+      ).toBe("https://cdn.example.com/row.html")
+    })
+
+    it("consults the bundler's modules map before resolving anything", async () => {
+      // the map is keyed by the literal specifier the script wrote, so a
+      // bundled component must never see the resolved form
+      const row = new Component79(`<i class="row">bundled</i>`)
+      vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("should not fetch") }))
+
+      const src = [
+        `<script :setup>`,
+        `const Row = await import("./row.html")`,
+        `</script>`,
+        `<div><Row></Row></div>`,
+      ].join("\n")
+      const jq79 = new Component79(src, { filename: "/components/app.html", modules: { "./row.html": row } })
+        .render({}).mount(host)
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect($(host, ".row")?.textContent).toBe("bundled")
+      jq79.destroy()
+    })
+  })
+
   describe(":model on component tags", () => {
     it("binds the default model both ways: prop down as `model`, $updateModel back up", () => {
       const field = new Component79(
