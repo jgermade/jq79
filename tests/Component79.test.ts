@@ -2139,4 +2139,109 @@ describe("Component79", () => {
       warn.mockRestore()
     })
   })
+
+  // the dedupe that makes these warnings bearable is module-level and keyed by
+  // name, so every test here uses a name of its own
+  describe("names a template expression cannot resolve", () => {
+    const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+    it("warns once for a name declared nowhere, however often it is evaluated", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const jq79 = new Component79(`<button class="go" @click="missingHandler">go</button>`)
+        .render().mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+      ;($(host, ".go") as HTMLButtonElement).click()
+      await flush()
+      ;($(host, ".go") as HTMLButtonElement).click() // after the warning, too
+      await flush()
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("missingHandler is not defined"))
+      expect(warn).toHaveBeenCalledTimes(1)
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("names the fix for a top-level function declaration, the trap that prompted this", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      // transformSetupScript rewrites let/var/const into store assignments and
+      // leaves `function` alone, so onFiles is a lexical binding the template
+      // cannot see - the failure this whole path exists to make audible
+      const jq79 = new Component79(
+        `<script :setup>function onFiles(e) { $emit("x", e) }</script>` +
+        `<button class="go" @click="onFiles">go</button>`
+      ).render().mount(host)
+
+      ;($(host, ".go") as HTMLButtonElement).click()
+      await flush()
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("onFiles is not defined"))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("const name = () => {}"))
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("stays quiet when the value is merely not loaded yet", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      // `user` is declared and undefined: a TypeError on member access, which
+      // is the transient case the catch exists to absorb, not an authoring bug
+      const jq79 = new Component79(`<p class="who">{{ user.name }}</p>`)
+        .render({ user: undefined }).mount(host)
+      await flush()
+
+      expect($(host, ".who")?.textContent).toBe("")
+      expect(warn).not.toHaveBeenCalled()
+
+      jq79.data!.user = { name: "ada" }
+      expect($(host, ".who")?.textContent).toBe("ada")
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("stays quiet while an async factory's bindings are still on the way", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      // a factory assigns its names to the store when it returns, so the first
+      // render reads a name that genuinely does not exist yet. Reporting waits
+      // for the scripts to settle and asks again
+      const jq79 = new Component79(
+        `<script>export default async () => { await Promise.resolve(); return { greeting: "hola" } }</script>` +
+        `<p class="hi">{{ greeting }}</p>`
+      ).render().mount(host)
+
+      expect($(host, ".hi")?.textContent).toBe("") // it did fail, once
+      await flush()
+
+      expect($(host, ".hi")?.textContent).toBe("hola")
+      expect(warn).not.toHaveBeenCalled()
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("says it once for a whole :each, not once per item", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const jq79 = new Component79(`<li :each="n in items" class="row">{{ n * factr }}</li>`)
+        .render({ items: [1, 2, 3, 4, 5] }).mount(host)
+      await flush()
+
+      expect($$(host, ".row")).toHaveLength(5)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("factr is not defined"))
+      expect(warn).toHaveBeenCalledTimes(1)
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("says it again after a hot update, since the source changed under it", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const jq79 = new Component79(`<p class="out">{{ oldTypo }}</p>`).render().mount(host)
+      await flush()
+      expect(warn).toHaveBeenCalledTimes(1)
+
+      jq79.hotReplace(`<p class="out">{{ oldTypo }}</p>`)
+      await flush()
+
+      expect(warn).toHaveBeenCalledTimes(2)
+      warn.mockRestore()
+      jq79.destroy()
+    })
+  })
 })

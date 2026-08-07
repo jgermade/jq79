@@ -14,7 +14,7 @@
 ```
 
 - The `:setup` attribute's value is the component's **prop signature**: `:setup="{ fname, lname = 'Lovelace' }"` declares the props the parent passes, with optional defaults, and the defaults are on the store before the first render. It's a declaration, not a comment — a prop it doesn't name is dropped, and the usage site that wrote it is warned. A bare `:setup` is a *closed* signature (no props); write `:setup="_"` for a component that takes whatever it's handed. See [props](components.md#props).
-- Top-level `let` / `var` / `const` declarations become properties of the reactive store (also reachable from outside via `jq79.data`).
+- Top-level `let` / `var` / `const` declarations become properties of the reactive store (also reachable from outside via `jq79.data`). **`function` declarations do not** — a `function save() {}` stays an ordinary local binding the template can't see, so write handlers as `const save = () => …`. Bind one anyway and the console says so.
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.

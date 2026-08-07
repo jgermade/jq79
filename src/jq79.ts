@@ -94,12 +94,95 @@ const compileExpr = (expr: string, params: string[]): Function | null => {
   return fn
 }
 
+// a template expression is re-evaluated constantly - once per effect run, once
+// per interpolation, once per :each item - so a value that is briefly undefined
+// mid-render has to fail quietly, and the catch below stays. A ReferenceError
+// is the one failure worth a word: `with` resolves a name against the store and
+// then globalThis, so a name that resolves nowhere is declared nowhere - a
+// typo, a dropped prop, or the trap this was written for, a top-level
+// `function` declaration, which transformSetupScript leaves as an ordinary
+// lexical binding instead of a store property
+//
+// It is reported late rather than where it throws, because "declared nowhere"
+// is not yet decidable at that moment: a factory script assigns its bindings to
+// the store when it returns, so an async factory renders its whole template
+// before any of its names exist. Reporting waits until no script is still
+// running (pendingScripts), and then asks whether the name resolves *now*.
+//
+// The re-check is `name in scope` rather than a re-evaluation, because
+// re-evaluating is not pure: `@click="count++ + missing"` increments before it
+// throws, and running it again to see if it still throws would increment twice
+// and notify. `in` walks the same scope chain (:each scopes are
+// Object.create(scope), :with is a proxy over it) and evaluates nothing
+const MISSING_NAME_RE = /^(?:([\w$]+) is not defined|Can't find variable: ([\w$]+))/
+
+// the queue holds live scopes, so it is capped: a script that never settles
+// would otherwise let it grow for the life of the page
+const MAX_PENDING_REPORTS = 100
+
+type PendingReport = { name: string; expr: string; scope: Record<string, any> }
+
+const pendingReports = new Map<string, PendingReport>()
+const reportedExprErrors = new Set<string>()
+let pendingScripts = 0
+let flushScheduled = false
+
+const flushExprReports = () => {
+  flushScheduled = false
+  if (pendingScripts > 0) return // a script started meanwhile; its release re-schedules
+  pendingReports.forEach(({ name, expr, scope }, key) => {
+    if (name in scope) return // it arrived late - a factory's bindings, a prop
+    reportedExprErrors.add(key)
+    console.warn(
+      `jq79: ${name} is not defined - evaluating "${expr}". Template expressions ` +
+      `resolve against the component store: a top-level let/var/const in a :setup ` +
+      `script, a declared prop, or a global. Note a "function name() {}" declaration ` +
+      `is not on the store - write "const name = () => {}".`
+    )
+  })
+  pendingReports.clear()
+}
+
+const scheduleExprReportFlush = () => {
+  if (flushScheduled || pendingScripts > 0 || !pendingReports.size) return
+  flushScheduled = true
+  queueMicrotask(flushExprReports)
+}
+
+// scripts run before the template renders, so the counter is already up when
+// the first evaluation fails. Both script modes settle through a promise;
+// the factory's has to cover the merge, not just the module body
+const trackScript = (settled: Promise<unknown>) => {
+  pendingScripts++
+  const release = () => {
+    pendingScripts--
+    scheduleExprReportFlush()
+  }
+  settled.then(release, release)
+}
+
+const reportExprError = (expr: string, scope: Record<string, any>, error: unknown) => {
+  if (!(error instanceof ReferenceError)) return
+  const match = MISSING_NAME_RE.exec(error.message)
+  const name = match?.[1] ?? match?.[2]
+  if (!name) return // an engine whose wording we don't know: stay quiet, as before
+  // keyed on name and expression, not on the expression alone, so two missing
+  // names in one expression stay distinguishable - and so a :each of 1000 items
+  // enqueues one entry rather than 1000
+  const key = `${name}|${expr}`
+  if (reportedExprErrors.has(key) || pendingReports.has(key)) return
+  if (pendingReports.size >= MAX_PENDING_REPORTS) return
+  pendingReports.set(key, { name, expr, scope })
+  scheduleExprReportFlush()
+}
+
 const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
   const fn = compileExpr(expr, extras ? Object.keys(extras) : [])
   if (!fn) return undefined
   try {
     return fn(scope, ...(extras ? Object.values(extras) : []))
-  } catch {
+  } catch (error) {
+    reportExprError(expr, scope, error)
     return undefined
   }
 }
@@ -1682,6 +1765,7 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
     `return (async () => { with ($scope) { ${code} } })()${sourceUrlComment(at.filename, at.index ?? 0)}`
   )(scriptScope, effect, importer, ...Object.values(helpers))
   result.catch(error => console.error("jq79: error in :setup script", error))
+  trackScript(result)
 }
 
 // puts a component's declared props on the store, before any script runs and
@@ -1838,11 +1922,16 @@ const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run
 
   const logError = (error: any) => console.error("jq79: error in factory script", error)
   let invoked = false
-  const invoke = () => {
-    if (invoked) return
+  // what invoke() is still waiting on, memoized: it is called from both paths
+  // below and does its work once, but the *second* caller is the one whose
+  // promise is tracked - without this it would see `undefined` and count the
+  // script as settled while an async factory's bindings are still on the way
+  let merging: Promise<void> | undefined
+  const invoke = (): Promise<void> | undefined => {
+    if (invoked) return merging
     invoked = true
     const factory = $__exports.default
-    if (typeof factory !== "function") return
+    if (typeof factory !== "function") return undefined
     const merge = (bindings: any) => {
       if (bindings && typeof bindings === "object") Object.assign(scope, bindings)
     }
@@ -1853,14 +1942,18 @@ const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run
       // the props it declared (copying, as destructuring does - $props is the
       // live view for a primitive the parent reassigns later)
       const returned = factory(scope, { $data: scope, $props: scope, $effect: effect, ...instanceHelpers })
-      if (returned instanceof Promise) returned.then(merge).catch(logError)
+      if (returned instanceof Promise) merging = returned.then(merge).catch(logError)
       else merge(returned)
     } catch (error) {
       logError(error)
     }
+    return merging
   }
 
-  result.then(invoke, logError)
+  // tracked through the merge, not just the module body: a factory's names
+  // reach the store in `merge`, and a template expression that reads one before
+  // then is not an authoring mistake (see reportExprError)
+  trackScript(result.then(invoke, logError))
   if ($__exports.done) invoke() // fully-sync body: factory runs before first render
 }
 
@@ -2079,6 +2172,13 @@ export class Component79 {
   // while its markers sit where its DOM actually is
   hotReplace(src: string | ComponentParts): boolean {
     const parts = typeof src === "string" ? parseComponentString(src) : src
+    // the source just changed, so what was already said about it no longer
+    // applies: without this the author fixes the typo, saves, and the next typo
+    // in the same expression is deduped away against the old one. `compiled`
+    // needs no such reset - it is keyed by expression text, so edited source is
+    // a different key
+    reportedExprErrors.clear()
+    pendingReports.clear()
     const marker = this.startMarker
     const rendered = !!(marker && this.content)
 
