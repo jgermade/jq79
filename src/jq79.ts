@@ -127,6 +127,36 @@ const reportedExprErrors = new Set<string>()
 let pendingScripts = 0
 let flushScheduled = false
 
+// everything else an expression can throw - overwhelmingly a member access on
+// an undefined value, `{{ game.is.loaded }}` over a game with no `is`. There is
+// no pure question to ask about it the way there is for a missing name: `in`
+// answers "declared anywhere?" without evaluating, and nothing answers "would
+// this still throw?" without running the expression again, which is exactly
+// what mustn't happen (`@click="count++ + missing"` increments twice).
+//
+// What is pure is watching the evaluations that were going to happen anyway. An
+// expression whose value is merely late is re-evaluated when the value arrives -
+// the reads that did land registered as dependencies, so the write wakes the
+// effect - and it succeeds then. So transient means "succeeds later", and the
+// re-check is to clear the entry on the next successful evaluation and report
+// only what is still queued once the page has gone quiet.
+//
+// Quiet is a timer rather than the microtask the other queue flushes on,
+// because a value from fetch() arrives many tasks later and clearing on success
+// exists to let it. A second covers that and still lands the warning inside the
+// page load. It is a guess, and the cost is a slower fetch warning about correct
+// code with nothing to take it back - accepted because the silence it replaces
+// hid a render that was actively wrong
+const FAILED_EXPR_DELAY = 1000
+
+// keyed by expression text alone, not `message|expr`: the expression is what the
+// author edits, and one broken path throwing two messages is still one bug. The
+// entries hold no scope, only strings, so this queue cannot retain a live
+// component the way pendingReports can
+const failedExprs = new Map<string, string>()
+const reportedFailedExprs = new Set<string>()
+let failedFlushTimer: ReturnType<typeof setTimeout> | undefined
+
 const flushExprReports = () => {
   flushScheduled = false
   if (pendingScripts > 0) return // a script started meanwhile; its release re-schedules
@@ -149,6 +179,25 @@ const scheduleExprReportFlush = () => {
   queueMicrotask(flushExprReports)
 }
 
+const flushFailedExprs = () => {
+  failedFlushTimer = undefined
+  if (pendingScripts > 0) return // a script started meanwhile; its release re-schedules
+  failedExprs.forEach((message, expr) => {
+    reportedFailedExprs.add(expr)
+    console.warn(
+      `jq79: ${message} - evaluating "${expr}". It rendered as nothing and was ` +
+      `still failing a moment later, so the value is probably never coming: check ` +
+      `the path. If it does arrive asynchronously, guard it - "a?.b", or :if on the element.`
+    )
+  })
+  failedExprs.clear()
+}
+
+const scheduleFailedExprFlush = () => {
+  if (failedFlushTimer !== undefined || pendingScripts > 0 || !failedExprs.size) return
+  failedFlushTimer = setTimeout(flushFailedExprs, FAILED_EXPR_DELAY)
+}
+
 // scripts run before the template renders, so the counter is already up when
 // the first evaluation fails. Both script modes settle through a promise;
 // the factory's has to cover the merge, not just the module body
@@ -157,12 +206,20 @@ const trackScript = (settled: Promise<unknown>) => {
   const release = () => {
     pendingScripts--
     scheduleExprReportFlush()
+    scheduleFailedExprFlush()
   }
   settled.then(release, release)
 }
 
+const reportFailedExpr = (expr: string, error: unknown) => {
+  if (reportedFailedExprs.has(expr) || failedExprs.has(expr)) return
+  if (failedExprs.size >= MAX_PENDING_REPORTS) return
+  failedExprs.set(expr, (error as Error)?.message || String(error))
+  scheduleFailedExprFlush()
+}
+
 const reportExprError = (expr: string, scope: Record<string, any>, error: unknown) => {
-  if (!(error instanceof ReferenceError)) return
+  if (!(error instanceof ReferenceError)) return reportFailedExpr(expr, error)
   const match = MISSING_NAME_RE.exec(error.message)
   const name = match?.[1] ?? match?.[2]
   if (!name) return // an engine whose wording we don't know: stay quiet, as before
@@ -184,7 +241,12 @@ const runExpr = (expr: string, scope: Record<string, any>, extras?: Record<strin
 
 const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
   try {
-    return runExpr(expr, scope, extras)
+    const value = runExpr(expr, scope, extras)
+    // the re-check for the failed-expression queue: this run is the proof that
+    // the earlier throw was a value arriving late. Guarded on size so the
+    // normal page - where nothing has ever thrown - pays one comparison
+    if (failedExprs.size) failedExprs.delete(expr)
+    return value
   } catch (error) {
     reportExprError(expr, scope, error)
     return undefined
@@ -2276,6 +2338,8 @@ export class Component79 {
     // a different key
     reportedExprErrors.clear()
     pendingReports.clear()
+    reportedFailedExprs.clear()
+    failedExprs.clear()
     const marker = this.startMarker
     const rendered = !!(marker && this.content)
 

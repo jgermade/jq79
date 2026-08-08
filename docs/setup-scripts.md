@@ -243,7 +243,12 @@ UserCard.html?jq79-script=0
 
 It shows up under that name in the devtools sources tree and in stack traces, breakpoints set in it survive a reload, and a component with two `<script>` blocks gets one entry per block (`…=0`, `…=1`). The name comes from where the component was loaded: the URL for `Component79.fetch(url)`, the path relative to the project root for the [Vite plugin](vite-plugin.md). A component built from an inline string has no origin to name, so its scripts stay anonymous.
 
-Two failures don't reach devtools on their own, so the runtime reports them itself. A template expression naming something declared nowhere — a typo, a dropped prop, a `function` declaration that never reached the store — warns once per name, after the scripts have settled (so an async factory whose bindings are still on the way stays quiet). Everything else a handler throws is left to the browser, with its stack intact.
+Template expressions don't reach devtools on their own — they render empty instead of throwing — so the runtime reports them itself, in two flavours:
+
+- **A name declared nowhere** — a typo, a dropped prop, a `function` declaration that never reached the store — warns once per name, after the scripts have settled (so an async factory whose bindings are still on the way stays quiet).
+- **Anything else the expression throws**, in practice a member access on an undefined value (`{{ game.is.loaded }}` where `game` has no `is`), warns once per expression, about a second later. The delay is the test: an expression whose value is merely late succeeds when it arrives and is never reported, so what you hear about is a path that isn't coming. A value slower than that warns anyway — guard it with `a?.b` or `:if` on the element.
+
+Everything a handler throws is left to the browser, with its stack intact.
 
 What devtools shows under that name is the *compiled* script — the rewritten code (`$__effect(…)` instead of `$:`), wrapped in the function the engine built. Its line numbers are the compiled script's own, not the `.html` file's; the engine's function header shifts everything down and a `<script>` on line 1 can't be shifted back up. Reporting the component's own lines would need the runtime to emit a source map, which it doesn't do today.
 

@@ -17,6 +17,8 @@ Expressions may span several lines — both here and in every directive (`:if`, 
   .length }}</span>
 ```
 
+An expression that throws renders as nothing rather than tearing down the render, because it is re-evaluated constantly — once per effect run, once per `:each` item — and a value that hasn't loaded yet has to be survivable. It doesn't stay a secret, though: the runtime warns about it once, a moment later, unless the value arrives in the meantime. See [debugging a script](setup-scripts.md#debugging-a-script).
+
 ## Whitespace
 
 A template is HTML, and its whitespace is HTML's: it reaches the DOM as written, and CSS decides what it's worth. Two elements on separate lines are separated by a space when they render inline — the same space you'd get from the same markup in an `.html` file — and by nothing when they're block or flex children. If you don't want the space, close the tags against each other (`</span><span>`) as you would anywhere else.
