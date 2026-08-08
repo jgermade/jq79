@@ -13,7 +13,8 @@
 </script>
 ```
 
-- The `:setup` attribute's value is the component's **prop signature**: `:setup="{ fname, lname = 'Lovelace' }"` declares the props the parent passes, with optional defaults, and the defaults are on the store before the first render. It's a declaration, not a comment — a prop it doesn't name is dropped, and the usage site that wrote it is warned. A bare `:setup` is a *closed* signature (no props); write `:setup="_"` for a component that takes whatever it's handed. See [props](components.md#props).
+- The `:setup` attribute's value is the component's **prop signature**: `:setup="{ fname, lname = 'Lovelace' }"` declares the props the parent passes, with optional defaults, and the defaults are on the store before the first render. It's a declaration, not a comment — a prop it doesn't name is dropped, and the usage site that wrote it is warned. A bare `:setup` is a *closed* signature (no props); write `:setup="_"` for a component that takes whatever it's handed. A value that isn't an object pattern — a typo like `:setup="{ a, b"`, or a factory's `(props, ctx)` signature written here by mistake — reads as *no* signature and warns, because quietly accepting anything is the one thing it must not mean. See [props](components.md#props).
+- It's a **props** signature, not an injection list. The library's own helpers (`$emit`, `$reactive`, `Component79`, …) are always in scope and are never declared: what carries a `$` comes from the library, what doesn't comes from the parent — the same rule everywhere in jq79, with `Component79` the one exception that predates it.
 - Top-level `let` / `var` / `const` declarations become properties of the reactive store (also reachable from outside via `jq79.data`). **`function` declarations do not** — a `function save() {}` stays an ordinary local binding the template can't see, so write handlers as `const save = () => …`. Bind one anyway and the console says so.
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
@@ -241,6 +242,8 @@ UserCard.html?jq79-script=0
 ```
 
 It shows up under that name in the devtools sources tree and in stack traces, breakpoints set in it survive a reload, and a component with two `<script>` blocks gets one entry per block (`…=0`, `…=1`). The name comes from where the component was loaded: the URL for `Component79.fetch(url)`, the path relative to the project root for the [Vite plugin](vite-plugin.md). A component built from an inline string has no origin to name, so its scripts stay anonymous.
+
+Two failures don't reach devtools on their own, so the runtime reports them itself. A template expression naming something declared nowhere — a typo, a dropped prop, a `function` declaration that never reached the store — warns once per name, after the scripts have settled (so an async factory whose bindings are still on the way stays quiet). Everything else a handler throws is left to the browser, with its stack intact.
 
 What devtools shows under that name is the *compiled* script — the rewritten code (`$__effect(…)` instead of `$:`), wrapped in the function the engine built. Its line numbers are the compiled script's own, not the `.html` file's; the engine's function header shifts everything down and a `<script>` on line 1 can't be shifted back up. Reporting the component's own lines would need the runtime to emit a source map, which it doesn't do today.
 

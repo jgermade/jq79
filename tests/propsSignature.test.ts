@@ -315,6 +315,16 @@ describe("component signature: undeclared props are dropped", () => {
     app.destroy()
   })
 
+  it("says nothing about a signature it could read", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="{ label }"></script><p class="out">{{ label }}</p>`)
+    const app = new Component79(`<div><Child :label="'ok'" /></div>`)
+    mount(app, { Child: child })
+
+    expect(warn).not.toHaveBeenCalled()
+    app.destroy()
+  })
+
   it("never filters the root's own data - it isn't props", () => {
     // render(data) seeds app state and carries the component definitions the
     // template resolves; filtering it would break both
@@ -323,6 +333,69 @@ describe("component signature: undeclared props are dropped", () => {
     const container = mount(app, { Child: child, who: "Ada" })
 
     expect(container.querySelector(".out")?.textContent).toBe("Ada")
+    app.destroy()
+  })
+})
+
+// a value that isn't a props pattern reads as "no signature", the most
+// permissive mode there is - and since a bare :setup became closed and `_` the
+// opt-out you ask for, a typo is the only way left to land there by accident
+describe("component signature: a :setup value that isn't a props pattern", () => {
+  it("warns for a pattern that doesn't start with a brace, and stays permissive", () => {
+    // the line an outside report arrived with, written from the factory-mode
+    // (props, ctx) signature: :setup taken for an injection list
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(
+      `<script :setup=",{ Component79 }"></script><p class="out">[{{ extra }}]</p>`
+    )
+    const app = new Component79(`<div><Child :extra="'x'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("[x]") // permissive, as before
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`:setup=",{ Component79 }"`))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("is not a props pattern"))
+    app.destroy()
+  })
+
+  it("warns for unbalanced braces", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="{ label, step"></script><i class="out"></i>`)
+    mount(new Component79(`<div><Child /></div>`), { Child: child })
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("is not a props pattern"))
+    child.destroy()
+  })
+
+  it("warns for a bare identifier, which is a signature only in factory mode", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="props"></script><i class="out"></i>`)
+    mount(new Component79(`<div><Child /></div>`), { Child: child })
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`:setup="props"`))
+    child.destroy()
+  })
+
+  it("says nothing for `_`, the opt-out that means it on purpose", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="_"></script><p class="out">{{ extra }}</p>`)
+    const app = new Component79(`<div><Child :extra="'x'" /></div>`)
+    const container = mount(app, { Child: child })
+
+    expect(container.querySelector(".out")?.textContent).toBe("x")
+    expect(warn).not.toHaveBeenCalled()
+    app.destroy()
+  })
+
+  it("says it once per definition, not once per instance", () => {
+    // the parsed script blocks are shared by every instance a definition
+    // renders, and setupSignature is consulted three times per render
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const child = new Component79(`<script :setup="props"></script><p class="out">{{ n }}</p>`)
+    const app = new Component79(`<div><Child :each="n in rows" :n="n" /></div>`)
+    const container = mount(app, { Child: child, rows: [1, 2, 3] })
+
+    expect(container.querySelectorAll(".out").length).toBe(3)
+    expect(warn).toHaveBeenCalledTimes(1)
     app.destroy()
   })
 })

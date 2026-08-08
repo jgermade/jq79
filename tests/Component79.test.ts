@@ -2369,4 +2369,98 @@ describe("Component79", () => {
       jq79.destroy()
     })
   })
+
+  describe("an exception thrown inside a handler", () => {
+    const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+    // a listener that throws is reported on window rather than propagating to
+    // whatever dispatched the event - the browser's own path, and jsdom's.
+    // preventDefault keeps vitest from failing the run on it
+    const collectErrors = (run: () => void): Error[] => {
+      const seen: Error[] = []
+      const onError = (event: ErrorEvent) => { event.preventDefault(); seen.push(event.error) }
+      window.addEventListener("error", onError)
+      try { run() } finally { window.removeEventListener("error", onError) }
+      return seen
+    }
+
+    it("reaches the console when the handler was called inline", () => {
+      // the reported case: the call happens *during* the evaluation, and used
+      // to be swallowed by the catch that exists for the render path
+      const jq79 = new Component79(
+        `<script :setup>const save = user => user.name.trim()</script>` +
+        `<button class="go" @click="save(missing)">go</button>`
+      ).render({ missing: undefined }).mount(host)
+
+      const errors = collectErrors(() => ($(host, ".go") as HTMLButtonElement).click())
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toBeInstanceOf(TypeError)
+      jq79.destroy()
+    })
+
+    it("reaches it the same way through a handler reference, as it always did", () => {
+      const jq79 = new Component79(
+        `<script :setup>const save = () => { throw new TypeError("from the body") }</script>` +
+        `<button class="go" @click="save">go</button>`
+      ).render().mount(host)
+
+      const errors = collectErrors(() => ($(host, ".go") as HTMLButtonElement).click())
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0].message).toBe("from the body")
+      jq79.destroy()
+    })
+
+    it("reaches it from a handler on a component tag too", () => {
+      const child = new Component79(
+        `<script :setup>const fire = () => $emit("go")</script>` +
+        `<button class="go" @click="fire">go</button>`
+      )
+      const parent = new Component79(
+        `<script :setup>const onGo = () => { throw new TypeError("from the tag handler") }</script>` +
+        `<div><Child @go="onGo($event)" /></div>`
+      ).render({ Child: child }).mount(host)
+
+      const errors = collectErrors(() => ($(host, ".go") as HTMLButtonElement).click())
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0].message).toBe("from the tag handler")
+      parent.destroy()
+    })
+
+    it("still absorbs a name that resolves nowhere, and says it once instead", async () => {
+      // a ReferenceError is the one failure that isn't decidable when it
+      // throws - an async factory's names arrive later - so it keeps going to
+      // the deferred reporter rather than out of the listener
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const jq79 = new Component79(`<button class="go" @click="absentFn()">go</button>`)
+        .render().mount(host)
+
+      const errors = collectErrors(() => {
+        ;($(host, ".go") as HTMLButtonElement).click()
+        ;($(host, ".go") as HTMLButtonElement).click()
+      })
+      await flush()
+
+      expect(errors).toHaveLength(0)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("absentFn is not defined"))
+      expect(warn).toHaveBeenCalledTimes(1)
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("leaves an inline statement alone - evaluating to a non-function is not a failure", () => {
+      const jq79 = new Component79(
+        `<script :setup>let count = 0</script>` +
+        `<button class="go" @click="count++">{{ count }}</button>`
+      ).render().mount(host)
+
+      const errors = collectErrors(() => ($(host, ".go") as HTMLButtonElement).click())
+
+      expect(errors).toHaveLength(0)
+      expect($(host, ".go")?.textContent).toBe("1")
+      jq79.destroy()
+    })
+  })
 })

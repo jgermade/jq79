@@ -176,12 +176,42 @@ const reportExprError = (expr: string, scope: Record<string, any>, error: unknow
   scheduleExprReportFlush()
 }
 
-const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
+const runExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
   const fn = compileExpr(expr, extras ? Object.keys(extras) : [])
-  if (!fn) return undefined
+  if (!fn) return undefined // a syntax error: compileExpr cached the failure, and it stays undefined
+  return fn(scope, ...(extras ? Object.values(extras) : []))
+}
+
+const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
   try {
-    return fn(scope, ...(extras ? Object.values(extras) : []))
+    return runExpr(expr, scope, extras)
   } catch (error) {
+    reportExprError(expr, scope, error)
+    return undefined
+  }
+}
+
+// the same evaluation for an @event attribute, which swallows far less. Every
+// word of the reason evalExpr catches is about rendering: an expression is
+// re-evaluated per effect run, per interpolation, per :each item, so a value
+// that is briefly undefined mid-render has to render empty rather than tear the
+// render down. A handler runs in an event listener - not in an effect, once,
+// when the user clicked - so there is no transient failure to absorb, only a
+// bug to report, and an exception belongs in the console with its stack. That
+// is what `@click="save"` has always done (the call happens outside the try,
+// on the returned function); this is what makes `@click="save()"` and
+// `@click="count++"` behave the same rather than the other way round.
+//
+// ReferenceError is the exception, for the reason it always is: it is not yet
+// decidable at throw time. A factory assigns its names to the store when it
+// returns, so a click while one is still in flight throws for a name that is
+// about to exist - reportExprError re-checks after the scripts settle and stays
+// quiet if it arrived, which throwing here would replace with a false alarm
+const evalHandler = (expr: string, scope: Record<string, any>, extras: Record<string, any>): any => {
+  try {
+    return runExpr(expr, scope, extras)
+  } catch (error) {
+    if (!(error instanceof ReferenceError)) throw error
     reportExprError(expr, scope, error)
     return undefined
   }
@@ -225,7 +255,7 @@ const bindEvent = (el: Element, attr: string, expr: string, scope: Record<string
     if (mods.has("prevent")) event.preventDefault()
     if (mods.has("stop")) event.stopPropagation()
 
-    const handler = evalExpr(expr, scope, { $event: event })
+    const handler = evalHandler(expr, scope, { $event: event })
     if (typeof handler === "function") handler.call(el, event)
   }, { once: mods.has("once"), capture: mods.has("capture") })
 }
@@ -256,7 +286,7 @@ const wireTagEvent = (instance: Component79, attr: string, expr: string, scope: 
     // and the creation effect's definition guard no-ops a spurious wake - but
     // "what a handler reads is nobody's dependency" shouldn't hinge on either
     untracked(() => {
-      const handler = evalExpr(expr, scope, { $event: event })
+      const handler = evalHandler(expr, scope, { $event: event })
       if (typeof handler === "function") handler(event)
     })
   }
@@ -1839,7 +1869,35 @@ const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
 const setupSignature = (script: TagBlock): PropDecl[] | null => {
   const pattern = script.attrs[":setup"]
   if (pattern === undefined) return null
-  return pattern.trim() === "" ? [] : parsePropsPattern(pattern)
+  if (pattern.trim() === "") return []
+  const props = parsePropsPattern(pattern)
+  if (!props) warnUnreadableSignature(script, pattern)
+  return props
+}
+
+// script blocks already warned about, keyed by the block itself - parsed once
+// and shared by every instance of a definition, the same reason warnUndeclared
+// keys on the template node. It matters for a smaller reason here too:
+// setupSignature is called three times per render (both declared-name passes
+// and the script loop's declareProps), so even one mount would say it thrice
+const signatureWarned = new WeakSet<TagBlock>()
+
+// a value that isn't a props pattern reads as "declared no signature", which is
+// the most permissive mode there is - so a typo doesn't fail, it quietly opts
+// the component out of the contract it was trying to write. That is now the
+// only accidental route left to permissive: a bare :setup is closed and `_` is
+// the opt-out you have to ask for, so the mode nothing lands in by accident is
+// still reachable by getting it wrong. Both of parsePropsPattern's nulls count
+// - not-an-object (",{ a }", "props") and unbalanced ("{ a, b") - and only `_`
+// is exempt, because intent is the sole thing separating it from the typos
+const warnUnreadableSignature = (script: TagBlock, pattern: string) => {
+  if (pattern.trim() === "_" || signatureWarned.has(script)) return
+  signatureWarned.add(script)
+  console.warn(
+    `jq79: :setup="${pattern}" is not a props pattern, so this component declares no ` +
+    `signature and takes whatever a parent passes - write the props it takes ` +
+    `("{ a, b }"), a bare :setup for none, or "_" to stay open on purpose`
+  )
 }
 
 // every prop name a component's scripts declare, across both script modes.

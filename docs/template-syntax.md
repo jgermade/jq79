@@ -202,6 +202,8 @@ Evaluates to an object whose properties become directly addressable inside the e
 
 The attribute value is evaluated on every event with `$event` in scope; if it evaluates to a function, that function is called with the event. So all three styles work: a handler reference, an inline arrow, or an inline statement that mutates reactive data.
 
+They also fail the same way: an exception thrown while handling the event reaches the console with its stack, whichever style raised it. The one exception is a name that resolves nowhere (`@click="handleClik"`), which is reported once as a warning instead — see [debugging a script](setup-scripts.md#debugging-a-script).
+
 Modifiers (chainable, e.g. `@click.stop.once`):
 
 | modifier   | effect                                   |
