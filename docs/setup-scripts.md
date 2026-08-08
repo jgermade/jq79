@@ -246,7 +246,7 @@ It shows up under that name in the devtools sources tree and in stack traces, br
 Template expressions don't reach devtools on their own — they render empty instead of throwing — so the runtime reports them itself, in two flavours:
 
 - **A name declared nowhere** — a typo, a dropped prop, a `function` declaration that never reached the store — warns once per name, after the scripts have settled (so an async factory whose bindings are still on the way stays quiet).
-- **Anything else the expression throws**, in practice a member access on an undefined value (`{{ game.is.loaded }}` where `game` has no `is`), warns once per expression, about a second later. The delay is the test: an expression whose value is merely late succeeds when it arrives and is never reported, so what you hear about is a path that isn't coming. A value slower than that warns anyway — guard it with `a?.b` or `:if` on the element.
+- **Anything else the expression throws**, in practice a member access on an undefined value (`{{ game.is.loaded }}` where `game` has no `is`), is a `console.error` — once per expression, where it throws. There's nothing to wait for: the engine already caught a real exception and wrote the message. A value still on its way is reported too, because at the moment it throws the two are the same thing; guard it with `a?.b` or `:if` on the element, which is what the message says.
 
 Everything a handler throws is left to the browser, with its stack intact.
 

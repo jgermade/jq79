@@ -2306,32 +2306,6 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("stays quiet when the value is merely not loaded yet", async () => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-      // `user` is declared and undefined: a TypeError on member access, which
-      // is the transient case the catch exists to absorb, not an authoring bug.
-      // It is queued rather than reported, and the arrival below is what
-      // retracts it - so this passes because the value *came*, not because
-      // nothing is looking
-      const jq79 = new Component79(`<p class="who">{{ user.name }}</p>`)
-        .render({ user: undefined }).mount(host)
-      await vi.advanceTimersByTimeAsync(0)
-
-      expect($(host, ".who")?.textContent).toBe("")
-      expect(warn).not.toHaveBeenCalled()
-
-      jq79.data!.user = { name: "ada" }
-      expect($(host, ".who")?.textContent).toBe("ada")
-
-      await vi.advanceTimersByTimeAsync(2000) // past the delay: still nothing
-      expect(warn).not.toHaveBeenCalled()
-
-      warn.mockRestore()
-      jq79.destroy()
-      vi.useRealTimers()
-    })
-
     it("stays quiet while an async factory's bindings are still on the way", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
       // a factory assigns its names to the store when it returns, so the first
@@ -2380,14 +2354,12 @@ describe("Component79", () => {
   })
 
   // the other half of the same silence: an expression that throws something
-  // other than a missing name. Reported on a timer, so these drive it by hand -
-  // queueMicrotask is left real, since the ReferenceError queue flushes on it
+  // other than a missing name. Reported where it throws - no deferral, because
+  // the engine already caught a real exception and there is nothing left to
+  // decide - and as an error, not a warning
   describe("an expression that throws while rendering", () => {
-    beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }))
-    afterEach(() => vi.useRealTimers())
-
-    it("warns once for a member access that never resolves, however many rows read it", async () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    it("reports once for a member access that never resolves, however many rows read it", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
       // the reported shape: every game is {}, so `.is` is undefined and
       // `.is.loaded` throws. :disabled took the undefined as falsy and rendered
       // the buttons enabled - the opposite of what this says - in silence
@@ -2399,45 +2371,66 @@ describe("Component79", () => {
       expect($$(host, ".go")).toHaveLength(5)
       expect($(host, ".go")?.hasAttribute("disabled")).toBe(false) // still fails open
 
-      await vi.advanceTimersByTimeAsync(0)
-      expect(warn).not.toHaveBeenCalled() // not on the tick it threw
+      expect(error).toHaveBeenCalledTimes(1) // five rows, one line
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("!games[gameKey].is.loaded"))
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("reading 'loaded'"))
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("a?.b"))
 
-      await vi.advanceTimersByTimeAsync(1000)
-      expect(warn).toHaveBeenCalledTimes(1) // five rows, one line
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("!games[gameKey].is.loaded"))
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("a?.b"))
-
-      warn.mockRestore()
+      error.mockRestore()
       jq79.destroy()
     })
 
-    it("warns about a value that never arrives, unlike one that does", async () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    it("reports on the tick it threw, with no deferral to wait through", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
       const jq79 = new Component79(`<p class="who">{{ absentee.name }}</p>`)
         .render({ absentee: undefined }).mount(host)
 
-      await vi.advanceTimersByTimeAsync(1000)
-
       expect($(host, ".who")?.textContent).toBe("")
-      expect(warn).toHaveBeenCalledTimes(1)
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("absentee.name"))
+      expect(error).toHaveBeenCalledTimes(1) // not after a flush: now
 
-      warn.mockRestore()
+      error.mockRestore()
       jq79.destroy()
     })
 
-    it("says it again after a hot update, since the source changed under it", async () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    // the trade this reporting makes. A value a fetch will fill throws on the
+    // first render like any other, and reporting where it throws cannot tell
+    // the two apart - so it says so, and the message names the fix
+    it("reports a value that is merely on its way, which is the cost of not deferring", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
+      const jq79 = new Component79(`<p class="who">{{ latecomer.name }}</p>`)
+        .render({ latecomer: undefined }).mount(host)
+      expect(error).toHaveBeenCalledTimes(1)
+
+      jq79.data!.latecomer = { name: "ada" }
+      expect($(host, ".who")?.textContent).toBe("ada")
+      expect(error).toHaveBeenCalledTimes(1) // and nothing retracts it
+
+      error.mockRestore()
+      jq79.destroy()
+    })
+
+    it("stays quiet when the guard the message asks for is there", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
+      const jq79 = new Component79(`<p class="who">{{ guarded?.name }}</p>`)
+        .render({ guarded: undefined }).mount(host)
+
+      expect($(host, ".who")?.textContent).toBe("")
+      expect(error).not.toHaveBeenCalled()
+
+      error.mockRestore()
+      jq79.destroy()
+    })
+
+    it("says it again after a hot update, since the source changed under it", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
       const src = `<p class="out">{{ stale.deep.value }}</p>`
       const jq79 = new Component79(src).render({ stale: {} }).mount(host)
-      await vi.advanceTimersByTimeAsync(1000)
-      expect(warn).toHaveBeenCalledTimes(1)
+      expect(error).toHaveBeenCalledTimes(1)
 
       jq79.hotReplace(src)
-      await vi.advanceTimersByTimeAsync(1000)
 
-      expect(warn).toHaveBeenCalledTimes(2)
-      warn.mockRestore()
+      expect(error).toHaveBeenCalledTimes(2)
+      error.mockRestore()
       jq79.destroy()
     })
   })

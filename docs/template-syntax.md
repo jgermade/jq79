@@ -17,7 +17,7 @@ Expressions may span several lines — both here and in every directive (`:if`, 
   .length }}</span>
 ```
 
-An expression that throws renders as nothing rather than tearing down the render, because it is re-evaluated constantly — once per effect run, once per `:each` item — and a value that hasn't loaded yet has to be survivable. It doesn't stay a secret, though: the runtime warns about it once, a moment later, unless the value arrives in the meantime. See [debugging a script](setup-scripts.md#debugging-a-script).
+An expression that throws renders as nothing rather than tearing down the render, because it is re-evaluated constantly — once per effect run, once per `:each` item. It doesn't stay a secret, though: it reaches the console as an error, once per expression. That includes a value that simply hasn't loaded yet, so write `{{ user?.name }}` (or gate the element with `:if`) when you expect one to be late. See [debugging a script](setup-scripts.md#debugging-a-script).
 
 ## Whitespace
 
