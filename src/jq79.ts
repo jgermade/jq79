@@ -1806,6 +1806,11 @@ const resolveSpecifier = (spec: string, filename: string | undefined): string =>
 // or devtools shows only one of them)
 type ScriptLocation = { filename?: string; index?: number }
 
+// what running a script tells its caller: the promise it settles through, and
+// whether it already finished on this stack. `sync` is the fast path the render
+// gate is built on - see runSetupScript
+type ScriptRun = { settled: Promise<unknown>; sync: boolean }
+
 // nothing to name an inline component's scripts after, so they stay anonymous
 const sourceUrlComment = (filename: string | undefined, index: number): string =>
   filename ? `\n//# sourceURL=${filename}?jq79-script=${index}` : ""
@@ -1851,23 +1856,36 @@ const releaseStyle = (content: string) => {
 // normally. get/set are deliberately not trapped: they default-forward to
 // `scope` (the reactive proxy), preserving tracking and notify.
 // The body is wrapped in an async IIFE so top-level `await` works: everything
-// up to the first await runs synchronously (before the template renders), and
-// later assignments update the DOM reactively when they happen
-const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}) => {
+// up to the first await runs synchronously, and later assignments update the
+// DOM reactively when they happen.
+//
+// Returns whether the body ran to completion synchronously, plus the promise it
+// settles through. renderWith needs the *synchronous* answer - a script that
+// finished in this turn cannot hold anything up, so the template can render on
+// this stack exactly as it always has (see the render gate). Asking the promise
+// instead would defer every render by a microtask, including the overwhelmingly
+// common case of a script with no await in it at all.
+//
+// The flag is set on the code's last line, after the `with` block rather than
+// inside it, so the scope proxy never sees the name - and appended, so the
+// author's line numbers (which sourceUrlComment maps for devtools) don't shift
+const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}): ScriptRun => {
   // instanceHelpers are per-component-instance additions (e.g. $emit, which
   // is bound to this instance's DOM position)
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
   const scriptScope = new Proxy(scope, {
     has: (target, key) =>
-      key !== "$__effect" && key !== "$__import" &&
+      key !== "$__effect" && key !== "$__import" && key !== "$__state" &&
       (Reflect.has(target, key) || !(key in globalThis) && !(key in helpers)),
   })
+  const state: { done?: boolean } = {}
   const result: Promise<void> = new Function(
-    "$scope", "$__effect", "$__import", ...Object.keys(helpers),
-    `return (async () => { with ($scope) { ${code} } })()${sourceUrlComment(at.filename, at.index ?? 0)}`
-  )(scriptScope, effect, importer, ...Object.values(helpers))
+    "$scope", "$__effect", "$__import", "$__state", ...Object.keys(helpers),
+    `return (async () => { with ($scope) { ${code} }\n;$__state.done = true })()${sourceUrlComment(at.filename, at.index ?? 0)}`
+  )(scriptScope, effect, importer, state, ...Object.values(helpers))
   result.catch(error => console.error("jq79: error in :setup script", error))
   trackScript(result)
+  return { settled: result, sync: state.done === true }
 }
 
 // puts a component's declared props on the store, before any script runs and
@@ -2042,7 +2060,7 @@ const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.def
 // synchronous body invokes the factory before the first render, matching
 // setup-script timing; bodies with top-level await (static imports included)
 // resolve later and the template updates reactively
-const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}) => {
+const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}): ScriptRun => {
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
   const $__exports: { default?: (props: Record<string, any>, ctx: Record<string, any>) => any; done?: boolean } = {}
   const result: Promise<void> = new Function(
@@ -2083,8 +2101,14 @@ const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run
   // tracked through the merge, not just the module body: a factory's names
   // reach the store in `merge`, and a template expression that reads one before
   // then is not an authoring mistake (see reportExprError)
-  trackScript(result.then(invoke, logError))
+  const settled = result.then(invoke, logError)
+  trackScript(settled)
   if ($__exports.done) invoke() // fully-sync body: factory runs before first render
+  // sync only if the bindings are already on the store: a factory whose body
+  // finished but whose *factory* returned a promise (an async factory, or one
+  // that awaits $mounted()) still has names on the way, and the render gate
+  // must treat it as pending rather than race its merge
+  return { settled, sync: $__exports.done === true && merging === undefined }
 }
 
 // ---------------------------------------------------------------------------
@@ -2183,6 +2207,32 @@ export const enableHotReload = (): void => {
 
 type EmitListener = (event: CustomEvent, payload: any) => void
 
+// how long a first render may sit behind its scripts before the console says so
+const STUCK_RENDER_DELAY = 3000
+
+// a script that neither returns nor calls $mounted() holds the template
+// forever, and the failure looks like nothing at all: no error, no markup, a
+// component indistinguishable from one nobody mounted. So the wait is loud
+// after a few seconds - and it keeps waiting, because rendering on a timer
+// would make the moment of the first render depend on the machine it runs on.
+//
+// Armed only on the deferred path, so a page of synchronous components creates
+// no timers at all
+const warnIfStuck = (component: Component79, gates: Promise<void>[]) => {
+  const timer = setTimeout(() => {
+    console.warn(
+      `jq79: ${component.name ? `<${component.name}>` : "a component"}${component.filename ? ` (${component.filename})` : ""} ` +
+      `has been waiting ${STUCK_RENDER_DELAY / 1000}s for a :setup script and has rendered nothing. ` +
+      "The template waits until every script returns or calls $mounted() - add an " +
+      "await $mounted() above the slow part to render first and fill in after."
+    )
+  }, STUCK_RENDER_DELAY)
+  // unref where it exists (node/vitest): a pending timer must not be what keeps
+  // a process alive. Browsers have no such notion and no such need
+  ;(timer as any)?.unref?.()
+  Promise.all(gates).then(() => clearTimeout(timer))
+}
+
 const fetchComponent = async (url: string): Promise<Component79> => {
   const response = await fetch(url)
   if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
@@ -2253,6 +2303,11 @@ export class Component79 {
   private mountRoot: Element | ShadowRoot | DocumentFragment | null = null
   // settles the $mounted() promise handed to this render generation's scripts
   private resolveMounted: (() => void) | null = null
+  // whether this generation's template has been built. A render held back by a
+  // script (see the gate in renderWith) has markers but no nodes, and $mounted()
+  // must not resolve on attach alone - a script awaiting it would wake to an
+  // empty component and find nothing to query
+  private renderDone = false
   // instance-level listeners for $emit events, registered with on(). Kept
   // outside the render generation so they survive re-render and destroy()
   private emitListeners = new Map<string, Set<EmitListener>>()
@@ -2345,7 +2400,7 @@ export class Component79 {
     if (shadow) this.styleEls.forEach(el => parent.insertBefore(el, before))
     parent.insertBefore(this.content!, before)
     this.mountRoot = parent
-    this.resolveMounted?.()
+    this.settleMounted()
     return true
   }
 
@@ -2453,16 +2508,18 @@ export class Component79 {
       return !event.defaultPrevented
     }
 
-    // `await $mounted()` suspends a setup script until mount() attaches the
-    // component, so code below it can querySelector its own DOM. Resumption
-    // is a microtask, so in the usual synchronous render().mount() flow the
-    // whole tree (nested components included) is in the document before the
-    // script continues. If this instance is never mounted, the promise stays
-    // pending and the script's tail never runs
+    // `await $mounted()` suspends a setup script until the component is
+    // rendered *and* attached, so code below it can querySelector its own DOM.
+    // If this instance is never mounted, the promise stays pending and the
+    // script's tail never runs.
+    //
+    // Calling it is also how a script releases the first render - see the gate
+    // below - so the two halves of the contract are one call: "put me on the
+    // page, and don't wait for the rest of me"
     let resolveMounted!: () => void
     const mounted = new Promise<void>(resolve => { resolveMounted = resolve })
     this.resolveMounted = resolveMounted
-    const $mounted = () => mounted
+    this.renderDone = false
 
     // $self / $$self mirror $ / $$ but only search this instance's own
     // output: the sibling nodes between its markers. They work detached too
@@ -2533,7 +2590,31 @@ export class Component79 {
     // first line, so deferring doesn't shift the lines devtools reports for it
     const defer = (code: string) => `await $mounted();${code}`
 
+    // what the first render is still waiting for. A script holds the template
+    // back until it returns or calls $mounted() - whichever comes first - so
+    // `let rows = await fetch(...)` renders once, with rows, instead of
+    // rendering empty and filling in. `:mounted` is not a special case here: it
+    // *is* a script that yields on line 0, which is what `defer` above writes.
+    //
+    // One gate per script, not one per instance: a script yielding must not
+    // release the render on behalf of a sibling script that is still fetching
+    const gates: Promise<void>[] = []
+    let allSync = true
+
     this.scripts.forEach((script, index) => {
+      let resolveGate!: () => void
+      gates.push(new Promise<void>(resolve => { resolveGate = resolve }))
+      // whether this gate is already open on *this* stack, which is not the
+      // same as the script having finished: a script that yields immediately
+      // (`await $mounted()` on its first line, which is what `:mounted`
+      // compiles to) never finishes synchronously but holds nothing up either.
+      // Reading the promise instead would push every such render a microtask
+      // later, for no one's benefit
+      let open = false
+      const release = () => { open = true; resolveGate() }
+      // this script's own view of $mounted: the call releases its gate, the
+      // promise it returns is the instance's (one mount, one resolution)
+      const $mounted = () => { release(); return mounted }
       // the file's other components are passed as parameters of the compiled
       // script, not just left on the store's prototype: a factory script runs
       // as plain lexical JS with no `with`, so a bare `Row` in one would
@@ -2542,20 +2623,40 @@ export class Component79 {
       // parameter is what the name resolves to
       const instanceHelpers = { $mounted, $self, $$self, ...injected, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
+      const deferred = ":mounted" in script.attrs
       const factoryCode = transformFactoryScript(script.content)
-      if (factoryCode !== null) {
-        declareProps(store, parseFactoryProps(script.content))
-        const body = ":mounted" in script.attrs ? defer(factoryCode) : factoryCode
-        runFactoryScript(body, store, fx.effect, instanceHelpers, $import, at)
-        return
-      }
-      const { vars, code } = transformSetupScript(script.content)
-      declareProps(store, setupSignature(script))
-      // pre-declare script vars on the store so `with` resolves assignments
-      // to them (and reads of them) through the reactive proxy
-      vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
-      const body = ":mounted" in script.attrs ? defer(code) : code
-      runSetupScript(body, store, fx.effect, instanceHelpers, $import, at)
+      const run = ((): ScriptRun => {
+        if (factoryCode !== null) {
+          // a factory publishes its names by returning them, so one that yields
+          // before it returns renders against a store where none of them exist.
+          // In factory mode `:mounted` yields on line 0, which means *always* -
+          // and unlike a setup script there is no way to put the useful half
+          // above the yield. Awaiting $mounted() inside the factory does what
+          // the author meant, and is what the message points at
+          if (deferred) {
+            console.warn(
+              "jq79: :mounted on a factory script renders the template before the factory has returned, " +
+              "so none of its bindings exist yet - await $mounted() inside the factory instead."
+            )
+          }
+          declareProps(store, parseFactoryProps(script.content))
+          const body = deferred ? defer(factoryCode) : factoryCode
+          return runFactoryScript(body, store, fx.effect, instanceHelpers, $import, at)
+        }
+        const { vars, code } = transformSetupScript(script.content)
+        declareProps(store, setupSignature(script))
+        // pre-declare script vars on the store so `with` resolves assignments
+        // to them (and reads of them) through the reactive proxy
+        vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
+        const body = deferred ? defer(code) : code
+        return runSetupScript(body, store, fx.effect, instanceHelpers, $import, at)
+      })()
+      // a script that threw has nothing left to contribute, so its rejection
+      // releases the gate exactly as completion does - the error is already
+      // reported by the runner, and holding the template hostage to it would
+      // turn one broken script into a blank component
+      run.settled.then(release, release)
+      if (!run.sync && !open) allSync = false
     })
 
     const content = document.createDocumentFragment()
@@ -2570,8 +2671,36 @@ export class Component79 {
           ? injected[key]
           : Reflect.get(target, key, receiver),
     })
-    content.append(this.startMarker, renderNodes(this.template, templateScope, fx, shadow), this.endMarker)
+    // the markers go in either way, so render() returns something mountable
+    // whether or not the template has been built yet: they are what detach()
+    // collects between and what the deferred pass inserts before, exactly as
+    // :if/:each anchors already work. That is what keeps render() and mount()
+    // synchronous while the first render itself is allowed to wait
+    content.append(this.startMarker, this.endMarker)
     this.content = content
+    if (allSync) {
+      // nothing is pending, so the template is built on this stack - the
+      // ordinary case, and byte-for-byte the timing render() has always had.
+      //
+      // Written out rather than routed through the closure below on purpose: a
+      // component that nests itself recurses through here, so one extra frame
+      // per level is one fewer level before the stack gives out - enough, when
+      // this was a shared `paint()`, to overflow *underneath* the depth guard
+      // at MAX_NESTING_DEPTH and turn a named error back into a RangeError
+      this.endMarker.parentNode!.insertBefore(renderNodes(this.template, templateScope, fx, shadow), this.endMarker)
+      this.renderDone = true
+      this.settleMounted()
+    } else {
+      Promise.all(gates).then(() => {
+        // destroy() nulls the markers and a re-render replaces them, so a gate
+        // that opens after either one has nothing left to paint into
+        if (marker !== this.startMarker) return
+        this.endMarker!.parentNode!.insertBefore(renderNodes(this.template, templateScope, fx, shadow), this.endMarker!)
+        this.renderDone = true
+        this.settleMounted()
+      })
+      warnIfStuck(this, gates)
+    }
 
     if (shadow) {
       this.styleEls = this.styles.map(style => {
@@ -2618,8 +2747,16 @@ export class Component79 {
     if (this.useShadow) this.styleEls.forEach(el => root.appendChild(el))
     root.appendChild(this.content!)
     this.mountRoot = root
-    this.resolveMounted?.()
+    this.settleMounted()
     return this
+  }
+
+  // `await $mounted()` means "rendered and on the page", so it waits for both -
+  // whichever lands last calls this. In the ordinary synchronous flow the render
+  // is already done and this is the attach; for a component whose first render
+  // a script held back, it is the other way round
+  private settleMounted() {
+    if (this.renderDone && this.mountRoot) this.resolveMounted?.()
   }
 
   // detaches from the DOM while keeping all state; a later mount() re-attaches
@@ -2657,6 +2794,7 @@ export class Component79 {
     this.content = null
     this.startMarker = null
     this.endMarker = null
+    this.renderDone = false
     this.data = null
     this.resolveMounted = null
     return this

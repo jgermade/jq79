@@ -632,6 +632,152 @@ describe("Component79", () => {
     })
   })
 
+  describe("the first render waits for the setup script", () => {
+    const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+    // a promise the test decides when to settle, standing in for a fetch
+    const deferred = () => {
+      let settle!: (value?: any) => void
+      return { promise: new Promise(resolve => { settle = resolve }), settle }
+    }
+
+    it("renders nothing until an awaited value lands, then renders once, complete", async () => {
+      const rows = deferred()
+      vi.stubGlobal("loadRows", () => rows.promise)
+      const jq79 = new Component79(
+        `<script :setup>let rows = await loadRows()</script>` +
+        `<h1 class="chrome">Rows</h1><p class="row" :each="r in rows">{{ r }}</p>`
+      ).render().mount(host)
+
+      // the static heading waits too: the unit that is held back is the
+      // template, and there is no finer one
+      expect($(host, ".chrome")).toBeNull()
+      expect($$(host, ".row")).toHaveLength(0)
+
+      rows.settle(["a", "b"])
+      await flush()
+
+      expect($(host, ".chrome")?.textContent).toBe("Rows")
+      expect($$(host, ".row").map(el => el.textContent)).toEqual(["a", "b"])
+      jq79.destroy()
+    })
+
+    it("paints immediately when the script yields with $mounted() first", async () => {
+      const rows = deferred()
+      vi.stubGlobal("loadRows", () => rows.promise)
+      const jq79 = new Component79(
+        `<script :setup>await $mounted()\nlet rows = await loadRows()</script>` +
+        `<h1 class="chrome">Rows</h1><p class="row" :each="r in rows">{{ r }}</p>`
+      ).render().mount(host)
+
+      // yielding is synchronous, so this is the same stack render() has always
+      // painted on - no await needed to see the chrome
+      expect($(host, ".chrome")?.textContent).toBe("Rows")
+      expect($$(host, ".row")).toHaveLength(0)
+
+      rows.settle(["a"])
+      await flush()
+
+      expect($$(host, ".row").map(el => el.textContent)).toEqual(["a"])
+      jq79.destroy()
+    })
+
+    it("waits for a script that is still running even when a later one yields", async () => {
+      const slow = deferred()
+      vi.stubGlobal("slowThing", () => slow.promise)
+      const jq79 = new Component79(
+        `<script :setup>let first = await slowThing()</script>` +
+        `<script :setup>await $mounted()\nlet second = "b"</script>` +
+        `<div class="both">{{ first }}{{ second }}</div>`
+      ).render().mount(host)
+
+      // the gate is per script: the second yielding must not speak for the first
+      expect($(host, ".both")).toBeNull()
+
+      slow.settle("a")
+      await flush()
+
+      expect($(host, ".both")?.textContent).toBe("ab")
+      jq79.destroy()
+    })
+
+    it("paints nothing and throws nothing when destroyed before the gate opens", async () => {
+      const held = deferred()
+      vi.stubGlobal("held", () => held.promise)
+      const jq79 = new Component79(
+        `<script :setup>let value = await held()</script><div class="late">{{ value }}</div>`
+      ).render().mount(host)
+
+      jq79.destroy()
+      held.settle("too late")
+      await flush()
+
+      expect($(host, ".late")).toBeNull()
+      expect(host.innerHTML).toBe("")
+    })
+
+    it("mounts a parent whose child is still waiting, and fills the child in after", async () => {
+      const label = deferred()
+      vi.stubGlobal("loadLabel", () => label.promise)
+      const child = new Component79(
+        `<script :setup>let label = await loadLabel()</script><em class="kid">{{ label }}</em>`
+      )
+      const jq79 = new Component79(
+        `<div class="parent"><Kid /></div>`
+      ).render({ Kid: child }).mount(host)
+
+      // renderNodes is synchronous, so the parent does not wait for the child:
+      // it mounts around the child's markers and the child arrives later
+      expect($(host, ".parent")).not.toBeNull()
+      expect($(host, ".kid")).toBeNull()
+
+      label.settle("here")
+      await flush()
+
+      expect($(host, ".kid")?.textContent).toBe("here")
+      jq79.destroy()
+    })
+
+    it("warns when :mounted is put on a factory script", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const jq79 = new Component79(
+        `<script :setup :mounted>export default () => ({ count: 0 })</script><p>{{ count }}</p>`
+      ).render().mount(host)
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("none of its bindings exist yet"))
+      warn.mockRestore()
+      jq79.destroy()
+    })
+
+    it("warns, and keeps waiting, when a script never settles", async () => {
+      vi.useFakeTimers()
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const stuck = deferred()
+      vi.stubGlobal("never", () => stuck.promise)
+      const jq79 = new Component79(
+        `<script :setup>let value = await never()</script><div class="never">hi</div>`
+      ).render().mount(host)
+
+      expect(warn).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(3000)
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("await $mounted()"))
+      // the warning is a diagnosis, not a fallback: nothing was rendered on the
+      // strength of a timer
+      expect($(host, ".never")).toBeNull()
+
+      warn.mockRestore()
+      vi.useRealTimers()
+      jq79.destroy()
+      // let the script finish after all. An unsettled one keeps trackScript's
+      // pendingScripts counter above zero for the life of the module, and that
+      // counter gates the missing-name flush for *every* component - so a test
+      // that walked away from a hanging script would silence the reporting
+      // tests further down this file
+      stuck.settle()
+      await flush()
+    })
+  })
+
   describe("instance events: on() / off()", () => {
     const src =
       `<script :setup>const fire = payload => $emit("submit", payload)</script>` +
@@ -2306,17 +2452,18 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
-    it("stays quiet while an async factory's bindings are still on the way", async () => {
+    it("never reads a name an async factory has not assigned yet", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-      // a factory assigns its names to the store when it returns, so the first
-      // render reads a name that genuinely does not exist yet. Reporting waits
-      // for the scripts to settle and asks again
+      // a factory assigns its names to the store when it returns, and the
+      // render now waits for that - so the name exists by the time anything
+      // reads it, and the missing-name queue is never reached at all. It used
+      // to render empty first and be re-checked once the script settled
       const jq79 = new Component79(
         `<script>export default async () => { await Promise.resolve(); return { greeting: "hola" } }</script>` +
         `<p class="hi">{{ greeting }}</p>`
       ).render().mount(host)
 
-      expect($(host, ".hi")?.textContent).toBe("") // it did fail, once
+      expect($(host, ".hi")).toBeNull() // held back: markers, no template yet
       await flush()
 
       expect($(host, ".hi")?.textContent).toBe("hola")

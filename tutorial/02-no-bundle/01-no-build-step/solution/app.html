@@ -1,7 +1,11 @@
 <script :setup>
-  // declared before the await, so the list is on screen while the request is
-  // still in flight (everything below an await is undefined until it resolves)
   let stamps = ["no compiler", "no bundler", "no config"]
+
+  // the template waits for this script, so without the line below the page
+  // would stay blank until the request lands. await $mounted() means "render
+  // what I have now" - the stamps go up straight away, and everything after it
+  // is undefined until it resolves
+  await $mounted()
 
   // no bundler resolved this specifier: the runtime fetched ./examples/Sticker.html
   // from the host serving this page, parsed it, and handed it back as a component.

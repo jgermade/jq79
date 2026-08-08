@@ -56,24 +56,44 @@ new Component79(src)
 <input :value="uname" @input="$updateModel('uname', $event.target.value)">
 ```
 
-- `await $mounted()` suspends the script until the component is attached to the DOM, so everything below it can use `querySelector` (or `$`/`$$`) directly:
+- **The template waits for the script.** The first render happens once every setup script has either returned or called `$mounted()` — whichever comes first. So a value the script awaits is *there* for the first render, and the component paints once, complete, instead of painting empty and filling in:
 
 ```html
 <script :setup>
-  let items = await fetchItems()   // runs before render
-
-  await $mounted()
-
-  let height = $(".list").offsetHeight   // real DOM access — still reactive
+  let items = await fetchItems()   // the template waits for this
 </script>
 <ul class="list">
   <li :each="item in items">{{ item }}</li>
 </ul>
 ```
 
+- `await $mounted()` is the other half of that rule. It suspends the script until the component is rendered and attached, so everything below it can use `querySelector` (or `$`/`$$`) directly — and calling it is also how the script says *"render me now, don't wait for the rest"*:
+
+```html
+<script :setup>
+  let items = await fetchItems()   // still holds the render
+
+  await $mounted()
+
+  let height = $(".list").offsetHeight   // real DOM access — still reactive
+</script>
+```
+
   Reactivity is unaffected by where a declaration sits: variables declared after the `await` are pre-declared on the store before the first render (as `undefined`), so the template can bind to them from the start and updates when the assignment runs. If the component is never mounted, the code after `await $mounted()` never runs.
 
-  To defer a whole script until mount, add `:mounted` to the tag — it behaves as if `await $mounted()` were its first line:
+  Put the yield *above* the slow part when you want chrome or a skeleton on screen straight away — the whole template is what waits, static markup included:
+
+```html
+<script :setup>
+  let items = []
+  await $mounted()                 // the <ul> and its heading go up now
+  items = await fetchItems()       // fills in when it lands
+</script>
+```
+
+  A script that neither returns nor yields holds the template indefinitely. After three seconds the console says so, naming the fix; the render still waits, because painting on a timer would make the first render depend on the machine it runs on.
+
+  To defer a whole script until mount, add `:mounted` to the tag — it behaves as if `await $mounted()` were its first line, which is also to say it yields immediately and holds nothing back:
 
 ```html
 <script :setup :mounted>
@@ -81,7 +101,7 @@ new Component79(src)
 </script>
 ```
 
-- `$self(selector)` and `$$self(selector)` are component-scoped versions of [`$` / `$$`](dom-helpers.md): they only search this component instance's own rendered nodes, so they can't accidentally match another component (or anything else in the page). They work even while the component is rendered but not yet mounted — but remember the template renders *after* the synchronous part of the script, so call them from post-`await $mounted()` code or from handlers/callbacks.
+- `$self(selector)` and `$$self(selector)` are component-scoped versions of [`$` / `$$`](dom-helpers.md): they only search this component instance's own rendered nodes, so they can't accidentally match another component (or anything else in the page). They work even while the component is rendered but not yet mounted — but remember the template renders *after* the script, so call them from post-`await $mounted()` code or from handlers/callbacks.
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. Multi-declarator statements (`let a = 1, b = 2`) and destructuring declarations work like any other declaration — every binding becomes a reactive store variable:
 
@@ -303,9 +323,23 @@ Details worth knowing:
 - Import bindings are lexical, not scope vars: to use an imported component
   in the template, expose it via the return value or `$data`.
 - A fully synchronous module body runs before the first render, like a setup
-  script. Static imports and top-level `await` make it async — the template
-  renders first and updates when the factory's result lands.
-- `:mounted` on the tag works the same way: the whole script waits for mount.
+  script. Static imports and top-level `await` make it async — and, like a setup
+  script, the template waits: the factory's bindings are on the store before
+  anything reads them.
+- `:mounted` on a factory script is a mistake and warns. A factory publishes its
+  names by *returning* them, so yielding before it returns renders the template
+  against a store where none of them exist — and unlike a setup script there is
+  no way to put the useful half above the yield. Await `$mounted()` inside the
+  factory instead, which does what the tag was reaching for:
+
+```html
+<script :setup>
+  export default async () => {
+    await $mounted()          // renders now, binds when this resolves
+    return { count: 0 }
+  }
+</script>
+```
 - Mode detection is backwards-safe: `export default` was a syntax error in setup
   scripts, so no setup script can turn into a factory. `:setup` isn't going
   anywhere — the two styles coexist, even within one component.

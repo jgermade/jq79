@@ -94,7 +94,7 @@ describe("component signature: factory mode", () => {
     component.destroy()
   })
 
-  it("a default reaches the template even before an async factory has run", async () => {
+  it("renders once an async factory has run, with its default and its bindings", async () => {
     const component = new Component79(`
       <script>
         export default async ({ label = "Total" }) => {
@@ -106,7 +106,9 @@ describe("component signature: factory mode", () => {
     `)
     const container = mount(component)
 
-    expect(container.querySelector(".out")?.textContent).toBe("Total ")
+    // the render waits for the factory, so there is no intermediate paint
+    // showing the default beside an empty binding
+    expect(container.querySelector(".out")).toBeNull()
     await tick()
     expect(container.querySelector(".out")?.textContent).toBe("Total true")
     component.destroy()

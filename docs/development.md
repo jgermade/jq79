@@ -90,6 +90,19 @@ releases the refcounted stylesheets it acquired, so swapping the parts in first
 releases a stylesheet nobody holds and leaves the old one styling the page
 forever.
 
+**The synchronous render path must not grow a stack frame.** The first render
+waits for the setup scripts, but only when one of them is actually pending — a
+component whose scripts finished (or yielded) on this stack renders on this
+stack, through code written out inline rather than shared with the deferred path.
+That duplication is deliberate. A component that nests itself recurses through
+`renderWith` once per level, and the depth guard at `MAX_NESTING_DEPTH` is
+calibrated against the real stack: routing the synchronous render through one
+extra closure was enough to overflow *underneath* the guard, turning a named
+`console.error` back into a `RangeError` at around 200 levels. If you refactor
+the render, run the cyclic-data test in
+[`tests/multiTemplate.test.ts`](../tests/multiTemplate.test.ts) — it is the only
+thing standing between that guard and the stack.
+
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same
 scope variable wakes itself on repeat — but only from the **second** pass, since an
