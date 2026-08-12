@@ -19,6 +19,12 @@ type TemplateNode = {
   tag: string
   attrs: Record<string, string>
   children: (TemplateNode | string)[]
+  // the tag as the author capitalized it, present only when they wrote it
+  // uppercase-initial - i.e. when they meant a component. `tag` cannot answer
+  // this: the HTML parser lowercases it, so the claim is captured before the
+  // parse (see stampComponentTag) and lifted off attrs here, where it stops
+  // looking like an attribute to every loop downstream
+  component?: string
 }
 
 type TagBlock = {
@@ -45,20 +51,29 @@ const elementAttrs = (el: Element): Record<string, string> =>
 // they are not in the AST at all - which is where slot content is written
 // (<template :slot.name>), and why a nested <template> used to render as an
 // empty element whatever was inside it
-const elementToAST = (el: Element): TemplateNode => ({
-  tag: el.tagName.toLowerCase(),
-  attrs: elementAttrs(el),
-  children: Array.from((el instanceof HTMLTemplateElement ? el.content : el).childNodes).flatMap((node): (TemplateNode | string)[] => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent ?? ""
-      return text ? [text] : []
-    }
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      return [elementToAST(node as Element)]
-    }
-    return []
-  })
-})
+const elementToAST = (el: Element): TemplateNode => {
+  const attrs = elementAttrs(el)
+  // the pre-parse stamp becomes a field and leaves attrs entirely: it is not a
+  // prop, not a directive and not an attribute, and every loop that walks attrs
+  // would otherwise need to know its name
+  const component = attrs[COMPONENT_TAG_ATTR]
+  delete attrs[COMPONENT_TAG_ATTR]
+  return {
+    tag: el.tagName.toLowerCase(),
+    attrs,
+    ...(component === undefined ? {} : { component }),
+    children: Array.from((el instanceof HTMLTemplateElement ? el.content : el).childNodes).flatMap((node): (TemplateNode | string)[] => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent ?? ""
+        return text ? [text] : []
+      }
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        return [elementToAST(node as Element)]
+      }
+      return []
+    })
+  }
+}
 
 // evaluated with `with` (rather than passing scope keys as positional params)
 // so only the identifiers an expression actually references are read from
@@ -381,6 +396,32 @@ const findComponentKey = (scope: Record<string, any>, tag: string): string | nul
     }
   }
   return null
+}
+
+// every name a tag *could* have resolved to, walking the same chain
+// findComponentKey does. Deduped and sorted, because the chain can hold one
+// name twice (a prop shadowing a sibling) and the order it comes out in is the
+// prototype's, which means nothing to a reader scanning for their typo
+const componentsInScope = (scope: Record<string, any>): string[] => {
+  const names = new Set<string>()
+  for (let obj: any = scope; obj && obj !== Object.prototype; obj = Object.getPrototypeOf(obj)) {
+    for (const key of Object.keys(obj)) if (/^[A-Z]/.test(key)) names.add(key)
+  }
+  return [...names].sort()
+}
+
+// a tag whose name resolves to no component, once nothing can still supply one.
+// The error names what *is* in scope: the mistake is nearly always a typo or a
+// missing import, and both are one glance from the list. "(none)" is its own
+// answer - it says the component has no components at all, which points at the
+// import rather than at the spelling
+const unresolvedComponent = (tag: string, scope: Record<string, any>): Error => {
+  const names = componentsInScope(scope)
+  return new Error(
+    `jq79: <${tag}> is not defined - no component of that name is in scope, and nothing renders here. ` +
+    `Import it in a :setup script, declare it as a prop, or add a <template name="${tag}"> to this file. ` +
+    `In scope: ${names.length ? names.join(", ") : "(none)"}.`
+  )
 }
 
 // how deep a component may nest inside itself before the runtime calls it a
@@ -1025,6 +1066,32 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
 
   const el = document.createElement(node.tag)
 
+  // <UserCrad /> - written as a component (node.component), resolving to no
+  // component, and not an element either. Nothing else on the page can supply
+  // the name once every script has settled, so this renders no markup, no
+  // styles, no children and no script, forever, and says so by throwing rather
+  // than leaving a hole where a region of the page was meant to be.
+  //
+  // All three conditions carry weight. Without the capitalization <lable> and
+  // <svg> would be fatal (createElement builds SVG names in the HTML namespace,
+  // so an <svg> is an HTMLUnknownElement too); without the element check <DIV>
+  // would be, though it renders a perfectly good div; and without the pending
+  // count a factory that awaits $mounted() before returning its components
+  // could never render one, which is exactly what the watcher below is for.
+  //
+  // An *absent* count is a fourth case, and it is not zero: renderComponent()
+  // renders a template against a store somebody else owns and assembles, so
+  // nothing there has finished and nothing says a key can't still be written
+  // in. The claim being tested is a component's claim about its own scripts,
+  // and where none was made the tag waits for the upgrade, as it always has.
+  //
+  // Written without a local for the count because renderNode is on the stack
+  // for the whole of the subtree below it, so a slot here is a slot per level
+  // of a component nested inside itself - see renderWith
+  if (node.component && el instanceof HTMLUnknownElement && ((scope as any)[PENDING_SCRIPTS] as PendingScripts | undefined)?.count === 0) {
+    throw unresolvedComponent(node.component, scope)
+  }
+
   // a tag that isn't standard HTML but has no matching scope key *yet* may be
   // a component that arrives later (e.g. an async factory script exposing an
   // imported component after `await`). Watch for the key: the effect tracks
@@ -1527,6 +1594,36 @@ const SLOT_TAG_RE = /^slot\./i
 const kebabTagName = (tag: string): string =>
   SLOT_TAG_RE.test(tag) ? `slot.${camelToKebab(tag.slice("slot.".length))}` : tag
 
+// the same pass records what it declined to rewrite. An uppercase-initial tag
+// is a claim about a component: HTML's own elements are matched
+// case-insensitively but nobody writes <DIV> by accident, and a custom element
+// may not be spelled that way at all. So <UserCard> is a name the author
+// expected to resolve - which is what lets renderNode throw when it doesn't
+// (see unresolvedComponent).
+//
+// Carried in a *value* rather than left in the tag name, because the value is
+// the one place the HTML parser preserves case - the same move expandPropsSpread
+// makes for `...userData`, and for the same reason. elementToAST lifts it
+// straight off attrs into a field, so no attribute loop downstream ever sees
+// it - and since that lift is unconditional, the name has to be one no author
+// would write: a plain `:component` would eat the prop of that name off
+// <Card :component="Widget" />
+const COMPONENT_TAG_ATTR = ":jq79-component"
+const COMPONENT_TAG_RE = /^[A-Z]/
+
+// appends the stamp inside the tag, *before* a self-closing slash: this pass
+// runs first and expandSelfClosingTags still has to recognize the `/>` that
+// OPEN_TAG_RE swept into the attributes. A slash inside a quoted value can't be
+// mistaken for it - only a trailing one is matched
+const TRAILING_SLASH_RE = /\/\s*$/
+
+const stampComponentTag = (tag: string, attrs: string): string => {
+  if (!COMPONENT_TAG_RE.test(tag)) return attrs
+  const stamp = ` ${COMPONENT_TAG_ATTR}="${tag}"`
+  const slash = TRAILING_SLASH_RE.exec(attrs)
+  return slash ? `${attrs.slice(0, slash.index)}${stamp}${slash[0]}` : `${attrs}${stamp}`
+}
+
 const expandNameCase = (src: string): string =>
   src
     .split(RAW_BLOCK_RE)
@@ -1538,7 +1635,7 @@ const expandNameCase = (src: string): string =>
               const rewritten = attrs.replace(ATTR_NAME_RE, (whole, space: string | undefined, name: string | undefined) =>
                 name === undefined ? whole : `${space}${camelToKebab(name)}`
               )
-              return `<${kebabTagName(tag)}${rewritten}>`
+              return `<${kebabTagName(tag)}${stampComponentTag(tag, rewritten)}>`
             })
             .replace(CLOSE_SLOT_RE, (_match, suffix: string, space: string) => `</slot.${camelToKebab(suffix)}${space}>`)
     )
@@ -2049,6 +2146,21 @@ const siblingsInScope = (
 // it too) without ever showing up as data
 const UNFILLED_PROPS = Symbol("jq79.unfilledProps")
 
+// how many of this render generation's scripts have yet to settle, as a live
+// box rather than a snapshot. Rides the scope chain like UNFILLED_PROPS, and
+// for one reader: a <Tag> naming no component in scope is only a mistake once
+// nothing is left that could still supply the name.
+//
+// The count is not the render gate. A script that called $mounted() released
+// the template and is still running - that is the whole point of the call - so
+// at paint time this can be non-zero, and a name arriving from a factory that
+// awaited $mounted() is exactly the case the count keeps quiet. Read live, so
+// an :if that opens after everything settled is judged against the scripts as
+// they are then, not as they were at the first paint
+const PENDING_SCRIPTS = Symbol("jq79.pendingScripts")
+
+type PendingScripts = { count: number }
+
 // default-import interop for factory scripts: real modules expose .default,
 // while importing an .html component resolves to the Component79 itself
 const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.default : mod)
@@ -2466,6 +2578,14 @@ export class Component79 {
     // (`<footer :if="$slots.footer">`). Filled at the usage site, so it can
     // only change when the tag itself re-renders - which builds a new instance
     if (this.slots) Object.defineProperty(raw, SLOTS, { value: this.slots })
+    // in place before the store wraps it, because the scripts that increment it
+    // run against the store and the template reads it back through the same
+    // scope chain. Read back out of `raw` where it is needed rather than kept
+    // in a local: this frame is on the stack for the whole of the subtree it
+    // renders, so a component nested inside itself pays for it once per level -
+    // and the depth guard at MAX_NESTING_DEPTH only beats a RangeError while
+    // this function stays small (see the note in docs/development.md)
+    Object.defineProperty(raw, PENDING_SCRIPTS, { value: { count: 0 } as PendingScripts })
 
     const store = $reactive(raw)
     const fx = createEffectScope(store)
@@ -2654,8 +2774,21 @@ export class Component79 {
       // a script that threw has nothing left to contribute, so its rejection
       // releases the gate exactly as completion does - the error is already
       // reported by the runner, and holding the template hostage to it would
-      // turn one broken script into a blank component
-      run.settled.then(release, release)
+      // turn one broken script into a blank component. It also stops counting
+      // as a source of names, for that same reason.
+      //
+      // A script that finished on this stack is counted at zero rather than
+      // incremented and decremented a microtask later: its names are on the
+      // store already, and the promise it settles through does not resolve
+      // until after the synchronous paint - which is every paint, for the
+      // components that have no await in them at all
+      if (run.sync) run.settled.then(release, release)
+      else {
+        const pending: PendingScripts = (raw as any)[PENDING_SCRIPTS]
+        pending.count++
+        const settle = () => { pending.count--; release() }
+        run.settled.then(settle, settle)
+      }
       if (!run.sync && !open) allSync = false
     })
 

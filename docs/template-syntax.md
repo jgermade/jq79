@@ -301,6 +301,36 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - A tag can also resolve to a component the same file declares with `<template name="…">`, with no import at all — see [several components in one file](components.md#several-components-in-one-file).
 - A tag's children are **content for the child's slots** — see below.
 
+### A tag that names no component throws
+
+`<UserCrad />` renders no markup, no styles, no children and no script. Once
+every setup script has settled nothing can arrive to fill it, so jq79 throws
+rather than leave a hole in the page:
+
+```
+jq79: <UserCrad> is not defined - no component of that name is in scope, and
+nothing renders here. Import it in a :setup script, declare it as a prop, or add
+a <template name="UserCrad"> to this file. In scope: UserCard, Button.
+```
+
+Only a tag **you capitalized** is judged this way — that's the spelling that
+claims a component, and it is never valid HTML. `<my-widget>`, `<svg>` and a
+plain typo like `<lable>` render as they always have, and so does an HTML
+element written in caps (`<DIV>`).
+
+It is also only about a name that resolves to *nothing*. A component variable
+that is `undefined` still waits quietly — that's how an `await import(...)`
+lands — and a name holding something that isn't a component stays a
+`console.error`, because you can still write the right value into it:
+
+```js
+jq79.data.Card = await Component79.fetch('/Card.html')  // renders now
+```
+
+The one case where a name legitimately arrives after the first render is a
+factory script that calls `await $mounted()` before returning its components.
+jq79 knows that script is still running and waits for it.
+
 ## `<slot>` — content projection
 
 A component's tag children render inside it, where it wrote a `<slot>`:

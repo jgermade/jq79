@@ -270,6 +270,11 @@ and pass nothing, and that's an error on the console (and nothing rendered), bec
 nothing can arrive later to fill it. A declared name that is never used as a tag is
 nobody's business, and says nothing.
 
+Misspell the tag, though, and there is no name at all to fill — `<Buton>` matches
+neither the file's own nor anything the parent passed, so it
+[throws](template-syntax.md#a-tag-that-names-no-component-throws) and names the
+components that *were* in scope.
+
 ### Styles stop at each template
 
 A named template is a shadow root inside a shadow root: the file is a container,

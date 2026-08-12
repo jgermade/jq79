@@ -98,10 +98,19 @@ That duplication is deliberate. A component that nests itself recurses through
 `renderWith` once per level, and the depth guard at `MAX_NESTING_DEPTH` is
 calibrated against the real stack: routing the synchronous render through one
 extra closure was enough to overflow *underneath* the guard, turning a named
-`console.error` back into a `RangeError` at around 200 levels. If you refactor
-the render, run the cyclic-data test in
-[`tests/multiTemplate.test.ts`](../tests/multiTemplate.test.ts) — it is the only
-thing standing between that guard and the stack.
+`console.error` back into a `RangeError` at around 200 levels.
+
+It is not only extra *frames*. `renderWith` and `renderNode` are both on the
+stack for the whole of the subtree below them, so a local added to either is a
+local per level — and one added `const` in `renderWith` was measured to be
+enough to overflow the same guard. Both functions read the pending-script count
+back out of the object that holds it rather than keeping it in a variable, for
+exactly this reason.
+
+If you refactor the render, run the cyclic-data test in
+[`tests/multiTemplate.test.ts`](../tests/multiTemplate.test.ts) **on its own** —
+it is the only thing standing between that guard and the stack, and it passes in
+a full-suite run at depths where it fails alone.
 
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same

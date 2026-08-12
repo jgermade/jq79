@@ -254,6 +254,93 @@ describe("multi-template files", () => {
     })
   })
 
+  // a tag written as a component that resolves to none is the one unresolved
+  // case that throws: nothing renders there and, once every script has settled,
+  // nothing can still arrive to change that
+  describe("a component tag that names nothing", () => {
+    it("throws, naming the tag and the components that are in scope", () => {
+      expect(() => {
+        new Component79(`
+          <div class="page"><UserCrad /></div>
+          <template name="UserCard"><b>card</b></template>
+        `).render().mount(host)
+      }).toThrow(/<UserCrad> is not defined.*In scope: UserCard\./s)
+    })
+
+    it("says so even when the component has no components at all", () => {
+      expect(() => {
+        new Component79(`<div><Missing /></div>`).render().mount(host)
+      }).toThrow(/In scope: \(none\)\./)
+    })
+
+    it("throws from the render an :if opens later, not only from the first", () => {
+      const file = new Component79(`<div><Missing :if="ready" /></div>`)
+      file.render({ ready: false }).mount(host)
+
+      expect(() => { file.data!.ready = true }).toThrow(/<Missing> is not defined/)
+    })
+
+    it("leaves lowercase unknown tags alone - a custom element, an SVG, a typo", () => {
+      expect(() => {
+        new Component79(`<div><my-widget></my-widget><svg><path /></svg><lable>x</lable></div>`)
+          .render().mount(host)
+      }).not.toThrow()
+
+      expect($(host, "my-widget")).not.toBeNull()
+      expect($(host, "lable")).not.toBeNull()
+    })
+
+    it("leaves an HTML element written in caps alone", () => {
+      new Component79(`<DIV class="shouty"><A href="/x">link</A></DIV>`).render().mount(host)
+
+      expect($(host, "div.shouty")).not.toBeNull()
+      expect($(host, "a")!.getAttribute("href")).toBe("/x")
+    })
+
+    it("leaves a prop named component alone - the tag stamp is not that name", () => {
+      new Component79(`
+        <div><Card :component="'widget'" /></div>
+        <template name="Card">
+          <script :setup="{ component }"></script>
+          <b class="card">{{ component }}</b>
+        </template>
+      `).render().mount(host)
+
+      expect($(host, ".card")!.textContent).toBe("widget")
+    })
+
+    it("still resolves a component the parent passes, and one it passes late", () => {
+      const file = new Component79(`<div><Card /></div>`)
+      expect(() => file.render({ Card: undefined }).mount(host)).not.toThrow()
+
+      file.data!.Card = new Component79(`<b class="card">card</b>`)
+      expect($(host, ".card")).not.toBeNull()
+    })
+
+    it("waits for a factory that returns its components after await $mounted()", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
+      const rejection = vi.fn()
+      process.on("unhandledRejection", rejection)
+
+      new Component79(`
+        <script>
+          export default async (props, { $mounted, $data }) => {
+            await $mounted()
+            return { Late: $data.late }
+          }
+        </script>
+        <div><Late /></div>
+      `).render({ late: new Component79(`<b class="late">late</b>`) }).mount(host)
+
+      await new Promise(resolve => setTimeout(resolve, 10))
+      process.off("unhandledRejection", rejection)
+
+      expect($(host, ".late")).not.toBeNull()
+      expect(rejection).not.toHaveBeenCalled()
+      expect(error).not.toHaveBeenCalled()
+    })
+  })
+
   describe("scoped styles", () => {
     it("gives each component of the file its own scope", () => {
       new Component79(`
