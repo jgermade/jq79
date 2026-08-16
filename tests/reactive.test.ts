@@ -1,6 +1,6 @@
 
 import { describe, it, expect, vi } from "vitest"
-import { $reactive } from "../src/jq79"
+import { $reactive, $toRaw } from "../src/jq79"
 
 describe("$reactive", () => {
   it("keeps deep sets on the raw properties working like plain objects", () => {
@@ -445,6 +445,45 @@ describe("$reactive", () => {
       expect(store.session).toBe(session)
       expect(store.session.describe()).toBe("session 3")
       expect(store.when).toBe(when)
+    })
+  })
+
+  describe("$toRaw", () => {
+    it("hands back the object it was given, at the root and at any depth", () => {
+      const data = { user: { name: "Jesús" }, items: [{ id: 1 }] }
+      const store = $reactive(data)
+
+      expect($toRaw(store)).toBe(data)
+      expect($toRaw(store.user)).toBe(data.user)
+      expect($toRaw(store.items)).toBe(data.items)
+      expect($toRaw(store.items[0])).toBe(data.items[0])
+    })
+
+    it("leaves anything that isn't a proxy as it is", () => {
+      const plain = { a: 1 }
+
+      expect($toRaw(plain)).toBe(plain)
+      expect($toRaw(42)).toBe(42)
+      expect($toRaw(null)).toBeNull()
+      expect($toRaw(undefined)).toBeUndefined()
+    })
+
+    it("unwraps a proxy of a proxy down to the object underneath", () => {
+      const data = { user: { name: "Jesús" } }
+      const outer = $reactive($reactive(data))
+
+      expect($toRaw(outer.user)).toBe(data.user)
+    })
+
+    it("returns the live object, so writes through it notify nobody", () => {
+      const store = $reactive({ count: 0 })
+      const listener = vi.fn()
+      store.$on("count", listener)
+
+      $toRaw(store).count = 5
+
+      expect(store.count).toBe(5) // the store reads it, having no copy of its own
+      expect(listener).not.toHaveBeenCalled()
     })
   })
 })

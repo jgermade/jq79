@@ -1,12 +1,12 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl } from "./dom"
-import { $reactive, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
+import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
 
 export { $, $$, $create } from "./dom"
-export { $reactive } from "./reactive"
+export { $reactive, $toRaw } from "./reactive"
 
 // the package version, substituted at build time (tsup/vitest `define`, read
 // from package.json - releases bump it there and nowhere else). The typeof
@@ -3025,7 +3025,7 @@ export const parseComponent = (component: string): Component79 => new Component7
 // library helpers injected into setup scripts. They behave like extra
 // globals: a same-named scope property (render data or a top-level
 // declaration) shadows them
-const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, Component79 }
+const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, Component79 }
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
 // below; classic scripts run before deferred module ones, so the flag is always

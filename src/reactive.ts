@@ -54,7 +54,12 @@ const pathsOverlap = (a: string, b: string): boolean =>
 // what it wraps, the nesting compounds until the process stops responding
 const RAW = Symbol("jq79.raw")
 
-const toRaw = <T>(value: T): T => {
+// a free function rather than a method on the store, because the store API is
+// served from the root proxy alone (see storeApi): `store.$toRaw()` would work
+// and `store.user.$toRaw()` would not, which is the case callers actually have.
+// The RAW symbol travels on every proxy at every depth, so this works anywhere.
+// What it returns is the real object, not a copy: writes to it notify nobody
+export const $toRaw = <T>(value: T): T => {
   let raw: any = value
   while (raw !== null && typeof raw === "object" && raw[RAW]) raw = raw[RAW]
   return raw
@@ -173,7 +178,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   }
 
   // the reactive view of `raw`, created on demand. Callers must hand it a raw
-  // object (see toRaw at both call sites): wrapping a proxy is what compounds
+  // object (see $toRaw at both call sites): wrapping a proxy is what compounds
   const wrap = (raw: Record<string, any>, path: string): Record<string, any> => {
     const cached = proxies.get(raw)
     if (cached) return cached
@@ -206,7 +211,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
           return value
         }
 
-        const raw = toRaw(value)
+        const raw = $toRaw(value)
         return isWrappable(raw) ? wrap(raw, dotKey) : raw
       },
       set(target, key: string, value, receiver) {
@@ -226,7 +231,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         // that `list = [list[1], list[0]]` doesn't write proxies back into the
         // data. Reads re-wrap it, from the cache, as the very same proxy. A
         // whole store assigned in is the exception: it stays as it is
-        const stored = isStore(value) ? value : toRaw(value)
+        const stored = isStore(value) ? value : $toRaw(value)
         const isNewKey = !Object.prototype.hasOwnProperty.call(target, key)
         // a primitive write that changes nothing notifies nobody: it's what
         // lets an effect write the value it just read (a normalizing
@@ -269,7 +274,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     return proxy
   }
 
-  const reactive = wrap(toRaw(data), "") as ReactiveDeepData<T>
+  const reactive = wrap($toRaw(data), "") as ReactiveDeepData<T>
 
   // a store handed in with the data (a prop, or render data) is bridged here
   // rather than on first read, so a listener registered before anything reads
@@ -277,7 +282,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // lands, and descending would mean walking whatever else was handed in - a
   // highlighter, an API client - to its leaves. A store sitting deeper is
   // bridged when the read that reaches it wraps its parent
-  Object.entries(toRaw(data)).forEach(([key, value]) => {
+  Object.entries($toRaw(data)).forEach(([key, value]) => {
     if (isStore(value)) bridge(value, key)
   })
 

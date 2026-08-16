@@ -50,7 +50,7 @@ tests, and each has cost real debugging at least once.
 
 **The store never wraps a proxy.** [`$reactive`](reactive-data.md) wraps nested
 objects lazily, as they're read, caching one proxy per raw object per store, and
-unwraps (`toRaw`) on the way in and on the way out. This is not an optimisation:
+unwraps (`$toRaw`) on the way in and on the way out. This is not an optimisation:
 it is the thing that makes the store safe. It used to wrap eagerly, rewriting the
 object it was handed and replacing nested objects with proxies in place — so two
 stores over the same object each wrapped the other's proxies, and because wrapping

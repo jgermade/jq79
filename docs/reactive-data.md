@@ -52,6 +52,34 @@ diff a reordered list by reference and keep each row's DOM.
 
 Class instances, `Date`s and DOM nodes pass through untouched.
 
+## Getting the plain object back
+
+`$toRaw(value)` returns the object behind a store proxy — at the root or at any
+depth — for the code that shouldn't see a proxy at all: a library that stores
+what you hand it, a `structuredClone`, an identity comparison against the
+original data.
+
+```js
+// also injected into setup scripts
+import { $reactive, $toRaw } from "jq79"
+
+const data = { user: { name: "Jesús" }, items: [{ id: 1 }] }
+const store = $reactive(data)
+
+$toRaw(store)          // data
+$toRaw(store.user)     // data.user
+$toRaw(store.items[0]) // data.items[0]
+$toRaw({ a: 1 })       // { a: 1 } — anything that isn't a proxy comes back as it is
+```
+
+It hands back the *live* object, not a copy, so the rule above applies to it:
+writes made through it notify nobody.
+
+```js
+$toRaw(store).count = 5   // the value changes, nothing re-renders
+store.count = 5           // ✅
+```
+
 ## Shared state: pass a store, not an object
 
 A plain object handed to two components is shared *data*, not shared state: each

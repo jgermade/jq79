@@ -34,7 +34,7 @@ CI runs `npm test` and `npm run build` on every push/PR to `main`.
 invariants that look like implementation details and are not. The short version:
 
 - **The store never wraps a proxy.** `$reactive` wraps nested objects lazily on
-  read, one cached proxy per raw object per store, unwrapping (`toRaw`) at both
+  read, one cached proxy per raw object per store, unwrapping (`$toRaw`) at both
   ends. Wrapping eagerly — rewriting the object it was handed, as it used to —
   makes two stores over one object wrap each other's proxies until the tab
   freezes. This is a fix, not a style choice; don't "simplify" it back.

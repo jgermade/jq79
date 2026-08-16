@@ -19,7 +19,7 @@
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.
-- The [DOM helpers](dom-helpers.md) `$`, `$$` and `$create`, plus [`$reactive`](reactive-data.md), are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
+- The [DOM helpers](dom-helpers.md) `$`, `$$` and `$create`, plus [`$reactive`](reactive-data.md) and [`$toRaw`](reactive-data.md#getting-the-plain-object-back), are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
 - `$emit(eventName, payload)` dispatches a native bubbling, cancelable `CustomEvent` (with `payload` as `event.detail`) from the component's position in the DOM, and returns `false` when any listener called `preventDefault()` — the "parent vetoed" signal (e.g. `@saved.prevent` on the component's tag). It's also visible to template expressions (`@click="$emit('saved', id)"` needs no setup function), shadowed by a same-named scope property like any global. Listen from a parent component with [`@event-name` on the component's own tag](template-syntax.md#event-on-a-component-tag), on any wrapping element, or with plain `addEventListener` on the mount target:
 
 ```html
@@ -309,7 +309,7 @@ The context is everything the library provides — the `$` is what says so:
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
 - `$emit`, `$updateModel`, `$mounted`, `$self`, `$$self` — same as in setup scripts. `$`,
-  `$$`, `$create` and `$reactive` are available lexically in the module body.
+  `$$`, `$create`, `$reactive` and `$toRaw` are available lexically in the module body.
 - The **returned object is merged into the store**, making its entries
   visible to the template — that's how imported components and methods are
   exposed (`return { UserCard, inc }`).

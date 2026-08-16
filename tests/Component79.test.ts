@@ -467,6 +467,22 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("exposes $toRaw to setup scripts", () => {
+      const user = { name: "Jesús" }
+      const jq79 = new Component79(
+        `<script :setup="{ user }">` +
+        // `user` reads back as a proxy; $toRaw hands the very object the
+        // component was rendered with, wrapping and all removed
+        `const unwrapped = $toRaw(user) !== user\n` +
+        `const name = $toRaw(user).name\n` +
+        `</script>` +
+        `<div class="raw">{{ unwrapped }} {{ name }}</div>`
+      ).render({ user }).mount(host)
+
+      expect($(host, ".raw")?.textContent).toBe("true Jesús")
+      jq79.destroy()
+    })
+
     it("exposes $emit, dispatching a bubbling CustomEvent with the payload as detail", () => {
       const src =
         `<script :setup>const fire = payload => $emit("child-event", payload)</script>` +
