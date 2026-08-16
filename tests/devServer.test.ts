@@ -1,6 +1,6 @@
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, rename } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, relative, sep } from "node:path"
 import net from "node:net"
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 
@@ -173,6 +173,231 @@ describe("dev server", () => {
 
   it("404s a file it does not have", async () => {
     expect((await get("/nope.html", asFetch)).status).toBe(404)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// headers and watch: what a static host is configured with, and what counts as
+// a source. Both are options the server has no default for, so each test brings
+// its own server rather than sharing one.
+// ---------------------------------------------------------------------------
+
+describe("dev server options", () => {
+  let root: string
+  let outside: string
+  let server: DevServer | undefined
+
+  // both realpath'd, because the server does the same to whatever it is given
+  // (/tmp is a symlink on macOS) and the urls it sends are computed from those
+  const temp = async (prefix: string) => realpath(await mkdtemp(join(tmpdir(), prefix)))
+
+  beforeEach(async () => {
+    root = await temp("jq79-opts-")
+    outside = await temp("jq79-src-")
+    await writeFile(join(root, "index.html"), "<html><head></head><body></body></html>")
+    await writeFile(join(root, "card.html"), "<p>before</p>")
+  })
+
+  afterEach(async () => {
+    await server?.close()
+    server = undefined
+    await rm(root, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
+  })
+
+  // the url an outside file travels under: relative to the served root, because
+  // it is served from nowhere and an absolute path would hand the page the
+  // machine's directory layout for a string only used in a log line
+  const outsideUrl = (name: string) => relative(root, join(outside, name)).split(sep).join("/")
+
+  const asDocument = { "sec-fetch-dest": "document" }
+  const asFetch = { "sec-fetch-dest": "empty" }
+
+  const get = (path: string, headers: Record<string, string> = {}) =>
+    fetch(`${server!.url}${path}`, { headers })
+
+  it("sends the configured headers on everything, the event stream included", async () => {
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      // capitalized as a host's config would be: the name is case-insensitive
+      headers: { "Cross-Origin-Opener-Policy": "same-origin" },
+    })
+
+    for (const path of ["/index.html", "/card.html", "/__jq79/client.js", "/nope.html"]) {
+      const res = await fetch(`${server.url}${path}`, { headers: asDocument })
+      await res.text()
+      expect(res.headers.get("cross-origin-opener-policy"), path).toBe("same-origin")
+    }
+
+    const events = await fetch(`${server.url}/__jq79/events`)
+    expect(events.headers.get("cross-origin-opener-policy")).toBe("same-origin")
+    await events.body?.cancel()
+  })
+
+  it("keeps its own content-type and content-length, and yields everything else", async () => {
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      headers: {
+        "cache-control": "max-age=60",
+        "content-type": "text/plain", // the server's describes the file it read
+        "content-length": "1", // and this one would truncate the body
+      },
+    })
+
+    const res = await fetch(`${server.url}/card.html`, { headers: asFetch })
+
+    expect(res.headers.get("content-type")).toContain("text/html")
+    expect(res.headers.get("content-length")).toBe("13")
+    expect(await res.text()).toBe("<p>before</p>")
+    // not reserved, so the author's replaces the server's no-store rather than
+    // arriving beside it
+    expect(res.headers.get("cache-control")).toBe("max-age=60")
+  })
+
+  it("watches a directory outside the root, and reloads the page for it", async () => {
+    await writeFile(join(outside, "row.html"), "<li>one</li>")
+    // a bare directory, which has to mean everything under it: as a glob it
+    // would open the directory and match nothing in it
+    server = await devServer({ rootDir: root, port: 0, watch: [{ pattern: outside }] })
+    const events = await sse(`${server.url}/__jq79/events`)
+
+    await writeFile(join(outside, "row.html"), "<li>two</li>")
+
+    const url = outsideUrl("row.html")
+    expect(url.startsWith("..")).toBe(true)
+    expect(await events.next("reload", url)).toEqual({ url })
+    // even for an .html: the page never fetched it from here, so there is no
+    // live instance to swap the source into
+    expect(events.seen("update").map(frame => frame.url)).not.toContain(url)
+
+    events.close()
+  })
+
+  it("watches a single file through the directory it sits in, and only that file", async () => {
+    await writeFile(join(outside, "theme.css"), "p{}")
+    await writeFile(join(outside, "other.css"), "p{}")
+    server = await devServer({ rootDir: root, port: 0, watch: [{ pattern: join(outside, "theme.css") }] })
+    const events = await sse(`${server.url}/__jq79/events`)
+
+    await writeFile(join(outside, "other.css"), "p{color:red}")
+    // an editor's atomic save, which is what a watcher on the file itself would
+    // not survive: the rename puts a new inode where the watched one was
+    await writeFile(join(outside, "theme.css.tmp"), "p{color:blue}")
+    await rename(join(outside, "theme.css.tmp"), join(outside, "theme.css"))
+
+    const url = outsideUrl("theme.css")
+    expect(await events.next("reload", url)).toEqual({ url })
+    // its neighbours in the same directory are the watcher's business, not the
+    // page's
+    expect(events.seen("reload").map(frame => frame.url)).not.toContain(outsideUrl("other.css"))
+
+    events.close()
+  })
+
+  it("hands the handler every file of the burst, and nothing its pattern missed", async () => {
+    const runs: string[][] = []
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      watch: [{ pattern: join(outside, "**/*.scss"), fn: files => void runs.push(files) }],
+    })
+
+    await writeFile(join(outside, "ignored.css"), "p{}")
+    await writeFile(join(outside, "a.scss"), "a{}")
+    await mkdir(join(outside, "deep"))
+    await writeFile(join(outside, "deep", "b.scss"), "b{}")
+
+    await vi.waitFor(() => expect(runs.flat().length).toBeGreaterThanOrEqual(2), { timeout: 3000 })
+    // absolute, so a handler can read them without knowing where the server was
+    // started from
+    expect(runs.flat().sort()).toEqual([join(outside, "a.scss"), join(outside, "deep", "b.scss")])
+  })
+
+  it("runs the handler instead of reloading, and the file it writes brings the reload", async () => {
+    await writeFile(join(outside, "app.scss"), "p{}")
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      watch: [
+        {
+          pattern: join(outside, "**/*.scss"),
+          fn: async files => {
+            await writeFile(join(root, "app.css"), `/* from ${files.length} */`)
+          },
+        },
+      ],
+    })
+    const events = await sse(`${server.url}/__jq79/events`)
+
+    await writeFile(join(outside, "app.scss"), "p{color:red}")
+
+    // the compiled file lands inside the root, so it is the change the page
+    // hears about - one reload, for the file the browser actually has
+    expect(await events.next("reload", "/app.css")).toEqual({ url: "/app.css" })
+    expect(events.seen("reload").map(frame => frame.url)).not.toContain(outsideUrl("app.scss"))
+    expect(await get("/app.css", asFetch).then(res => res.text())).toBe("/* from 1 */")
+
+    events.close()
+  })
+
+  it("keeps hot reload for a file inside the root, handler or no handler", async () => {
+    const runs: string[][] = []
+    await mkdir(join(root, "parts"))
+    await writeFile(join(root, "parts", "row.html"), "<li>one</li>")
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      watch: [{ pattern: join(root, "parts", "**"), fn: files => void runs.push(files) }],
+    })
+    const events = await sse(`${server.url}/__jq79/events`)
+
+    await writeFile(join(root, "parts", "row.html"), "<li>two</li>")
+
+    // a pattern is a claim on the file, never a veto on what the root does with
+    // it: matching more than you meant to can't cost you the hot swap
+    expect(await events.next("update", "/parts/row.html")).toEqual({
+      url: "/parts/row.html",
+      src: "<li>two</li>",
+    })
+    await vi.waitFor(() => expect(runs.flat()).toContain(join(root, "parts", "row.html")), { timeout: 3000 })
+
+    events.close()
+  })
+
+  it("stays up when a handler throws, and says which one", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      watch: [
+        {
+          pattern: join(outside, "**/*.scss"),
+          fn: () => {
+            throw new Error("sass: syntax error")
+          },
+        },
+      ],
+    })
+
+    await writeFile(join(outside, "broken.scss"), "p{")
+
+    // a handler is someone's build script, and a build that fails is a normal
+    // morning - the server reports it and keeps serving
+    await vi.waitFor(() => expect(error).toHaveBeenCalled(), { timeout: 3000 })
+    expect(error.mock.calls[0].join(" ")).toContain("*.scss")
+    expect((await get("/card.html", asFetch)).status).toBe(200)
+
+    error.mockRestore()
+  })
+
+  it("refuses to start when there is nothing at the head of a pattern", async () => {
+    // the only signal there is: a server that started and quietly watched
+    // nothing would show up as a reload that never comes
+    await expect(
+      devServer({ rootDir: root, port: 0, watch: [{ pattern: join(outside, "nope/**/*.scss") }] }),
+    ).rejects.toThrow(/nothing to watch/)
   })
 })
 

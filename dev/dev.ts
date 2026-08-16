@@ -1,7 +1,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
 import { readFile, realpath, stat } from "node:fs/promises"
 import { watch, type FSWatcher } from "node:fs"
-import { basename, extname, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, extname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path"
 
 // A dev server for the no-bundle path: serve a directory of .html components
 // over HTTP, watch it, and hot-reload the components that changed.
@@ -29,6 +29,24 @@ export interface DevServerOptions {
   port?: number
   // default: localhost
   host?: string
+  // response headers to send on everything - a static host is configured, and
+  // these are that configuration (default: none)
+  headers?: Record<string, string>
+  // what to watch on top of rootDir, and what to do about it (default: none)
+  watch?: WatchEntry[]
+}
+
+// the handler gets every file of the burst that woke it, absolute, so a save
+// that touches three of them is one build rather than three
+export type WatchHandler = (files: string[]) => void | Promise<void>
+
+export interface WatchEntry {
+  // glob(s) resolved against the cwd, like rootDir: "styles/**/*.scss". A bare
+  // directory means everything under it
+  pattern: string | string[]
+  // what a match runs. Without one, a match outside the served root reloads the
+  // page - which is the only other thing a file served from nowhere can do
+  fn?: WatchHandler
 }
 
 export interface DevServer {
@@ -106,6 +124,13 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
   const root = await realpath(resolve(options.rootDir ?? "."))
   const host = options.host ?? "localhost"
 
+  // lowercased once: header names are case-insensitive and an object is not, so
+  // a "Cache-Control" in the options would otherwise go out *beside* the
+  // server's own cache-control rather than replacing it
+  const headers: Record<string, string> = Object.fromEntries(
+    Object.entries(options.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
+  )
+
   const clients = new Set<ServerResponse>()
 
   const send = (event: string, data: unknown) => {
@@ -115,6 +140,18 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
 
   // --- serving ---------------------------------------------------------------
 
+  // every response carries the configured headers - a page, a component, the
+  // client, the event stream, a 404. All but two: content-type and
+  // content-length describe the bytes of the response they are on (a wrong
+  // length truncates the body or hangs the socket), so those stay the server's
+  const head = (res: ServerResponse, status: number, own: Record<string, string | number> = {}) => {
+    const merged: Record<string, string | number> = { ...own, ...headers }
+    for (const name of ["content-type", "content-length"]) {
+      if (own[name] !== undefined) merged[name] = own[name]
+    }
+    return res.writeHead(status, merged)
+  }
+
   const serveStatic = async (req: IncomingMessage, res: ServerResponse, pathname: string) => {
     // a URL path is not a file path: decode it, then keep the result inside the
     // root (".." in a request must not walk out of the served directory)
@@ -122,11 +159,11 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
     try {
       file = resolve(join(root, decodeURIComponent(pathname)))
     } catch {
-      res.writeHead(400).end("bad request")
+      head(res, 400).end("bad request")
       return
     }
     if (file !== root && !file.startsWith(root + sep)) {
-      res.writeHead(403).end("forbidden")
+      head(res, 403).end("forbidden")
       return
     }
 
@@ -136,7 +173,7 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
         // static host: /docs rendered as-is would resolve its relative links
         // against the parent ("img.png" -> /img.png instead of /docs/img.png)
         if (!pathname.endsWith("/")) {
-          res.writeHead(301, { location: pathname + "/" }).end()
+          head(res, 301, { location: pathname + "/" }).end()
           return
         }
         file = join(file, "index.html")
@@ -150,14 +187,14 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
       const html = type.startsWith("text/html") && isDocument(req)
       const payload = html ? Buffer.from(injectClient(body.toString("utf8"))) : body
 
-      res.writeHead(200, {
+      head(res, 200, {
         "content-type": type,
         "content-length": payload.byteLength,
         "cache-control": "no-store", // the file on disk is always the truth here
       })
       res.end(payload)
     } catch {
-      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("not found")
+      head(res, 404, { "content-type": "text/plain; charset=utf-8" }).end("not found")
     }
   }
 
@@ -165,13 +202,13 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
     const pathname = (req.url ?? "/").split(/[?#]/)[0]
 
     if (pathname === CLIENT_URL) {
-      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" })
+      head(res, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" })
       res.end(CLIENT)
       return
     }
 
     if (pathname === EVENTS_URL) {
-      res.writeHead(200, {
+      head(res, 200, {
         "content-type": "text/event-stream",
         "cache-control": "no-store",
         connection: "keep-alive",
@@ -194,8 +231,63 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
   // atomic write); collapsing per file keeps that down to one push
   const pending = new Map<string, NodeJS.Timeout>()
 
-  const changed = async (rel: string) => {
-    const file = join(root, rel)
+  // a pattern is written against the cwd (`resolve` reads it the same way), and
+  // captured here so a later chdir can't move what the globs mean
+  const cwd = process.cwd()
+
+  type Entry = {
+    patterns: string[]
+    fn?: WatchHandler
+    batch: Set<string>
+    timer?: NodeJS.Timeout
+    running: boolean
+  }
+
+  const entries: Entry[] = (options.watch ?? []).map(entry => ({
+    patterns: [entry.pattern].flat(),
+    fn: entry.fn,
+    batch: new Set(),
+    running: false,
+  }))
+
+  const claims = (entry: Entry, file: string) =>
+    entry.patterns.some(pattern =>
+      matchesGlob(isAbsolute(pattern) ? posix(file) : posix(relative(cwd, file)), pattern),
+    )
+
+  // a burst is one call: the handler is a build step, and building once per file
+  // of a save that touched four is three builds nobody asked for
+  const collect = (entry: Entry, file: string) => {
+    entry.batch.add(file)
+    clearTimeout(entry.timer)
+    entry.timer = setTimeout(() => void fire(entry), 30)
+  }
+
+  const fire = async (entry: Entry) => {
+    if (entry.running || !entry.batch.size) return
+    const files = [...entry.batch]
+    entry.batch.clear()
+    entry.running = true
+    try {
+      await entry.fn?.(files)
+    } catch (error) {
+      // a handler is someone's build script, and a build that fails is a normal
+      // morning. Reporting it and staying up beats taking the server with it
+      console.error(`jq79 dev: watch handler for ${entry.patterns.join(", ")} failed\n`, error)
+    } finally {
+      entry.running = false
+      if (entry.batch.size) void fire(entry) // saved again while it ran
+    }
+  }
+
+  // `dir` is the directory whose watcher reported this - only needed for the
+  // macOS quirk below, and only when the file turns out not to exist
+  const changed = async (file: string, dir: string) => {
+    // where the browser knows the file from, which only exists for a file under
+    // the served root: a watched path outside it is served from nowhere, so
+    // there is no url for the runtime to match an instance against
+    const rel = relative(root, file)
+    const served = !!rel && !rel.startsWith("..")
 
     let src: string | null = null
     try {
@@ -203,33 +295,101 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
       // the file itself is already on its way - acting on both would reload the
       // page every time a component is saved
       if ((await stat(file)).isDirectory()) return
-      if (rel.endsWith(".html")) src = await readFile(file, "utf8")
+      if (served && file.endsWith(".html")) src = await readFile(file, "utf8")
     } catch {
       // gone: deleted, or renamed away - and there is nothing to swap in, so the
       // page has to reload. Unless it was never there: macOS reports a change to
-      // the watched directory *itself* under its own basename, which resolves to
-      // a path inside it that does not exist
-      if (rel === basename(root)) return
+      // a watched directory *itself* under its own basename, which resolves to a
+      // path inside it that does not exist
+      if (file === join(dir, basename(dir))) return
     }
 
-    // the url is the one the component was served from, because that is what the
-    // runtime resolves its instances' filenames against
-    const url = "/" + posix(rel)
-    if (src === null) send("reload", { url })
-    else send("update", { url, src })
+    // every entry that names this file gets it, wherever the file lives. What
+    // the root does with its own files is not up for negotiation: no pattern can
+    // switch hot reload off, so a handler can never cost you the thing you came
+    // for by matching more than its author meant it to
+    const claimed = entries.filter(entry => claims(entry, file))
+    claimed.forEach(entry => entry.fn && collect(entry, file))
+
+    if (served) {
+      // the url is the one the component was served from, because that is what
+      // the runtime resolves its instances' filenames against
+      const url = "/" + posix(rel)
+      if (src === null) send("reload", { url })
+      else send("update", { url, src })
+      return
+    }
+
+    // outside the root a handler *is* the answer: it ran, and whatever it writes
+    // into the served directory comes back round as a change of its own, with a
+    // url. An entry with no handler is asking for the page, and gets a path
+    // relative to the root - the client only logs it, and an absolute one would
+    // publish the machine's layout to the page
+    if (claimed.some(entry => !entry.fn)) send("reload", { url: posix(rel) })
   }
 
-  const watcher: FSWatcher = watch(root, { recursive: true }, (_event, filename) => {
-    if (!filename) return
-    const rel = relative(root, resolve(root, filename.toString()))
-    if (!rel || rel.startsWith("..") || ignored(rel)) return
-
-    clearTimeout(pending.get(rel))
-    pending.set(rel, setTimeout(() => {
-      pending.delete(rel)
-      void changed(rel)
+  const queue = (file: string, dir: string) => {
+    clearTimeout(pending.get(file))
+    pending.set(file, setTimeout(() => {
+      pending.delete(file)
+      void changed(file, dir)
     }, 30))
-  })
+  }
+
+  const watchers: FSWatcher[] = []
+
+  // a directory is watched whole. A single file is watched through the directory
+  // it sits in (`only` filtering the rest back out), because a watcher on a file
+  // holds its inode, and an editor's atomic save renames a new one over it - the
+  // watcher survives as a handle on a file nothing will ever write to again
+  const watchTree = (dir: string, only?: string) => {
+    watchers.push(watch(dir, { recursive: !only }, (_event, filename) => {
+      if (!filename) return
+      const file = resolve(dir, filename.toString())
+      const rel = relative(dir, file)
+      if (!rel || rel.startsWith("..")) return
+      if (only ? rel !== only : ignored(rel)) return
+      queue(file, dir)
+    }))
+  }
+
+  // a glob is a filter and a watcher needs a directory to open, so the watch
+  // starts at the literal head of the pattern - everything before the first
+  // magic character. "styles/**/*.scss" opens styles/, "**/*.scss" opens the cwd
+  const literalHead = (pattern: string) => {
+    const parts = pattern.split("/")
+    const magic = parts.findIndex(part => /[*?[\]{}!]/.test(part))
+    return resolve(magic === -1 ? pattern : parts.slice(0, magic).join("/") || ".")
+  }
+
+  // the patterns are resolved like rootDir, against the cwd, and all checked
+  // before anything is watched: a path that isn't there is a typo, and a watcher
+  // that silently isn't running is worse than a server that won't start
+  const extra = new Map<string, { dir: string; only?: string }>()
+  for (const entry of entries) {
+    for (const [i, pattern] of entry.patterns.entries()) {
+      const head = literalHead(pattern)
+      const info = await stat(head).catch(() => null)
+      if (!info) throw new Error(`jq79 dev: nothing to watch at ${head}`)
+
+      // a bare directory means everything under it, which is what it looks like
+      // it means - as a pattern it would watch the directory and match nothing
+      // in it, and the mistake is invisible until a save doesn't fire
+      if (info.isDirectory() && head === resolve(pattern)) {
+        entry.patterns[i] = pattern.replace(/\/+$/, "") + "/**"
+      }
+
+      // real paths on both sides, so a symlink pointing out of the root reads as
+      // what it is - outside, and not covered by the recursive watch below
+      const real = await realpath(head)
+      if (real === root || real.startsWith(root + sep)) continue // already watched
+      const watched = info.isDirectory() ? { dir: real } : { dir: dirname(real), only: basename(real) }
+      extra.set(`${watched.dir}\0${watched.only ?? ""}`, watched) // two patterns can share a head
+    }
+  }
+
+  watchTree(root)
+  extra.forEach(({ dir, only }) => watchTree(dir, only))
 
   // proxies and load balancers cut an idle stream; a comment every 30s is the
   // conventional way to keep it open. unref'd, so it never holds the process up
@@ -250,8 +410,9 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
     close: () =>
       new Promise(done => {
         clearInterval(heartbeat)
-        watcher.close()
+        watchers.forEach(watcher => watcher.close())
         pending.forEach(clearTimeout)
+        entries.forEach(entry => clearTimeout(entry.timer))
         clients.forEach(client => client.end())
         clients.clear()
         server.close(() => done())

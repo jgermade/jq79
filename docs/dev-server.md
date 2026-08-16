@@ -8,7 +8,12 @@ files are fetched at runtime.
 npx jq79 dev            # serve . on http://localhost:4179
 npx jq79 dev site       # serve a directory
 npx jq79 dev -p 8080    # (or --port; -H/--host to bind elsewhere)
+npx jq79 dev -w '../ui/**'                                      # (or --watch)
+npx jq79 dev --header "cross-origin-opener-policy: same-origin"
 ```
+
+`-w` and `--header` are repeatable. `-w` reloads the page on a change; to *do*
+something about it, [`watch`](#watch) takes a handler from a script.
 
 Or from a script:
 
@@ -32,6 +37,10 @@ you develop against is what a static host would serve** — no transforms, no
 bundling, no module graph, no rewritten imports. A `<style lang="scss">` is *not*
 compiled (that is the one thing only the [bundler](vite-plugin.md#style-lang--css-preprocessors)
 does), and neither is anything else.
+
+If you do need a build step, [`watch`](#watch) is where you hang it: the server
+calls your function and serves whatever it writes. It stays your build, and the
+files it produces are still the files a static host would serve.
 
 The one thing it adds is hot reload, and it adds it to **pages** only. A page —
 what the browser navigates to — is served with a small client script injected
@@ -107,8 +116,88 @@ devServer({
   rootDir: ".",         // directory to serve and watch
   port: 4179,           // 0 picks a free one; server.port reports it
   host: "localhost",    // bind address
+  headers: {},          // response headers, sent on everything
+  watch: [],            // { pattern, fn } — what else to watch, and what to do
 })
 ```
 
 Files under `node_modules/` and dotfiles are not watched. The server is deliberately
 plain — it has no dependencies, and it is not meant to be deployed.
+
+### `headers`
+
+A static host is configured; these are that configuration. They go out on
+**every** response — pages, components, the client, the event stream, the 404s —
+so you can develop against the headers you will deploy behind:
+
+```js
+devServer({
+  headers: {
+    "cross-origin-opener-policy": "same-origin",     // SharedArrayBuffer
+    "cross-origin-embedder-policy": "require-corp",
+    "access-control-allow-origin": "*",
+  },
+})
+```
+
+Names are case-insensitive, so `Cache-Control` replaces the server's own
+`cache-control` rather than arriving beside it. Two headers stay the server's:
+`content-type` and `content-length` describe the bytes of the response they are
+on, and a global value would contradict every one of them.
+
+### `watch`
+
+The root is always watched. `watch` adds to it — a glob, and what to do when
+something matches it:
+
+```js
+import * as sass from "sass"
+
+devServer({
+  rootDir: "public",
+  watch: [
+    // the build step this server doesn't have, in the six lines it takes
+    {
+      pattern: "styles/**/*.scss",
+      fn: async files => {
+        const { css } = sass.compile("styles/app.scss")
+        await writeFile("public/app.css", css)
+      },
+    },
+    // no fn: watch it, reload the page when it changes
+    { pattern: "../shared/**" },
+  ],
+})
+```
+
+| field | |
+|---|---|
+| `pattern` | a glob, or an array of them, resolved against the cwd like `rootDir`. A bare directory means everything under it. |
+| `fn` | `(files: string[]) => void \| Promise<void>` — the absolute paths that changed. Optional. |
+
+**One call per burst.** A save that touches four files calls `fn` once with all
+four, because a handler is a build step and building four times is three builds
+nobody asked for. If it's still running when the next batch lands, that batch
+waits for it. A handler that throws is reported and the server stays up — a
+build that fails is a normal morning.
+
+**Handlers never cost you hot reload.** A file *inside* the root keeps the root's
+behaviour no matter what a pattern says about it: `.html` is hot-swapped,
+anything else reloads, and any matching `fn` runs as well. A pattern is a claim
+on a file, not a veto.
+
+**Outside the root, the handler is the answer.** There is no url out there for
+the runtime to swap into, so a matched file runs its `fn` and stops — and
+whatever the `fn` writes *into* the served directory comes back round as a change
+of its own, with a url, which is what reloads the page. An entry with no `fn` has
+nothing else to offer, so it reloads directly.
+
+A single file is watched through the directory it sits in, so it survives an
+editor's atomic save (which replaces the file rather than writing to it). A
+pattern whose literal head does not exist (`styles/**/*.scss` with no `styles/`)
+throws before the server starts, rather than leaving you with a server that
+quietly watches nothing.
+
+Globs are matched by [`path.matchesGlob`](https://nodejs.org/api/path.html#pathmatchesglobpath-pattern),
+so this needs Node 22.5 or newer — no dependency, and the same syntax the rest of
+the ecosystem uses.
