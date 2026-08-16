@@ -32,9 +32,17 @@ export interface DevServerOptions {
   // response headers to send on everything - a static host is configured, and
   // these are that configuration (default: none)
   headers?: Record<string, string>
+  // the same thing per request: a hook gets the request and its response before
+  // anything has been written to it (default: none)
+  beforeResponse?: ResponseHook[]
   // what to watch on top of rootDir, and what to do about it (default: none)
   watch?: WatchEntry[]
 }
+
+// runs on every response the server makes - a page, a component, the client,
+// the event stream, a 404 - with nothing written yet, so `res.setHeader` still
+// applies. A hook that answers the request itself (`res.end`) is left alone
+export type ResponseHook = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 
 // the handler gets every file of the burst that woke it, absolute, so a save
 // that touches three of them is one build rather than three
@@ -59,6 +67,10 @@ const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".mjs": "text/javascript; charset=utf-8",
+  // the streaming WebAssembly APIs reject every other type, including the
+  // default below - a module served as octet-stream still runs, but it is
+  // buffered whole instead of compiling as it downloads
+  ".wasm": "application/wasm",
   ".json": "application/json; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
@@ -124,12 +136,15 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
   const root = await realpath(resolve(options.rootDir ?? "."))
   const host = options.host ?? "localhost"
 
-  // lowercased once: header names are case-insensitive and an object is not, so
-  // a "Cache-Control" in the options would otherwise go out *beside* the
-  // server's own cache-control rather than replacing it
-  const headers: Record<string, string> = Object.fromEntries(
-    Object.entries(options.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
+  // a configured header goes on every response, which is the one thing
+  // content-type and content-length cannot do - each describes the bytes of a
+  // single response. Dropped here rather than at write time, so that either of
+  // them still standing by then can only have come from a hook, which saw the
+  // request and is entitled to say
+  const headers = Object.entries(options.headers ?? {}).filter(
+    ([name]) => !["content-type", "content-length"].includes(name.toLowerCase()),
   )
+  const hooks = options.beforeResponse ?? []
 
   const clients = new Set<ServerResponse>()
 
@@ -140,16 +155,16 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
 
   // --- serving ---------------------------------------------------------------
 
-  // every response carries the configured headers - a page, a component, the
-  // client, the event stream, a 404. All but two: content-type and
-  // content-length describe the bytes of the response they are on (a wrong
-  // length truncates the body or hangs the socket), so those stay the server's
+  // what the response says about its own bytes, written last so the layers
+  // below can't contradict it. A hook is the one exception: it saw the request,
+  // so it is entitled to an opinion about what these bytes *are* - never about
+  // how many there are, since a wrong content-length truncates the body or
+  // hangs the socket
   const head = (res: ServerResponse, status: number, own: Record<string, string | number> = {}) => {
-    const merged: Record<string, string | number> = { ...own, ...headers }
-    for (const name of ["content-type", "content-length"]) {
-      if (own[name] !== undefined) merged[name] = own[name]
-    }
-    return res.writeHead(status, merged)
+    res.removeHeader("content-length")
+    const write = { ...own }
+    if (res.hasHeader("content-type")) delete write["content-type"]
+    return res.writeHead(status, write)
   }
 
   const serveStatic = async (req: IncomingMessage, res: ServerResponse, pathname: string) => {
@@ -187,39 +202,60 @@ export const devServer = async (options: DevServerOptions = {}): Promise<DevServ
       const html = type.startsWith("text/html") && isDocument(req)
       const payload = html ? Buffer.from(injectClient(body.toString("utf8"))) : body
 
-      head(res, 200, {
-        "content-type": type,
-        "content-length": payload.byteLength,
-        "cache-control": "no-store", // the file on disk is always the truth here
-      })
+      head(res, 200, { "content-type": type, "content-length": payload.byteLength })
       res.end(payload)
     } catch {
       head(res, 404, { "content-type": "text/plain; charset=utf-8" }).end("not found")
     }
   }
 
-  const server: Server = createServer((req, res) => {
+  // three layers, general to specific, each one free to replace the last: the
+  // server's own defaults, the configured headers over them, and a hook - which
+  // saw the request - over those. They go on with setHeader rather than into an
+  // object, because setHeader is case-insensitive where an object is not: a
+  // "Cache-Control" replaces the cache-control below it instead of arriving
+  // beside it, and the same goes for whatever a hook names
+  const handle = async (req: IncomingMessage, res: ServerResponse) => {
+    res.setHeader("cache-control", "no-store") // the file on disk is always the truth here
+    for (const [name, value] of headers) res.setHeader(name, value)
+    for (const hook of hooks) await hook(req, res)
+
+    // a hook can answer the request itself, and one that did needs nothing else
+    if (res.headersSent || res.writableEnded) return
+
     const pathname = (req.url ?? "/").split(/[?#]/)[0]
 
     if (pathname === CLIENT_URL) {
-      head(res, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" })
+      head(res, 200, { "content-type": "text/javascript; charset=utf-8" })
       res.end(CLIENT)
       return
     }
 
     if (pathname === EVENTS_URL) {
-      head(res, 200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-store",
-        connection: "keep-alive",
-      })
+      head(res, 200, { "content-type": "text/event-stream", connection: "keep-alive" })
       res.write(": jq79\n\n") // opens the stream, so the browser fires onopen
       clients.add(res)
       req.on("close", () => clients.delete(res))
       return
     }
 
-    void serveStatic(req, res, pathname)
+    await serveStatic(req, res, pathname)
+  }
+
+  const server: Server = createServer((req, res) => {
+    // a hook is someone's code, and the watch handlers already settled what that
+    // means around here: report it and stay up. This one owes the browser a
+    // reply as well, because a socket nobody answers hangs the page
+    void handle(req, res).catch(error => {
+      console.error(`jq79 dev: failed to respond to ${req.url}\n`, error)
+      if (!res.headersSent) {
+        // whatever the hook had said about the bytes, it is not what is being
+        // sent now - and a content-length it set before throwing would hang this
+        res.removeHeader("content-length")
+        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" })
+      }
+      if (!res.writableEnded) res.end("internal error")
+    })
   })
 
   // --- watching --------------------------------------------------------------

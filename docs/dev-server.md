@@ -117,6 +117,7 @@ devServer({
   port: 4179,           // 0 picks a free one; server.port reports it
   host: "localhost",    // bind address
   headers: {},          // response headers, sent on everything
+  beforeResponse: [],   // (req, res) => {} — the same, per request
   watch: [],            // { pattern, fn } — what else to watch, and what to do
 })
 ```
@@ -143,7 +144,62 @@ devServer({
 Names are case-insensitive, so `Cache-Control` replaces the server's own
 `cache-control` rather than arriving beside it. Two headers stay the server's:
 `content-type` and `content-length` describe the bytes of the response they are
-on, and a global value would contradict every one of them.
+on, and a global value would contradict every one of them. For a content-type
+that depends on the request, see [`beforeResponse`](#beforeresponse).
+
+### `beforeResponse`
+
+`headers` is the same on every response. `beforeResponse` is the version that
+gets to look first: each hook is handed the request and its response before
+anything has been written to it, so `res.setHeader` still applies.
+
+```js
+devServer({
+  headers: { "cross-origin-opener-policy": "same-origin" },
+  beforeResponse: [
+    (req, res) => {
+      if (req.url?.startsWith("/private/")) res.setHeader("cache-control", "no-store, private")
+    },
+  ],
+})
+```
+
+The layers go general to specific — the server's own defaults, `headers` over
+them, then each hook over the last — and names stay case-insensitive throughout,
+so a hook's `Cache-Control` replaces the `cache-control` under it rather than
+joining it. Hooks may be `async`, and are awaited in turn.
+
+**A hook may set `content-type`,** which is the one thing `headers` may not. A
+global content-type would contradict every response it landed on; a hook saw the
+request, so it knows which response it is talking about. This is the escape
+hatch for a file type the server's table doesn't carry:
+
+```js
+{ beforeResponse: [(req, res) => {
+    if (req.url?.endsWith(".pak")) res.setHeader("content-type", "application/wasm")
+  }] }
+```
+
+`content-length` is never yours: it is arithmetic on the bytes actually being
+sent, and a wrong one truncates the body or hangs the socket.
+
+**A hook may answer the request itself.** Write a response and the server leaves
+it alone — a mocked endpoint, a stubbed login, a fixture the served tree has no
+file for:
+
+```js
+{ beforeResponse: [(req, res) => {
+    if (req.url !== "/api/session") return
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify({ user: "dev" }))
+  }] }
+```
+
+There is no `next`. The hooks are awaited in order, so a hook that returns has
+had its turn, and a hook that answered the request has already ended the chain
+by answering it — there is nothing left to hand on. A hook that throws is
+reported and the request gets a 500, because a socket nobody answers hangs the
+page; the server itself stays up, like a `watch` handler that fails.
 
 ### `watch`
 

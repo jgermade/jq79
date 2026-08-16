@@ -106,6 +106,18 @@ describe("dev server", () => {
     expect(html).not.toContain("__jq79")
   })
 
+  it("serves a .wasm as application/wasm, so it compiles while it downloads", async () => {
+    // the magic number and version of an empty module: the shortest valid one
+    await writeFile(join(root, "engine.wasm"), Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]))
+
+    const res = await get("/engine.wasm", asFetch)
+
+    // the server's default, application/octet-stream, is the one type
+    // WebAssembly.compileStreaming refuses - and a type every static host
+    // already sends is the table's job, not something each project should hook
+    expect(res.headers.get("content-type")).toBe("application/wasm")
+  })
+
   it("pushes the new source when a component changes", async () => {
     const events = await sse(`${server.url}/__jq79/events`)
 
@@ -254,6 +266,97 @@ describe("dev server options", () => {
     // not reserved, so the author's replaces the server's no-store rather than
     // arriving beside it
     expect(res.headers.get("cache-control")).toBe("max-age=60")
+  })
+
+  it("runs the beforeResponse hooks on everything, in order, over the configured headers", async () => {
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      headers: { "x-layer": "configured" },
+      beforeResponse: [
+        async (_req, res) => res.setHeader("x-layer", "first"),
+        (_req, res) => res.setHeader("X-Layer", "second"), // capitalized differently on purpose
+      ],
+    })
+
+    for (const path of ["/index.html", "/card.html", "/__jq79/client.js", "/nope.html"]) {
+      const res = await fetch(`${server.url}${path}`, { headers: asDocument })
+      await res.text()
+      // general to specific: a hook beats the configured header underneath it,
+      // and the last one to speak wins - by name, whatever its capitalization
+      expect(res.headers.get("x-layer"), path).toBe("second")
+    }
+
+    const events = await fetch(`${server.url}/__jq79/events`)
+    expect(events.headers.get("x-layer")).toBe("second")
+    await events.body?.cancel()
+  })
+
+  it("lets a hook say what the bytes are, but never how many there are", async () => {
+    await writeFile(join(root, "engine.bin"), "0123456789")
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      beforeResponse: [
+        (req, res) => {
+          // the escape hatch for an extension the table doesn't carry: a hook
+          // saw the request, so it knows which response it is talking about
+          if (req.url?.endsWith(".bin")) res.setHeader("content-type", "application/wasm")
+          res.setHeader("content-length", "1") // and this would truncate the body
+        },
+      ],
+    })
+
+    const res = await get("/engine.bin", asFetch)
+
+    expect(res.headers.get("content-type")).toBe("application/wasm")
+    expect(res.headers.get("content-length")).toBe("10")
+    expect(await res.text()).toBe("0123456789")
+  })
+
+  it("stands aside for a hook that answers the request itself", async () => {
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      beforeResponse: [
+        (req, res) => {
+          if (req.url !== "/api/session") return
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(`{"user":"dev"}`)
+        },
+      ],
+    })
+
+    // nothing on disk answers this: without the hook it would be a 404
+    const mocked = await get("/api/session")
+    expect(mocked.status).toBe(200)
+    expect(await mocked.json()).toEqual({ user: "dev" })
+
+    // and what it passed on is served as it always was
+    expect(await get("/card.html", asFetch).then(res => res.text())).toBe("<p>before</p>")
+  })
+
+  it("stays up when a hook throws, and 500s the request it was on", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    server = await devServer({
+      rootDir: root,
+      port: 0,
+      beforeResponse: [
+        req => {
+          if (req.url === "/boom.html") throw new Error("hook: nope")
+        },
+      ],
+    })
+
+    // a socket nobody answers hangs the page, so a failed hook still owes the
+    // browser a reply - and the server itself keeps serving
+    const res = await get("/boom.html", asDocument)
+    await res.text()
+    expect(res.status).toBe(500)
+    expect(error.mock.calls[0].join(" ")).toContain("/boom.html")
+    expect((await get("/card.html", asFetch)).status).toBe(200)
+
+    error.mockRestore()
   })
 
   it("watches a directory outside the root, and reloads the page for it", async () => {
