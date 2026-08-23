@@ -835,23 +835,57 @@ export type EffectScope = {
 // `deep` marks every effect this scope creates as forwarding a value wholesale
 // rather than reading into it - the prop-sync scope, and nothing else so far.
 // See the `deep` flag on $effect
-export const createEffectScope = (scope: Record<string, any>, deep = false): EffectScope => {
-  const disposers: Unsubscribe[] = []
-  const runs: (() => void)[] = []
-  // whatever the scope was handed (slot content is the only thing that sets
-  // it today): the stores this scope's effects belong to besides their own.
-  // Left undefined when there are none, which is $effect's fast path
-  const alsoWakenBy: Record<string, any>[] | undefined = (scope as any)[ALSO_WAKEN_BY]
-  return {
-    effect: run => {
-      disposers.push(scope.$effect(run, { deep, alsoWakenBy }))
-      runs.push(run)
-    },
-    onDispose: fn => { disposers.push(fn) },
-    refresh: () => { runs.forEach(run => run()) },
-    dispose: () => {
-      disposers.splice(0).forEach(dispose => dispose())
-      runs.length = 0
-    },
+//
+// A class rather than an object of closures, and its arrays built on demand,
+// because a :each makes one of these *per row*: the closure form allocated the
+// two arrays and four closures for every one of them, and a 10,000-row table
+// is 70,000 objects that exist to hold, on the common path, three disposers.
+// The prototype's methods are shared, and a row that registers nothing (a
+// static template) now allocates one object and no arrays at all.
+// See TODOS/2026-08-23.where-the-create-time-goes.md
+//
+// Prototype methods need their receiver: a caller that hands one on as a bare
+// function (`runSetupScript(..., fx.effect, ...)` did) must wrap it instead
+// (`run => fx.effect(run)`). Both such call sites are in renderComponent
+class Scope implements EffectScope {
+  // built on first use: `runs` in particular is only ever read by refresh(),
+  // which only a :each whose template names a position ever calls
+  private disposers: Unsubscribe[] | null = null
+  private runs: (() => void)[] | null = null
+  // one options object for the whole scope instead of one per effect - $effect
+  // destructures it on entry and keeps nothing. Left undefined on the common
+  // path, which is $effect's own fast path
+  private options: EffectOptions | undefined
+
+  constructor(private scope: Record<string, any>, deep: boolean) {
+    // whatever the scope was handed (slot content is the only thing that sets
+    // it today): the stores this scope's effects belong to besides their own
+    const alsoWakenBy: Record<string, any>[] | undefined = (scope as any)[ALSO_WAKEN_BY]
+    this.options = deep || alsoWakenBy ? { deep, alsoWakenBy } : undefined
+  }
+
+  effect(run: () => void) {
+    ;(this.disposers ??= []).push(this.scope.$effect(run, this.options))
+    ;(this.runs ??= []).push(run)
+  }
+
+  onDispose(fn: Unsubscribe) {
+    ;(this.disposers ??= []).push(fn)
+  }
+
+  refresh() {
+    this.runs?.forEach(run => run())
+  }
+
+  dispose() {
+    // detached before draining, not copied out of the way with splice(0): a
+    // disposer that registers another one is as lost either way, and the copy
+    // was an array per row on the teardown path
+    const disposers = this.disposers
+    this.disposers = null
+    this.runs = null
+    if (disposers) for (let i = 0; i < disposers.length; i++) disposers[i]()
   }
 }
+
+export const createEffectScope = (scope: Record<string, any>, deep = false): EffectScope => new Scope(scope, deep)
