@@ -1408,6 +1408,36 @@ const isPlainObject = (value: any): value is Record<string, any> => {
 // property key, which is already the stable identity. Each item gets its own
 // scope via Object.create(scope), so the bindings and `$index` shadow
 // same-named outer names without copying the parent scope's keys
+// does anything in this subtree name one of `names` as an identifier? Attribute
+// values and text alike, since either can hold an expression - a prop handing a
+// position to a nested component (`<Row :n="$index">`) is an attribute on a node
+// inside the item, which is why the walk has to cover children's attrs too.
+//
+// Over-approximating is the safe direction and the intended one: a name that
+// appears in a string literal costs a refresh that wasn't needed, which is
+// exactly what happens today for every list. Missing one would leave a binding
+// stale, and the walk cannot - a template expression is source text
+const mentionsAny = (node: TemplateNode | string, names: string[]): boolean => {
+  if (typeof node === "string") return names.some(name => identifierIn(node, name))
+  return Object.values(node.attrs).some(value => names.some(name => identifierIn(value, name))) ||
+    node.children.some(child => mentionsAny(child, names))
+}
+
+// `name` as a whole word: `$index` must not match inside `$indexes`, and `i`
+// must not match inside `items`. `$` counts as a word character here, which is
+// why the boundaries are checked by hand rather than with \b - \b treats `$`
+// as a boundary and would find the `i` of `$index` when looking for `i`
+const IDENTIFIER_CHAR = /[A-Za-z0-9_$]/
+
+const identifierIn = (text: string, name: string): boolean => {
+  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+    const before = at === 0 ? "" : text[at - 1]
+    const after = text[at + name.length] ?? ""
+    if (!IDENTIFIER_CHAR.test(before) && !IDENTIFIER_CHAR.test(after)) return true
+  }
+  return false
+}
+
 const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const match = node.attrs[":each"].match(EACH_PATTERN)
   if (!match) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
@@ -1416,6 +1446,18 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const keyExpr = node.attrs[":key"]
   const { [":each"]: _each, [":key"]: _key, ...itemAttrs } = node.attrs
   const itemNode: TemplateNode = { ...node, attrs: itemAttrs }
+
+  // An entry that changed position needs its position-only bindings re-run -
+  // `$index` and the `, at` name are plain scope vars, untracked by design, so
+  // nothing can wake them (see EffectScope.refresh). But refresh re-runs *every*
+  // effect on the entry, and in a list whose template names no position at all
+  // - the common one - all of that recomputes strings that cannot have changed:
+  // it was 9ms of removeRow's 25ms. Decided once, from the template, rather
+  // than per row per render. The item name is deliberately not in this list:
+  // nearly every binding reads it, and it is not what goes stale.
+  // See TODOS/2026-08-23.positional-refresh.md
+  const positionalNames = ["$index", ...(atName ? [atName] : [])]
+  const readsPosition = mentionsAny(itemNode, positionalNames)
 
   const anchor = document.createComment("each")
   const wrapper = document.createDocumentFragment()
@@ -1469,7 +1511,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       const existing = previous.get(key)?.shift()
 
       if (existing && Object.is(existing.item, item)) {
-        if (existing.scope.$index !== index) moved.push(existing)
+        if (readsPosition && existing.scope.$index !== index) moved.push(existing)
         defineScopeVar(existing.scope, "$index", index)
         if (atName) defineScopeVar(existing.scope, atName, at)
         return existing
