@@ -458,17 +458,24 @@ const scanComponentKey = (scope: Record<string, any>, tag: string): string | nul
 let tagMemo: Map<string, string | null> | null = null
 let memoBase: object | null = null
 
-const inRenderPass = <T>(base: Record<string, any>, run: () => T): T => {
-  const outerMemo = tagMemo
-  const outerBase = memoBase
+// opened and closed by hand rather than by a wrapper taking a callback: a
+// component that renders itself through :each stacks one renderEach per level,
+// and a callback would add a frame to each of them. The cyclic-component test
+// cuts off at 200 levels, and on a CI runner that extra frame per level was the
+// difference between cutting off and a RangeError - the same reason $effect
+// keeps its own shape (see reactive.ts)
+type RenderPass = { memo: Map<string, string | null> | null; base: object | null }
+
+const openRenderPass = (base: Record<string, any>): RenderPass => {
+  const outer: RenderPass = { memo: tagMemo, base: memoBase }
   tagMemo = new Map()
   memoBase = base
-  try {
-    return run()
-  } finally {
-    tagMemo = outerMemo
-    memoBase = outerBase
-  }
+  return outer
+}
+
+const closeRenderPass = (outer: RenderPass) => {
+  tagMemo = outer.memo
+  memoBase = outer.base
 }
 
 const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
@@ -1475,84 +1482,89 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   // one memo for the whole diff: every row resolves its tags to the same scope
   // keys, so the scan that used to run per element per row now runs once per
   // distinct tag (see findComponentKey)
-  fx.effect(() => inRenderPass(scope, () => {
-    const list = evalExpr(listExpr, scope)
-    // both sources normalize to [at, item] pairs: the index for an array, the
-    // property key for a plain object (insertion order). Object entries are
-    // read off the store proxy, so each value is tracked under its own key -
-    // adds, deletes and changes all wake this effect
-    const pairs: [any, any][] = Array.isArray(list)
-      ? list.map((item, index): [any, any] => [index, item])
-      : isPlainObject(list) ? Object.entries(list) : []
-    // buckets rather than a key->entry map: duplicate keys (a user error, but
-    // one that must degrade instead of corrupt) consume entries in order of
-    // appearance, so no entry is ever matched twice - matching one twice is
-    // how a reused row got disposed and a removed one resurrected
-    const previous = new Map<any, EachEntry[]>()
-    entries.forEach(entry => {
-      const bucket = previous.get(entry.key)
-      if (bucket) bucket.push(entry)
-      else previous.set(entry.key, [entry])
-    })
+  fx.effect(() => {
+    const pass = openRenderPass(scope)
+    try {
+      const list = evalExpr(listExpr, scope)
+      // both sources normalize to [at, item] pairs: the index for an array, the
+      // property key for a plain object (insertion order). Object entries are
+      // read off the store proxy, so each value is tracked under its own key -
+      // adds, deletes and changes all wake this effect
+      const pairs: [any, any][] = Array.isArray(list)
+        ? list.map((item, index): [any, any] => [index, item])
+        : isPlainObject(list) ? Object.entries(list) : []
+      // buckets rather than a key->entry map: duplicate keys (a user error, but
+      // one that must degrade instead of corrupt) consume entries in order of
+      // appearance, so no entry is ever matched twice - matching one twice is
+      // how a reused row got disposed and a removed one resurrected
+      const previous = new Map<any, EachEntry[]>()
+      entries.forEach(entry => {
+        const bucket = previous.get(entry.key)
+        if (bucket) bucket.push(entry)
+        else previous.set(entry.key, [entry])
+      })
 
-    const seen = new Set<any>()
-    const moved: EachEntry[] = []
-    const nextEntries = pairs.map(([at, item], index): EachEntry => {
-      const itemScope = Object.create(scope)
-      defineScopeVar(itemScope, itemName, item)
-      if (atName) defineScopeVar(itemScope, atName, at)
-      defineScopeVar(itemScope, "$index", index)
-      const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : at
-      if (seen.has(key) && !warnedDuplicates) {
-        warnedDuplicates = true
-        console.warn(`jq79: duplicate :key in :each "${node.attrs[":each"]}"; duplicates pair up by position`)
+      const seen = new Set<any>()
+      const moved: EachEntry[] = []
+      const nextEntries = pairs.map(([at, item], index): EachEntry => {
+        const itemScope = Object.create(scope)
+        defineScopeVar(itemScope, itemName, item)
+        if (atName) defineScopeVar(itemScope, atName, at)
+        defineScopeVar(itemScope, "$index", index)
+        const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : at
+        if (seen.has(key) && !warnedDuplicates) {
+          warnedDuplicates = true
+          console.warn(`jq79: duplicate :key in :each "${node.attrs[":each"]}"; duplicates pair up by position`)
+        }
+        seen.add(key)
+        const existing = previous.get(key)?.shift()
+
+        if (existing && Object.is(existing.item, item)) {
+          if (readsPosition && existing.scope.$index !== index) moved.push(existing)
+          defineScopeVar(existing.scope, "$index", index)
+          if (atName) defineScopeVar(existing.scope, atName, at)
+          return existing
+        }
+
+        if (existing) {
+          existing.fx.dispose()
+          removeRange(existing.range)
+        }
+
+        const itemFx = createEffectScope(scope)
+        // bounds captured before the positioning pass inserts the entry: a
+        // component entry is a fragment, which empties on insertion (see boundsOf)
+        const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
+        return { key, item, scope: itemScope, fx: itemFx, range }
+      })
+
+      // whatever no new item consumed is gone. Effects are torn down one by one
+      // as always; the DOM goes in runs of neighbours, which is what makes
+      // clearing a long list one mutation instead of one per row
+      const dead = new Set<EachEntry>()
+      previous.forEach(bucket => bucket.forEach(entry => dead.add(entry)))
+      if (dead.size) {
+        dead.forEach(entry => entry.fx.dispose())
+        removeRuns(contiguousRuns(entries, entry => dead.has(entry)))
       }
-      seen.add(key)
-      const existing = previous.get(key)?.shift()
 
-      if (existing && Object.is(existing.item, item)) {
-        if (readsPosition && existing.scope.$index !== index) moved.push(existing)
-        defineScopeVar(existing.scope, "$index", index)
-        if (atName) defineScopeVar(existing.scope, atName, at)
-        return existing
-      }
+      let prevNode: Node = anchor
+      nextEntries.forEach(entry => {
+        if (prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
+        prevNode = entry.range.last
+      })
 
-      if (existing) {
-        existing.fx.dispose()
-        removeRange(existing.range)
-      }
+      // reused entries that changed position: their tracked bindings re-run off
+      // the list notification anyway, but a binding that reads only `$index` or
+      // the named key tracked nothing - refresh them so the move reaches those
+      // too. Untracked, so these runs don't feed this list effect's own deps
+      moved.forEach(entry => untracked(() => entry.fx.refresh()))
 
-      const itemFx = createEffectScope(scope)
-      // bounds captured before the positioning pass inserts the entry: a
-      // component entry is a fragment, which empties on insertion (see boundsOf)
-      const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
-      return { key, item, scope: itemScope, fx: itemFx, range }
-    })
-
-    // whatever no new item consumed is gone. Effects are torn down one by one
-    // as always; the DOM goes in runs of neighbours, which is what makes
-    // clearing a long list one mutation instead of one per row
-    const dead = new Set<EachEntry>()
-    previous.forEach(bucket => bucket.forEach(entry => dead.add(entry)))
-    if (dead.size) {
-      dead.forEach(entry => entry.fx.dispose())
-      removeRuns(contiguousRuns(entries, entry => dead.has(entry)))
+      entries = nextEntries
+    } finally {
+      closeRenderPass(pass)
     }
-
-    let prevNode: Node = anchor
-    nextEntries.forEach(entry => {
-      if (prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
-      prevNode = entry.range.last
-    })
-
-    // reused entries that changed position: their tracked bindings re-run off
-    // the list notification anyway, but a binding that reads only `$index` or
-    // the named key tracked nothing - refresh them so the move reaches those
-    // too. Untracked, so these runs don't feed this list effect's own deps
-    moved.forEach(entry => untracked(() => entry.fx.refresh()))
-
-    entries = nextEntries
-  }))
+  })
 
   return wrapper
 }
