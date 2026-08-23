@@ -556,3 +556,108 @@ describe("$effect hardening", () => {
     expect(store.a.b).toBe(1)
   })
 })
+
+describe("what a write wakes", () => {
+  it("leaves an effect alone when a sibling it never read changes", () => {
+    const store = $reactive({ rows: [{ label: "a" }, { label: "b" }] })
+
+    let runs = 0
+    store.$effect(() => {
+      runs++
+      void store.rows[0].label
+    })
+
+    store.rows[1].label = "changed"
+
+    // the whole point: a 1,000-row list costs one re-render per changed row,
+    // not one per row per change
+    expect(runs).toBe(1)
+  })
+
+  it("wakes it when the row it did read changes", () => {
+    const store = $reactive({ rows: [{ label: "a" }, { label: "b" }] })
+
+    let runs = 0
+    store.$effect(() => {
+      runs++
+      void store.rows[0].label
+    })
+
+    store.rows[0].label = "changed"
+
+    expect(runs).toBe(2)
+  })
+
+  it("wakes it when an ancestor of what it read is replaced wholesale", () => {
+    const store = $reactive({ rows: [{ label: "a" }] })
+
+    const seen: any[] = []
+    store.$effect(() => { seen.push(store.rows[0]?.label) })
+
+    store.rows = [{ label: "fresh" }]
+
+    // downwards always: replacing the array replaced the row inside it
+    expect(seen).toEqual(["a", "fresh"])
+  })
+
+  it("does not wake an effect that read an object but nothing inside it", () => {
+    const store = $reactive({ user: { name: "Ada" } })
+
+    let runs = 0
+    store.$effect(() => {
+      runs++
+      void store.user
+    })
+
+    store.user.name = "Grace"
+
+    // nothing this effect read changed - `user` is the same object. The cost of
+    // waking for what was read rather than for what it was read through;
+    // documented in docs/reactive-data.md
+    expect(runs).toBe(1)
+  })
+
+  it("wakes an effect that enumerated the keys when one is added or removed", () => {
+    const store = $reactive({ props: { a: 1 } as Record<string, number> })
+
+    const seen: string[][] = []
+    store.$effect(() => { seen.push(Object.keys(store.props)) })
+
+    store.props.b = 2
+    delete store.props.a
+
+    // the effect read the key set, never a value under it - so neither change
+    // touches a path it tracked, and only the ownKeys dep can carry them
+    expect(seen).toEqual([["a"], ["a", "b"], ["b"]])
+  })
+
+  it("wakes a spread of the store's own keys the same way", () => {
+    const store = $reactive({ a: 1 } as Record<string, number>)
+
+    const seen: Record<string, number>[] = []
+    store.$effect(() => { seen.push({ ...store }) })
+
+    store.b = 2
+
+    expect(seen.at(-1)).toEqual({ a: 1, b: 2 })
+  })
+
+  it("a key named like the reserved key-set segment collides with it (known limit)", () => {
+    const store = $reactive({ props: {} as Record<string, unknown> })
+
+    let runs = 0
+    store.$effect(() => {
+      runs++
+      void (store.props as any)[" keys"]
+    })
+
+    // " keys" is where the ownKeys dep for `props` lives, so an effect reading a
+    // real property of that name wakes on any key *removed* from the object
+    // (an added one re-runs everything anyway). Same class as the
+    // flat-key-with-a-dot collision above: pinned, not endorsed
+    store.props.other = 1
+    delete store.props.other
+
+    expect(runs).toBe(3)
+  })
+})

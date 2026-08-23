@@ -373,6 +373,43 @@ const removeRange = ({ first, last }: NodeRange) => {
   }
 }
 
+// removes several ranges that sit next to each other, in one DOM call each run
+// rather than one per node. A list dropping all its rows hands them over as a
+// single span: unlinking 10,000 rows one at a time is 40% of that operation,
+// profiled - see TODOS/2026-08-23.batch-range-removal.md. Runs are built by the
+// caller, which is the only place that knows what else is going
+const removeRuns = (runs: NodeRange[][]) => {
+  runs.forEach(run => {
+    if (run.length === 1) return removeRange(run[0])
+    const parent = run[0].first.parentNode
+    if (!parent) return
+    // both ends sit between nodes, so nothing is partially selected and whole
+    // nodes are what gets unlinked
+    const range = document.createRange()
+    range.setStartBefore(run[0].first)
+    range.setEndAfter(run[run.length - 1].last)
+    range.deleteContents()
+  })
+}
+
+// groups the entries `isDead` selects into runs of DOM neighbours, walking
+// `ordered` (which is in DOM order). Adjacency is confirmed rather than assumed:
+// a gap - an entry removed earlier in the same pass - starts a new run, so a
+// live entry can never end up inside one
+const contiguousRuns = <T extends { range: NodeRange }>(ordered: T[], isDead: (entry: T) => boolean): NodeRange[][] => {
+  const runs: NodeRange[][] = []
+  let run: NodeRange[] | null = null
+  ordered.forEach(entry => {
+    if (!isDead(entry)) {
+      run = null
+      return
+    }
+    if (run && run[run.length - 1].last.nextSibling === entry.range.first) run.push(entry.range)
+    else runs.push((run = [entry.range]))
+  })
+  return runs
+}
+
 // moves [first..last] inclusive so the range starts right after `prev`
 const moveRangeAfter = ({ first, last }: NodeRange, prev: Node) => {
   const ref = prev.nextSibling
@@ -388,9 +425,69 @@ const moveRangeAfter = ({ first, last }: NodeRange, prev: Node) => {
 // case-insensitive with dashes stripped (<nested-component> works too). Only
 // PascalCase scope keys participate, so ordinary variables named like real
 // elements (title, code, ...) never hijack them
-const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
+const scanComponentKey = (scope: Record<string, any>, tag: string): string | null => {
   const normalized = tag.replace(/-/g, "").toLowerCase()
   for (let obj: any = scope; obj && obj !== Object.prototype; obj = Object.getPrototypeOf(obj)) {
+    for (const key of Object.keys(obj)) {
+      if (/^[A-Z]/.test(key) && key.replace(/-/g, "").toLowerCase() === normalized) return key
+    }
+  }
+  return null
+}
+
+// The scan above is run for every element rendered, and it walks the whole
+// scope chain calling Object.keys at each level - which profiling puts at 13.7%
+// of the create path, four times the next attributable frame, almost all of it
+// answering "no" for tags like <td>. Within one render pass the answer can't
+// change: it is a *key*, not the value behind it, so every row of a :each
+// resolves a tag identically, and a store write mid-pass restarts the pass
+// rather than continuing it (the reentrancy guard in reactive.ts).
+//
+// So it is memoized for exactly one pass and no longer. It has to be no longer:
+// a template renders before its setup script settles, so `const Row = await
+// $import(...)` arrives as a new store key *after* elements are on the page -
+// and a cached "no component called Row" that outlived the pass would never be
+// revisited. See TODOS/2026-08-23.component-key-scan.md
+// The memo answers for one *base* scope - the one the pass was opened with -
+// and nothing below it. A lookup walks from wherever it starts up to that base,
+// checking own keys as it goes (an :each item scope has two or three, a :with
+// a handful), and only then consults the memo. So a name introduced under the
+// base still shadows correctly, and a scope that never reaches the base at all
+// - a nested component renders against its own store - has simply been fully
+// scanned by the time the walk ends, which is the answer anyway
+let tagMemo: Map<string, string | null> | null = null
+let memoBase: object | null = null
+
+// opened and closed by hand rather than by a wrapper taking a callback: a
+// component that renders itself through :each stacks one renderEach per level,
+// and a callback would add a frame to each of them. The cyclic-component test
+// cuts off at 200 levels, and on a CI runner that extra frame per level was the
+// difference between cutting off and a RangeError - the same reason $effect
+// keeps its own shape (see reactive.ts)
+type RenderPass = { memo: Map<string, string | null> | null; base: object | null }
+
+const openRenderPass = (base: Record<string, any>): RenderPass => {
+  const outer: RenderPass = { memo: tagMemo, base: memoBase }
+  tagMemo = new Map()
+  memoBase = base
+  return outer
+}
+
+const closeRenderPass = (outer: RenderPass) => {
+  tagMemo = outer.memo
+  memoBase = outer.base
+}
+
+const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
+  if (!tagMemo) return scanComponentKey(scope, tag)
+  const normalized = tag.replace(/-/g, "").toLowerCase()
+  for (let obj: any = scope; obj && obj !== Object.prototype; obj = Object.getPrototypeOf(obj)) {
+    if (obj === memoBase) {
+      if (tagMemo.has(tag)) return tagMemo.get(tag)!
+      const key = scanComponentKey(obj, tag)
+      tagMemo.set(tag, key)
+      return key
+    }
     for (const key of Object.keys(obj)) {
       if (/^[A-Z]/.test(key) && key.replace(/-/g, "").toLowerCase() === normalized) return key
     }
@@ -902,7 +999,11 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     }
     endAnchor.parentNode!.insertBefore(holder, endAnchor)
 
-    const syncFx = createEffectScope(scope)
+    // deep: a prop sync forwards whatever the expression evaluates to, whole,
+    // into the child's store - it reads `user`, never `user.name`, so it can't
+    // track what it passes on. A parent's deep mutation reaches the child
+    // through this effect or not at all (see $effect's `deep`)
+    const syncFx = createEffectScope(scope, true)
     // without a spread the prop set is fixed and known: one effect per prop, so
     // a change to one prop re-syncs only that prop. A spread's key set is
     // dynamic and its precedence is positional, so it can't be resolved a key at
@@ -1217,9 +1318,9 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     // for them. They render (bindings and all) and go there - appended as
     // childNodes they would be in the DOM but in no document fragment, seen by
     // nothing and rendered by nobody
-    el.content.appendChild(renderNodes(node.children, scope, fx, shadow))
+    renderNodes(node.children, scope, fx, shadow, el.content)
   } else {
-    el.appendChild(renderNodes(node.children, scope, fx, shadow))
+    renderNodes(node.children, scope, fx, shadow, el)
   }
 
   // :value / :checked / :selected write the DOM *property*, not the
@@ -1314,6 +1415,36 @@ const isPlainObject = (value: any): value is Record<string, any> => {
 // property key, which is already the stable identity. Each item gets its own
 // scope via Object.create(scope), so the bindings and `$index` shadow
 // same-named outer names without copying the parent scope's keys
+// does anything in this subtree name one of `names` as an identifier? Attribute
+// values and text alike, since either can hold an expression - a prop handing a
+// position to a nested component (`<Row :n="$index">`) is an attribute on a node
+// inside the item, which is why the walk has to cover children's attrs too.
+//
+// Over-approximating is the safe direction and the intended one: a name that
+// appears in a string literal costs a refresh that wasn't needed, which is
+// exactly what happens today for every list. Missing one would leave a binding
+// stale, and the walk cannot - a template expression is source text
+const mentionsAny = (node: TemplateNode | string, names: string[]): boolean => {
+  if (typeof node === "string") return names.some(name => identifierIn(node, name))
+  return Object.values(node.attrs).some(value => names.some(name => identifierIn(value, name))) ||
+    node.children.some(child => mentionsAny(child, names))
+}
+
+// `name` as a whole word: `$index` must not match inside `$indexes`, and `i`
+// must not match inside `items`. `$` counts as a word character here, which is
+// why the boundaries are checked by hand rather than with \b - \b treats `$`
+// as a boundary and would find the `i` of `$index` when looking for `i`
+const IDENTIFIER_CHAR = /[A-Za-z0-9_$]/
+
+const identifierIn = (text: string, name: string): boolean => {
+  for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
+    const before = at === 0 ? "" : text[at - 1]
+    const after = text[at + name.length] ?? ""
+    if (!IDENTIFIER_CHAR.test(before) && !IDENTIFIER_CHAR.test(after)) return true
+  }
+  return false
+}
+
 const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const match = node.attrs[":each"].match(EACH_PATTERN)
   if (!match) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
@@ -1322,6 +1453,18 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const keyExpr = node.attrs[":key"]
   const { [":each"]: _each, [":key"]: _key, ...itemAttrs } = node.attrs
   const itemNode: TemplateNode = { ...node, attrs: itemAttrs }
+
+  // An entry that changed position needs its position-only bindings re-run -
+  // `$index` and the `, at` name are plain scope vars, untracked by design, so
+  // nothing can wake them (see EffectScope.refresh). But refresh re-runs *every*
+  // effect on the entry, and in a list whose template names no position at all
+  // - the common one - all of that recomputes strings that cannot have changed:
+  // it was 9ms of removeRow's 25ms. Decided once, from the template, rather
+  // than per row per render. The item name is deliberately not in this list:
+  // nearly every binding reads it, and it is not what goes stale.
+  // See TODOS/2026-08-23.positional-refresh.md
+  const positionalNames = ["$index", ...(atName ? [atName] : [])]
+  const readsPosition = mentionsAny(itemNode, positionalNames)
 
   const anchor = document.createComment("each")
   const wrapper = document.createDocumentFragment()
@@ -1336,79 +1479,91 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   let entries: EachEntry[] = []
   let warnedDuplicates = false
 
+  // one memo for the whole diff: every row resolves its tags to the same scope
+  // keys, so the scan that used to run per element per row now runs once per
+  // distinct tag (see findComponentKey)
   fx.effect(() => {
-    const list = evalExpr(listExpr, scope)
-    // both sources normalize to [at, item] pairs: the index for an array, the
-    // property key for a plain object (insertion order). Object entries are
-    // read off the store proxy, so each value is tracked under its own key -
-    // adds, deletes and changes all wake this effect
-    const pairs: [any, any][] = Array.isArray(list)
-      ? list.map((item, index): [any, any] => [index, item])
-      : isPlainObject(list) ? Object.entries(list) : []
-    // buckets rather than a key->entry map: duplicate keys (a user error, but
-    // one that must degrade instead of corrupt) consume entries in order of
-    // appearance, so no entry is ever matched twice - matching one twice is
-    // how a reused row got disposed and a removed one resurrected
-    const previous = new Map<any, EachEntry[]>()
-    entries.forEach(entry => {
-      const bucket = previous.get(entry.key)
-      if (bucket) bucket.push(entry)
-      else previous.set(entry.key, [entry])
-    })
+    const pass = openRenderPass(scope)
+    try {
+      const list = evalExpr(listExpr, scope)
+      // both sources normalize to [at, item] pairs: the index for an array, the
+      // property key for a plain object (insertion order). Object entries are
+      // read off the store proxy, so each value is tracked under its own key -
+      // adds, deletes and changes all wake this effect
+      const pairs: [any, any][] = Array.isArray(list)
+        ? list.map((item, index): [any, any] => [index, item])
+        : isPlainObject(list) ? Object.entries(list) : []
+      // buckets rather than a key->entry map: duplicate keys (a user error, but
+      // one that must degrade instead of corrupt) consume entries in order of
+      // appearance, so no entry is ever matched twice - matching one twice is
+      // how a reused row got disposed and a removed one resurrected
+      const previous = new Map<any, EachEntry[]>()
+      entries.forEach(entry => {
+        const bucket = previous.get(entry.key)
+        if (bucket) bucket.push(entry)
+        else previous.set(entry.key, [entry])
+      })
 
-    const seen = new Set<any>()
-    const moved: EachEntry[] = []
-    const nextEntries = pairs.map(([at, item], index): EachEntry => {
-      const itemScope = Object.create(scope)
-      defineScopeVar(itemScope, itemName, item)
-      if (atName) defineScopeVar(itemScope, atName, at)
-      defineScopeVar(itemScope, "$index", index)
-      const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : at
-      if (seen.has(key) && !warnedDuplicates) {
-        warnedDuplicates = true
-        console.warn(`jq79: duplicate :key in :each "${node.attrs[":each"]}"; duplicates pair up by position`)
+      const seen = new Set<any>()
+      const moved: EachEntry[] = []
+      const nextEntries = pairs.map(([at, item], index): EachEntry => {
+        const itemScope = Object.create(scope)
+        defineScopeVar(itemScope, itemName, item)
+        if (atName) defineScopeVar(itemScope, atName, at)
+        defineScopeVar(itemScope, "$index", index)
+        const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : at
+        if (seen.has(key) && !warnedDuplicates) {
+          warnedDuplicates = true
+          console.warn(`jq79: duplicate :key in :each "${node.attrs[":each"]}"; duplicates pair up by position`)
+        }
+        seen.add(key)
+        const existing = previous.get(key)?.shift()
+
+        if (existing && Object.is(existing.item, item)) {
+          if (readsPosition && existing.scope.$index !== index) moved.push(existing)
+          defineScopeVar(existing.scope, "$index", index)
+          if (atName) defineScopeVar(existing.scope, atName, at)
+          return existing
+        }
+
+        if (existing) {
+          existing.fx.dispose()
+          removeRange(existing.range)
+        }
+
+        const itemFx = createEffectScope(scope)
+        // bounds captured before the positioning pass inserts the entry: a
+        // component entry is a fragment, which empties on insertion (see boundsOf)
+        const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
+        return { key, item, scope: itemScope, fx: itemFx, range }
+      })
+
+      // whatever no new item consumed is gone. Effects are torn down one by one
+      // as always; the DOM goes in runs of neighbours, which is what makes
+      // clearing a long list one mutation instead of one per row
+      const dead = new Set<EachEntry>()
+      previous.forEach(bucket => bucket.forEach(entry => dead.add(entry)))
+      if (dead.size) {
+        dead.forEach(entry => entry.fx.dispose())
+        removeRuns(contiguousRuns(entries, entry => dead.has(entry)))
       }
-      seen.add(key)
-      const existing = previous.get(key)?.shift()
 
-      if (existing && Object.is(existing.item, item)) {
-        if (existing.scope.$index !== index) moved.push(existing)
-        defineScopeVar(existing.scope, "$index", index)
-        if (atName) defineScopeVar(existing.scope, atName, at)
-        return existing
-      }
+      let prevNode: Node = anchor
+      nextEntries.forEach(entry => {
+        if (prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
+        prevNode = entry.range.last
+      })
 
-      if (existing) {
-        existing.fx.dispose()
-        removeRange(existing.range)
-      }
+      // reused entries that changed position: their tracked bindings re-run off
+      // the list notification anyway, but a binding that reads only `$index` or
+      // the named key tracked nothing - refresh them so the move reaches those
+      // too. Untracked, so these runs don't feed this list effect's own deps
+      moved.forEach(entry => untracked(() => entry.fx.refresh()))
 
-      const itemFx = createEffectScope(scope)
-      // bounds captured before the positioning pass inserts the entry: a
-      // component entry is a fragment, which empties on insertion (see boundsOf)
-      const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
-      return { key, item, scope: itemScope, fx: itemFx, range }
-    })
-
-    // whatever no new item consumed is gone
-    previous.forEach(bucket => bucket.forEach(entry => {
-      entry.fx.dispose()
-      removeRange(entry.range)
-    }))
-
-    let prevNode: Node = anchor
-    nextEntries.forEach(entry => {
-      if (prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
-      prevNode = entry.range.last
-    })
-
-    // reused entries that changed position: their tracked bindings re-run off
-    // the list notification anyway, but a binding that reads only `$index` or
-    // the named key tracked nothing - refresh them so the move reaches those
-    // too. Untracked, so these runs don't feed this list effect's own deps
-    moved.forEach(entry => untracked(() => entry.fx.refresh()))
-
-    entries = nextEntries
+      entries = nextEntries
+    } finally {
+      closeRenderPass(pass)
+    }
   })
 
   return wrapper
@@ -1416,8 +1571,21 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
 // renders a list of sibling template nodes (text + elements), grouping
 // consecutive :if/:elseif/:else nodes into a single conditional block
-const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any>, fx: EffectScope, shadow = false): DocumentFragment => {
-  const fragment = document.createDocumentFragment()
+// `into` renders straight into an element that is not in the document yet -
+// what renderElement does for an element's own children. Every element used to
+// get a DocumentFragment of its own, filled and then emptied into it: for a
+// 10,000-row table that is 70,000 fragments and a second pass over every node,
+// and the intermediate is invisible either way because the element is still
+// detached. Callers that need a standalone chunk (a component's content, an
+// :if branch) omit it and get the fragment
+const renderNodes = <T extends ParentNode>(
+  nodes: (TemplateNode | string)[],
+  scope: Record<string, any>,
+  fx: EffectScope,
+  shadow = false,
+  into?: T
+): T | DocumentFragment => {
+  const fragment = into ?? document.createDocumentFragment()
   let i = 0
 
   while (i < nodes.length) {

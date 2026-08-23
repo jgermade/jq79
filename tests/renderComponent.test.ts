@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { $, $$, parseComponent, $reactive, renderComponent } from "../src/jq79"
+import { $, $$, parseComponent, $reactive, renderComponent, $toRaw } from "../src/jq79"
 
 describe("renderComponent", () => {
   let container: HTMLDivElement
@@ -720,6 +720,46 @@ describe("renderComponent", () => {
       data.users = [data.users[1], data.users[0]]
 
       expect($$(container, "li").map(el => el.textContent)).toEqual(["0", "1"])
+    })
+
+    it("still refreshes a moved entry when a nested tag is handed $index as a prop", () => {
+      // the positional-name walk has to reach attributes of nodes *inside* the
+      // item, not just the item's own - a prop is how $index escapes into a
+      // child (TODOS/2026-08-23.positional-refresh.md)
+      const component = parseComponent(`<li :each="u in users" :key="u.id"><b :data-at="$index"></b></li>`)
+      const data = $reactive({ users: [{ id: 1 }, { id: 2 }] })
+      container.appendChild(renderComponent(component, data))
+
+      data.users = [data.users[1], data.users[0]]
+
+      expect($$(container, "b").map(el => el.getAttribute("data-at"))).toEqual(["0", "1"])
+    })
+
+    it("does not re-run a moved entry's bindings when nothing in the item reads a position", () => {
+      // the refresh exists for position-only bindings; a template that names no
+      // position cannot have one, and re-running every binding of every moved
+      // row was 9ms of removeRow's 25ms. Ten rows with two swapped, so the
+      // container diff notifies those two precisely instead of sweeping - the
+      // two entries move, and their bindings must run once, not twice
+      const runs: string[] = []
+      const component = parseComponent(`<li :each="u in users" :key="u.id">{{ seen(u.name) }}</li>`)
+      const data = $reactive({
+        users: Array.from({ length: 10 }, (_, i) => ({ id: i, name: `u${i}` })),
+        seen: (name: string) => { runs.push(name); return name },
+      })
+      container.appendChild(renderComponent(component, data))
+      runs.length = 0
+
+      const next = [...($toRaw(data.users) as any[])]
+      ;[next[8], next[9]] = [next[9], next[8]]
+      data.users = next
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(
+        ["u0", "u1", "u2", "u3", "u4", "u5", "u6", "u7", "u9", "u8"]
+      )
+      // once each, in creation order - not twice, which is what the
+      // unconditional refresh did
+      expect(runs).toEqual(["u8", "u9"])
     })
 
     it("survives a store write during item render without re-entering the diff", () => {
