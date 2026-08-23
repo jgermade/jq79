@@ -1,0 +1,89 @@
+# Manual benchmark run. Two things a shared runner can actually support:
+#
+#  - an A/B of two builds measured on ONE machine, in one session, alternating
+#    between them, with the runner's own noise reported beside every delta.
+#    Measuring a single build and comparing it against numbers from another
+#    day, or another machine, is what this exists to avoid: one build against
+#    itself on a busy box has swung -23% to +50% on create1k
+#    (TODOS/2026-08-23.where-the-create-time-goes.md).
+#  - optionally, the cross-framework comparison, which is only ever read as
+#    ratios between the frameworks measured in that same run.
+#
+# The report is written to the job summary AND to the job log AND uploaded as
+# an artifact, so it can be read without downloading anything.
+
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Git ref to compare this branch against (empty = measure this branch alone)'
+        required: false
+        default: main
+        type: string
+      rounds:
+        description: 'Alternating rounds per build (2 or more, or no noise can be measured)'
+        required: false
+        default: '3'
+        type: string
+      samples:
+        description: 'Samples per operation, per round'
+        required: false
+        default: '10'
+        type: string
+      frameworks:
+        description: 'Also run the cross-framework comparison (slower: installs and builds six apps)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the A/B checks the base ref out into a worktree
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm install
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Benchmark
+        run: |
+          mkdir -p benchmark-report
+          if [ -n "${{ inputs.base }}" ]; then
+            node scripts/run-ab.mjs \
+              --base "${{ inputs.base }}" \
+              --rounds "${{ inputs.rounds }}" \
+              --samples "${{ inputs.samples }}" \
+              --out benchmark-report
+          else
+            node scripts/run-ab.mjs \
+              --rounds "${{ inputs.rounds }}" \
+              --samples "${{ inputs.samples }}" \
+              --out benchmark-report
+          fi
+
+      - name: Framework comparison
+        if: ${{ inputs.frameworks }}
+        run: |
+          npm run build
+          node scripts/run-comparison.mjs
+          cp frameworks/keyed/comparison-results.json benchmark-report/
+          node scripts/report-comparison.mjs > benchmark-report/comparison-report.md
+          cat benchmark-report/comparison-report.md
+          cat benchmark-report/comparison-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: benchmark-report/
