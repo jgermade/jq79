@@ -563,6 +563,34 @@ ${comparisonChart(summary)}
 ${comparisonTable(results.frameworks)}
 </div>
 
+<h2>Where the distance is</h2>
+<p>jq79 parses and mounts at runtime - no compiler, no virtual DOM - and this table
+is where that costs something. The four numbers behind it have different causes,
+though, and only one of them is the design.</p>
+
+<p><strong>Building elements is about 6&times; Svelte, and that is the price of the
+design, not a defect in it.</strong> A devtools trace of <code>create1k</code>
+charges 77% of the measured window to JavaScript and finds no layout, no style
+recalculation and no HTML parsing: jq79 simply executes about six times more
+JavaScript to build the same thousand rows. It is not one hot spot. Four rounds of
+profiling found one - memoizing the component-name scan, worth about a third - and
+nothing else above a few percent. The rest is the sum of what a runtime interpreter
+does per element that compiled straight-line code does not do at all: classify
+attributes, resolve names through a scope chain, allocate an effect and index its
+dependencies, build closures. Closing it means deriving that work when the template
+is parsed, or compiling the template to a closure tree once per component - a
+different library on the inside, for the same public one.</p>
+
+<p><strong>The list operations are a different story, and an open one.</strong>
+Removing one row of a thousand re-runs 999 rows' bindings, because a dependency is
+a path (<code>rows.4.label</code>) and a removal changes the path of every row
+behind it. Swapping two rows runs the whole diff twice - once per write - because
+jq79 patches the DOM synchronously instead of batching a handler's writes.
+Selecting a row re-runs 1,000 class bindings, which Svelte does too; there the
+distance is the cost of one binding, around 4&micro;s against 1.25&micro;s, most of
+it <code>with</code> resolving free identifiers through a proxy. None of those three
+is the price of having no compiler.</p>
+
 <p><small>generated ${date} · ${results.cpu}</small></p>
 `
 

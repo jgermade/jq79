@@ -788,6 +788,73 @@ describe("renderComponent", () => {
 
       expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b"])
     })
+
+    it("moves only the rows that really moved, not every row after them", () => {
+      // the positioning walk used to demand that each entry follow the one
+      // before it, which is minimal for an append and quadratic for a reorder:
+      // one row out of place cascaded into a move for every row behind it. The
+      // longest increasing run of old positions is what says which rows are
+      // already in order relative to each other, and those are left alone
+      const component = parseComponent(`<li :each="u in users" :key="u.id">{{ u.name }}</li>`)
+      const data = $reactive({ users: Array.from({ length: 100 }, (_, i) => ({ id: i, name: `u${i}` })) })
+      container.appendChild(renderComponent(component, data))
+
+      const next = [...($toRaw(data.users) as any[])]
+      ;[next[1], next[98]] = [next[98], next[1]]
+      const insertBefore = vi.spyOn(Node.prototype, "insertBefore")
+      data.users = next
+      const moves = insertBefore.mock.calls.length
+      insertBefore.mockRestore()
+
+      const names = $$(container, "li").map(el => el.textContent)
+      expect(names[0]).toBe("u0")
+      expect(names[1]).toBe("u98")
+      expect(names[98]).toBe("u1")
+      expect(names[99]).toBe("u99")
+      expect(moves).toBe(2)
+    })
+
+    it("keys a list the same whether or not the expression takes the fast path", () => {
+      // `row.id` is read straight off the item; a deeper path, a call, or a
+      // name from the outer scope still goes through evalExpr. All four have to
+      // agree on identity, or a reorder rebuilds rows it should have reused
+      for (const keyExpr of ["u.id", "u.meta.id", "String(u.id)", "ids[u.id]"]) {
+        const host = document.createElement("div")
+        container.appendChild(host)
+        const component = parseComponent(`<li :each="u in users" :key="${keyExpr}">{{ u.name }}</li>`)
+        const data = $reactive({
+          users: [{ id: 1, name: "a", meta: { id: 1 } }, { id: 2, name: "b", meta: { id: 2 } }],
+          ids: { 1: "one", 2: "two" },
+        })
+        host.appendChild(renderComponent(component, data))
+        const [first, second] = $$(host, "li")
+
+        data.users = [data.users[1], data.users[0]]
+
+        expect($$(host, "li").map(el => el.textContent)).toEqual(["b", "a"])
+        // reused, not rebuilt: the same two elements came back in the new order
+        expect($$(host, "li")[0]).toBe(second)
+        expect($$(host, "li")[1]).toBe(first)
+      }
+    })
+
+    it("evaluates a :key without ever writing the loop name into the store", () => {
+      // the key expression needs the item bound to a scope to read it from, and
+      // one scratch scope now serves the whole pass - the loop variable written
+      // into it by plain assignment, which is only safe because the property is
+      // already the scratch's own (see defineScopeVar). Were it not, the write
+      // would delegate up to the store's set trap and land as a real mutation
+      // of the same-named key, here `item`
+      const component = parseComponent(`<li :each="item in items" :key="item.id">{{ item.name }}</li>`)
+      const data = $reactive({ item: "untouched", items: [{ id: 1, name: "a" }, { id: 2, name: "b" }] })
+      container.appendChild(renderComponent(component, data))
+
+      // a second pass, so the scratch is reused rather than freshly defined
+      data.items = [...data.items, { id: 3, name: "c" }]
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b", "c"])
+      expect(data.item).toBe("untouched")
+    })
   })
 
   describe(":each second binding", () => {
