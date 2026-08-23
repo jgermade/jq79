@@ -1,0 +1,32 @@
+{
+  "name": "js-framework-benchmark-jq79",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Boilerplate for jq79",
+  "js-framework-benchmark": {
+    "frameworkVersionFromPackage": "jq79",
+    "frameworkHomeURL": "https://jgermade.github.io/jq79/",
+    "issues": []
+  },
+  "scripts": {
+    "dev": "vite",
+    "build-prod": "vite build",
+    "build": "vite build"
+  },
+  "keywords": [
+    "jq79"
+  ],
+  "license": "ISC",
+  "homepage": "https://github.com/krausest/js-framework-benchmark",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krausest/js-framework-benchmark.git"
+  },
+  "dependencies": {
+    "jq79": "^0.5.12"
+  },
+  "devDependencies": {
+    "vite": "^8.1.4"
+  }
+}

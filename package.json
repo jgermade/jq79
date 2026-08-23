@@ -64,6 +64,7 @@
     "test:coverage": "vitest run --coverage",
     "site": "node scripts/build-site.mjs",
     "site.dev": "node scripts/site-dev.mjs",
+    "benchmark": "node scripts/run-benchmark.mjs",
     "prepublishOnly": "npm test && npm run build"
   },
   "peerDependencies": {
@@ -82,6 +83,7 @@
     "jsdom": "^29.1.1",
     "marked": "^18.0.6",
     "marked-highlight": "^2.2.4",
+    "playwright": "^1.56.1",
     "sass": "^1.101.0",
     "tsup": "^8.5.1",
     "typescript": "^7.0.2",
