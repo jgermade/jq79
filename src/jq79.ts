@@ -1218,7 +1218,14 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     })
   }
 
-  Object.entries(node.attrs).forEach(([key, value]) => {
+  // walked with `for...in` rather than Object.entries().forEach: a 1,000-row
+  // :each renders every element of its template a thousand times, and the
+  // entries form allocates one array of pairs plus one two-element array per
+  // attribute *per instance*. Nothing here reads the pairs as pairs, so the
+  // allocation buys nothing and the garbage it makes is measurable - see
+  // TODOS/2026-08-23.where-the-create-time-goes.md
+  for (const key in node.attrs) {
+    const value = node.attrs[key]
     if (key.startsWith("@")) bindEvent(el, key, value, scope)
     else if (key === ":model" || key.startsWith(":model.")) {
       // :model binds component tags only (see TODOS/2026-07-15.model-directive.md;
@@ -1249,7 +1256,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
         fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
       }
     } else el.setAttribute(key, value)
-  })
+  }
 
   const bindExpr = node.attrs[":attrs"]
   if (bindExpr !== undefined) {
@@ -1271,17 +1278,23 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // static list survives every re-run, even when the expression names one of
   // its classes and then drops it (class="btn" :class="{ btn: cond }" keeps
   // btn on false)
+  //
+  // The toggle list stays null until a `:class.` attribute is actually found,
+  // for the reason the attribute walk above is a `for...in`: entries + filter +
+  // map allocated three arrays for every element rendered, and the
+  // overwhelming majority of elements carry no `:class.` at all
   const classExpr = node.attrs[":class"]
-  const classToggles = Object.entries(node.attrs)
-    .filter(([key]) => key.startsWith(":class."))
-    .map(([key, expr]): [string, string] => [key.slice(":class.".length), expr])
-  if (classExpr !== undefined || classToggles.length) {
+  let classToggles: [string, string][] | null = null
+  for (const key in node.attrs) {
+    if (key.startsWith(":class.")) (classToggles ??= []).push([key.slice(":class.".length), node.attrs[key]])
+  }
+  if (classExpr !== undefined || classToggles) {
     const staticClasses = new Set(classNames(node.attrs.class ?? ""))
     let bound: string[] = []
 
     fx.effect(() => {
       const next = classExpr !== undefined ? classNames(evalExpr(classExpr, scope)) : []
-      classToggles.forEach(([name, expr]) => {
+      classToggles?.forEach(([name, expr]) => {
         if (evalExpr(expr, scope)) next.push(...classNames(name))
       })
       bound.forEach(name => {
