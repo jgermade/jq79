@@ -39,6 +39,14 @@ it rewrites in place, plus the job summary, the job log and an artifact. It
 never fails a build - a delta under the runner's noise is not a regression, and
 the job is not qualified to tell them apart; it reports, you decide.
 
+Its sibling job, *regression*, is the one that can fail: it measures the branch
+against the **last released tag** and blocks the merge when an operation is at
+least 10% slower. Four clauses keep it from blocking on a bad minute - slower
+by more than the threshold, by more than that operation's own round-to-round
+spread, in every round, and only on operations of at least 5ms - and anything
+that trips all four is measured again, extra rounds of that operation alone,
+before it counts. Tune with the `gate` input; `gate: 0` disables it.
+
 Every delta comes with that noise beside it, and one smaller than the noise is
 not a result. Neither is a single build measured against yesterday's numbers:
 one build against itself has swung -23% to +50% on `create1k`, on the same

@@ -52,6 +52,15 @@ const ROUNDS = Number(arg("rounds", 3))
 // round is run and thrown away
 const WARMUP = Number(arg("warmup", 1))
 const OUT = arg("out", ROOT)
+// The regression gate: fail the process when head is at least this much slower
+// than base. 0 turns it off, which is the default - a gate belongs where
+// somebody chose to put one (see .github/workflows/benchmark.yml), not on every
+// exploratory run
+const GATE = Number(arg("gate", 0))
+// and never on an operation this small. partialUpdate is ~1ms and the clock
+// quantises it to 0.05: two steps of that is "+10%", and no amount of rounds
+// makes it mean anything
+const GATE_MIN_MS = Number(arg("gate-min-ms", 5))
 
 const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: "inherit" })
 const capture = (cmd, args, cwd = ROOT) => execFileSync(cmd, args, { cwd, encoding: "utf8" }).trim()
@@ -177,69 +186,29 @@ const cleanup = async () => {
   await rm(stage, { recursive: true, force: true })
 }
 
-// rounds[i][buildId] = { opId: median }
-const rounds = []
-let chromiumVersion = "unknown"
+// --------------------------------------------------- reading what was measured
 
-try {
-  const browser = await chromium.launch()
-  const page = await browser.newPage()
-  chromiumVersion = browser.version()
-
-  for (let round = 0; round < WARMUP + ROUNDS; round++) {
-    const warming = round < WARMUP
-    // alternate the order every round, so neither build always inherits the
-    // other's warm caches and neither always runs first after a GC
-    const order = round % 2 ? [...builds].reverse() : builds
-    const measured = {}
-    for (const build of order) {
-      const name = warming ? `warm-up ${round + 1}/${WARMUP}` : `round ${round + 1 - WARMUP}/${ROUNDS}`
-      console.log(`\n--- ${name}: ${build.label} ---`)
-      await useBuild(build.dist)
-      const server = await preview({ root: APP_DIR, preview: { port: PORT, strictPort: true }, logLevel: "warn" })
-      const operations = await measureApp(page, `http://localhost:${PORT}/`, SAMPLES)
-      await server.close()
-      measured[build.id] = Object.fromEntries(operations.map(op => [op.id, op]))
-    }
-    if (!warming) rounds.push(measured)
-  }
-
-  await browser.close()
-} finally {
-  // a crashed run must not leave a registered worktree behind: the next one
-  // would refuse to check the same ref out again
-  await cleanup()
-}
-
-// ---------------------------------------------------------------- the report
-
-const roundMedians = (buildId, opId) => rounds.map(r => r[buildId][opId].median)
+// A round that only measured some operations (the gate's confirmation pass)
+// contributes to those and to nothing else
+const roundMedians = (buildId, opId) =>
+  rounds.filter(round => round[buildId][opId]).map(round => round[buildId][opId].median)
 const spread = xs => (Math.max(...xs) - Math.min(...xs)) / median(xs) * 100
 
-const report = {
-  generatedAt: new Date().toISOString(),
-  runner: {
-    cpu: `${cpus()[0].model} × ${cpus().length}`,
-    node: process.version,
-    chromium: chromiumVersion,
-    ci: process.env.GITHUB_ACTIONS ? `${process.env.GITHUB_REPOSITORY}#${process.env.GITHUB_RUN_ID}` : null,
-  },
-  samples: SAMPLES,
-  rounds: ROUNDS,
-  warmupRounds: WARMUP,
-  builds: builds.map(({ id, label, ref }) => ({ id, label, ref })),
-  operations: OPERATIONS.map(op => {
+const operations = () =>
+  OPERATIONS.map(op => {
     const per = Object.fromEntries(builds.map(b => [b.id, roundMedians(b.id, op.id)]))
+    const measured = per[builds[0].id].length
     const entry = {
       id: op.id,
       label: op.label,
       // every round's median, per build: the raw material for any other reading
       rounds: per,
+      roundsMeasured: measured,
       median: Object.fromEntries(builds.map(b => [b.id, Number(median(per[b.id]).toFixed(2))])),
       // how much this operation moved between rounds of the SAME build - the
       // runner's noise floor for this number, and the bar a delta has to clear.
       // One round cannot measure it, and reports null rather than a flattering 0
-      noise: ROUNDS < 2 ? null : Number(Math.max(...builds.map(b => spread(per[b.id]))).toFixed(1)),
+      noise: measured < 2 ? null : Number(Math.max(...builds.map(b => spread(per[b.id]))).toFixed(1)),
     }
     if (builds.length === 2) {
       const [base, head] = builds.map(b => per[b.id])
@@ -266,7 +235,7 @@ const report = {
       // "inside the noise" - true of the magnitude, misleading about the
       // direction. A unanimous sign is worth saying out loud, qualified
       const clearsNoise = Math.abs(entry.delta) > entry.noise
-      const faster = entry.headFasterInRounds === ROUNDS
+      const faster = entry.headFasterInRounds === measured
       const unanimous = faster || entry.headFasterInRounds === 0
       entry.verdict =
         entry.noise === null ? "one round: no noise estimate"
@@ -276,19 +245,128 @@ const report = {
         : "inside the noise"
     }
     return entry
-  }),
+  })
+
+// What the gate is willing to call a regression, and every clause is there to
+// keep a busy runner from blocking a merge on nothing:
+//
+//  - slower by at least the threshold, so a 2% drift is not an event;
+//  - by more than this operation's own spread between rounds of one build;
+//  - in EVERY round, so a single bad round cannot carry the median;
+//  - and only where the numbers are big enough to mean anything - a 1ms
+//    operation read off a clock that quantises to 0.05ms is not evidence.
+//
+// A first pass that trips all four is re-measured before any of it counts
+const isRegression = entry =>
+  GATE > 0 &&
+  builds.length === 2 &&
+  entry.noise !== null &&
+  entry.delta >= GATE &&
+  entry.delta > entry.noise &&
+  entry.headFasterInRounds === 0 &&
+  entry.median.base >= GATE_MIN_MS
+
+// rounds[i][buildId][opId] = one operation's measurement. A round measures
+// every build, which is what makes rounds[i] a pair and the pairing meaningful
+const rounds = []
+let chromiumVersion = "unknown"
+let confirmed = []
+
+try {
+  const browser = await chromium.launch()
+  const page = await browser.newPage()
+  chromiumVersion = browser.version()
+
+  // `only` narrows the round to a few operations, for the gate's second pass
+  const measureRound = async (name, at, only = null) => {
+    // alternate the order every round, so neither build always inherits the
+    // other's warm caches and neither always runs first after a GC
+    const order = at % 2 ? [...builds].reverse() : builds
+    const measured = {}
+    for (const build of order) {
+      console.log(`\n--- ${name}: ${build.label} ---`)
+      await useBuild(build.dist)
+      const server = await preview({ root: APP_DIR, preview: { port: PORT, strictPort: true }, logLevel: "warn" })
+      const operations = await measureApp(page, `http://localhost:${PORT}/`, SAMPLES, only)
+      await server.close()
+      measured[build.id] = Object.fromEntries(operations.map(op => [op.id, op]))
+    }
+    return measured
+  }
+
+  for (let round = 0; round < WARMUP + ROUNDS; round++) {
+    const warming = round < WARMUP
+    const name = warming ? `warm-up ${round + 1}/${WARMUP}` : `round ${round + 1 - WARMUP}/${ROUNDS}`
+    const measured = await measureRound(name, round, null)
+    if (!warming) rounds.push(measured)
+  }
+
+  // The gate never fails on the rounds that raised the suspicion. An operation
+  // that looks like a regression is measured again, ROUNDS more times, and
+  // judged on everything measured - which is what turns "4 rounds agreed" into
+  // 8, and what keeps a blocking check from blocking on a runner's bad minute.
+  // Only the suspects are re-measured: confirming one operation should not cost
+  // the other eight
+  if (GATE && builds.length === 2) {
+    const suspects = operations().filter(isRegression).map(op => op.id)
+    if (suspects.length) {
+      console.log(`\n[gate] slower on ${suspects.join(", ")} - measuring ${ROUNDS} more rounds of just those`)
+      for (let round = 0; round < ROUNDS; round++) {
+        rounds.push(await measureRound(`confirmation ${round + 1}/${ROUNDS}`, WARMUP + ROUNDS + round, suspects))
+      }
+      confirmed = suspects
+    }
+  }
+
+  await browser.close()
+} finally {
+  // a crashed run must not leave a registered worktree behind: the next one
+  // would refuse to check the same ref out again
+  await cleanup()
 }
+
+// ---------------------------------------------------------------- the report
+
+const report = {
+  generatedAt: new Date().toISOString(),
+  runner: {
+    cpu: `${cpus()[0].model} × ${cpus().length}`,
+    node: process.version,
+    chromium: chromiumVersion,
+    ci: process.env.GITHUB_ACTIONS ? `${process.env.GITHUB_REPOSITORY}#${process.env.GITHUB_RUN_ID}` : null,
+  },
+  samples: SAMPLES,
+  rounds: ROUNDS,
+  warmupRounds: WARMUP,
+  gate: GATE ? { thresholdPercent: GATE, minMs: GATE_MIN_MS, confirmedWithExtraRounds: confirmed } : null,
+  builds: builds.map(({ id, label, ref }) => ({ id, label, ref })),
+  operations: operations(),
+}
+
+report.regressions = report.operations.filter(isRegression).map(op => op.id)
 
 const pct = n => `${n > 0 ? "+" : ""}${n.toFixed(1)}%`
 const noiseCell = n => (n === null ? "n/a" : `±${n.toFixed(1)}%`)
 const lines = []
 lines.push(`# jq79 benchmark report`)
 lines.push("")
+if (report.regressions.length) {
+  lines.push(`## ⛔ Slower than \`${builds[0].label}\``)
+  lines.push("")
+  for (const id of report.regressions) {
+    const op = report.operations.find(entry => entry.id === id)
+    lines.push(`- **${op.label}**: ${pct(op.delta)} (${op.median.base.toFixed(1)}ms → ${op.median.head.toFixed(1)}ms), slower in all ${op.roundsMeasured} rounds, against ±${op.noise.toFixed(1)}% of round-to-round spread.`)
+  }
+  lines.push("")
+  lines.push(`Each of these was measured again - ${ROUNDS} extra rounds of that operation alone - and came back the same way. The gate trips at ${GATE}% on operations of at least ${GATE_MIN_MS}ms, and only when every round agrees and the delta beats the noise.`)
+  lines.push("")
+}
 lines.push(`- **generated** ${report.generatedAt}`)
 lines.push(`- **runner** ${report.runner.cpu} · node ${report.runner.node} · chromium ${report.runner.chromium}`)
 if (report.runner.ci) lines.push(`- **run** ${report.runner.ci}`)
 lines.push(`- **method** ${ROUNDS} alternating rounds × ${SAMPLES} samples per operation, medians${WARMUP ? `, after ${WARMUP} discarded warm-up round${WARMUP > 1 ? "s" : ""}` : ""}`)
 for (const b of report.builds) lines.push(`- **${b.id}** ${b.label} \`${b.ref.slice(0, 12)}\``)
+if (GATE) lines.push(`- **gate** fails at ${GATE}% slower, on operations of at least ${GATE_MIN_MS}ms${confirmed.length ? `; re-measured ${confirmed.join(", ")}` : ""}`)
 lines.push("")
 
 if (builds.length === 2) {
@@ -331,3 +409,10 @@ await writeFile(join(OUT, "benchmark-report.md"), markdown)
 
 console.log("\n" + markdown)
 if (process.env.GITHUB_STEP_SUMMARY) await writeFile(process.env.GITHUB_STEP_SUMMARY, markdown, { flag: "a" })
+
+// after the report is written, never before: a failing gate must still leave
+// behind the numbers it failed on
+if (report.regressions.length) {
+  console.error(`\nslower than ${builds[0].label}: ${report.regressions.join(", ")}`)
+  process.exitCode = 1
+}

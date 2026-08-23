@@ -161,9 +161,15 @@ export const median = samples => {
 
 // runs the whole OPERATIONS suite against whatever `url` is currently serving,
 // `samples` fresh page loads per operation (fastest/slowest dropped)
-export const measureApp = async (page, url, samples) => {
+//
+// `only` narrows it to a list of operation ids, for a caller that already has
+// an answer for the rest: run-ab.mjs re-measures just the operations its
+// regression gate is about to fail on, and paying for the other seven to
+// confirm one is what would make that confirmation too expensive to do
+export const measureApp = async (page, url, samples, only = null) => {
   const results = []
   for (const op of OPERATIONS) {
+    if (only && !only.includes(op.id)) continue
     const times = []
     for (let i = 0; i < samples; i++) {
       await page.goto(url)

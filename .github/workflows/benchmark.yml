@@ -42,6 +42,11 @@ on:
         required: false
         default: false
         type: boolean
+      gate:
+        description: 'Fail the regression job when an operation is at least this much slower than the last release (0 = never fail)'
+        required: false
+        default: '10'
+        type: string
 
   pull_request:
     branches: [main]
@@ -160,5 +165,84 @@ jobs:
             const issue_number = context.payload.pull_request.number
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
             const existing = comments.find(c => c.body?.startsWith(MARKER))
+            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body })
+
+  # The gate: is this branch slower than what people have installed from npm?
+  # A separate job, and the only one that can fail, so a red check means one
+  # thing and the report job stays informational.
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true # the release to compare against is a tag
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm install
+
+      - run: npx playwright install --with-deps chromium
+
+      # the highest vX.Y.Z, not the nearest ancestor: "the last release" means
+      # what is published, whatever this branch descends from
+      - name: Find the last release
+        id: release
+        run: |
+          tag=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then
+            echo "No release tag yet - nothing to compare against." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Compare against the last release
+        if: steps.release.outputs.tag != ''
+        run: |
+          mkdir -p regression-report
+          node scripts/run-ab.mjs \
+            --base "${{ steps.release.outputs.tag }}" \
+            --gate "${{ inputs.gate || '10' }}" \
+            --rounds "${{ inputs.rounds || '4' }}" \
+            --samples "${{ inputs.samples || '10' }}" \
+            --out regression-report
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.release.outputs.tag != ''
+        with:
+          name: regression-report
+          path: regression-report/
+
+      # loud only when it matters: a comment appears when the gate trips and is
+      # deleted the moment a later push comes back clean, so the PR never
+      # carries a regression notice that is no longer true
+      - name: Comment on the pull request
+        if: always() && github.event_name == 'pull_request' && steps.release.outputs.tag != ''
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { readFileSync, existsSync } = require("node:fs")
+            const MARKER = "<!-- jq79-regression -->"
+            const path = "regression-report/benchmark-report.json"
+            const regressed = existsSync(path) && JSON.parse(readFileSync(path, "utf8")).regressions?.length
+            const { owner, repo } = context.repo
+            const issue_number = context.payload.pull_request.number
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
+            const existing = comments.find(c => c.body?.startsWith(MARKER))
+            if (!regressed) {
+              if (existing) await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id })
+              return
+            }
+            let report = readFileSync("regression-report/benchmark-report.md", "utf8")
+            if (report.length > 60000) report = report.slice(0, report.indexOf("<details>")) +
+              "_(raw json trimmed - it is in the `regression-report` artifact)_\n"
+            const head = context.payload.pull_request.head.sha.slice(0, 12)
+            const body = `${MARKER}\n${report}\n---\n_\`${head}\` against the last release, by [this run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})_`
             if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
             else await github.rest.issues.createComment({ owner, repo, issue_number, body })
