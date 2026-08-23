@@ -11,7 +11,7 @@ const data = $reactive({ user: { address: { city: "NYC" } } })
 data.$on("user.address.city", (value, dotKey) => { … }, { immediate: true })
 data.$onAny((dotKey, value) => { … })
 const stop = data.$effect(() => {
-  // re-runs whenever anything it *read* changes (fine-grained, deep)
+  // re-runs whenever a value it *read* changes - at whatever depth it read it
   console.log(data.user.address.city)
 })
 
@@ -66,6 +66,31 @@ enumerating an object (`Object.keys`, `{...spread}`, `:each` over a plain
 object) re-runs when a key is added or removed, and an array's `length`
 re-runs everything that read an element, since a truncation removes them
 without notifying each one.
+
+### When the effect can't read what it depends on
+
+Reading the values you depend on is the answer almost everywhere. It stops
+being possible when the effect hands a value to code the store cannot watch —
+a chart library, a canvas draw, a request — because the reads then happen
+somewhere the proxy is not:
+
+```js
+data.$effect(() => chart.render(data.series))   // reads `series`, nothing under it
+data.series.points.push(4)                      // silent: nothing it read changed
+```
+
+`deep` opts that effect into waking for writes *below* what it read, too:
+
+```js
+data.$effect(() => chart.render(data.series), { deep: true })
+data.series.points.push(4)                      // re-runs
+```
+
+Use it for exactly this — a value forwarded whole to something opaque. It is
+not a general "watch everything" switch: an effect marked `deep` wakes for
+every write under every path it touched, which on a large object is most
+writes. A component's props already use it internally, which is why a parent's
+deep mutation reaches a child that only reads the prop object.
 
 ## The object you hand it is left alone
 

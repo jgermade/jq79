@@ -7,17 +7,27 @@ type AnyChangeListener = (dotKey: string, value: any) => void
 type ListenerOptions = { immediate?: boolean }
 type Unsubscribe = () => void
 
+export type EffectOptions = {
+  // wake this effect for writes below its dependencies, not only on them
+  deep?: boolean
+  // internal: the extra stores this effect must also be registered with, so a
+  // change in any of them wakes it (see ATTACH). Slot content is the only
+  // thing that sets it, by way of createEffectScope - it is deliberately not
+  // part of what this API tells users about
+  alsoWakenBy?: Record<string, any>[]
+}
+
 export type ReactiveDeepData<T> = T & {
   $on: (dotKey: string, listener: ChangeListener, options?: ListenerOptions) => Unsubscribe
   $onAny: (listener: AnyChangeListener, options?: ListenerOptions) => Unsubscribe
   // runs `run` immediately, recording every dotKey it reads off this store, then
   // re-runs it whenever a changed dotKey overlaps one of those - see TrieNode.
-  // `alsoWakenBy` registers the same effect with other stores as well, so a
-  // change in any of them wakes it too (see ATTACH)
-  // `deep` opts the effect into waking for writes *below* its deps too - for
-  // an effect that forwards a value wholesale (a prop sync) rather than
-  // reading into it, which is the one shape that can't track what it passes on
-  $effect: (run: () => void, alsoWakenBy?: Record<string, any>[], deep?: boolean) => Unsubscribe
+  //
+  // `deep` also wakes it for writes *below* what it read. It is for the one
+  // shape the store cannot see into: an effect that hands a value to code
+  // outside its view - a chart library, a canvas, a request - and so reads
+  // nothing the proxy can record (see docs/reactive-data.md)
+  $effect: (run: () => void, options?: EffectOptions) => Unsubscribe
   // drops this store's subscriptions to the stores nested inside it (see
   // bridge). A store that outlives the one holding it - the shared-state case -
   // would otherwise keep the dead holder's listeners on its own list forever
@@ -708,7 +718,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     return () => anyListeners.delete(listener)
   }
 
-  const $effect = (run: () => void, alsoWakenBy?: Record<string, any>[], deep = false): Unsubscribe => {
+  const $effect = (run: () => void, { deep = false, alsoWakenBy }: EffectOptions = {}): Unsubscribe => {
     // a notify landing while this effect runs (an item's render writing to
     // the store, waking the very effect that is rendering it) must not
     // re-enter mid-run - the half-done run would race its own repeat over
@@ -834,7 +844,7 @@ export const createEffectScope = (scope: Record<string, any>, deep = false): Eff
   const alsoWakenBy: Record<string, any>[] | undefined = (scope as any)[ALSO_WAKEN_BY]
   return {
     effect: run => {
-      disposers.push(scope.$effect(run, alsoWakenBy, deep))
+      disposers.push(scope.$effect(run, { deep, alsoWakenBy }))
       runs.push(run)
     },
     onDispose: fn => { disposers.push(fn) },
