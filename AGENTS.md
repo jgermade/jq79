@@ -32,13 +32,17 @@ CI runs `npm test` and `npm run build` on every push/PR to `main`.
 ## Before you claim a change is faster
 
 Measure two builds **on one machine, in one session, alternating between
-them** - `npm run benchmark:ab -- --base <ref>`, or the *Benchmark* workflow
-(manual, `workflow_dispatch`), which does the same on a runner and writes the
-report to the job summary, the job log and an artifact. It reports the runner's
-own noise beside every delta, and a delta smaller than that noise is not a
-result. A single build measured against yesterday's numbers is never one: one
-build against itself has swung -23% to +50% on `create1k`, on the same box, in
-the same hour - see
+them** - `npm run benchmark:ab -- --base <ref>`, or the *Benchmark* workflow,
+which does the same on a runner: on every pull request that touches `src/`
+(and on every push to one), against the branch it targets, posting one comment
+it rewrites in place, plus the job summary, the job log and an artifact. It
+never fails a build - a delta under the runner's noise is not a regression, and
+the job is not qualified to tell them apart; it reports, you decide.
+
+Every delta comes with that noise beside it, and one smaller than the noise is
+not a result. Neither is a single build measured against yesterday's numbers:
+one build against itself has swung -23% to +50% on `create1k`, on the same
+box, in the same hour - see
 [TODOS/2026-08-23.where-the-create-time-goes.md](TODOS/2026-08-23.where-the-create-time-goes.md).
 
 ## Before you change the core
