@@ -39,6 +39,12 @@ const arg = (name, fallback) => {
 const BASE = arg("base", null)
 const SAMPLES = Number(arg("samples", 10))
 const ROUNDS = Number(arg("rounds", 3))
+// the first round of a session is the expensive one - cold JIT, cold page
+// cache, an empty heap - and whichever build runs first wears it. The first CI
+// run of this script had base's create1k at 51ms, 47.7, 41.2 in that order,
+// against head's 35.5, and it was base that opened the session. So one full
+// round is run and thrown away
+const WARMUP = Number(arg("warmup", 1))
 const OUT = arg("out", ROOT)
 
 const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: "inherit" })
@@ -140,20 +146,22 @@ try {
   const page = await browser.newPage()
   chromiumVersion = browser.version()
 
-  for (let round = 0; round < ROUNDS; round++) {
+  for (let round = 0; round < WARMUP + ROUNDS; round++) {
+    const warming = round < WARMUP
     // alternate the order every round, so neither build always inherits the
     // other's warm caches and neither always runs first after a GC
     const order = round % 2 ? [...builds].reverse() : builds
     const measured = {}
     for (const build of order) {
-      console.log(`\n--- round ${round + 1}/${ROUNDS}: ${build.label} ---`)
+      const name = warming ? `warm-up ${round + 1}/${WARMUP}` : `round ${round + 1 - WARMUP}/${ROUNDS}`
+      console.log(`\n--- ${name}: ${build.label} ---`)
       await useBuild(build.dist)
       const server = await preview({ root: APP_DIR, preview: { port: PORT, strictPort: true }, logLevel: "warn" })
       const operations = await measureApp(page, `http://localhost:${PORT}/`, SAMPLES)
       await server.close()
       measured[build.id] = Object.fromEntries(operations.map(op => [op.id, op]))
     }
-    rounds.push(measured)
+    if (!warming) rounds.push(measured)
   }
 
   await browser.close()
@@ -178,6 +186,7 @@ const report = {
   },
   samples: SAMPLES,
   rounds: ROUNDS,
+  warmupRounds: WARMUP,
   builds: builds.map(({ id, label, ref }) => ({ id, label, ref })),
   operations: OPERATIONS.map(op => {
     const per = Object.fromEntries(builds.map(b => [b.id, roundMedians(b.id, op.id)]))
@@ -194,16 +203,37 @@ const report = {
     }
     if (builds.length === 2) {
       const [base, head] = builds.map(b => per[b.id])
-      entry.delta = Number(((median(head) - median(base)) / median(base) * 100).toFixed(1))
+      // The headline delta is the median of the per-round deltas, not the
+      // delta of the two medians. They are not the same number, and the
+      // difference is not academic: the first CI run had replace1k at
+      // base [56.8, 52.2, 74.9] against head [45.6, 66.4, 70.4], where the
+      // medians say head is 16.8% SLOWER and the rounds - each one a pair
+      // measured minutes apart on one machine - say -19.7%, +27.2%, -6.1%,
+      // whose median is -6.1%. The medians compare measurements taken under
+      // different conditions; the pairs are the only thing this design
+      // actually controls for
+      const perRound = head.map((h, i) => (h - base[i]) / base[i] * 100)
+      entry.deltaPerRound = perRound.map(n => Number(n.toFixed(1)))
+      entry.delta = Number(median(perRound).toFixed(1))
+      entry.deltaOfMedians = Number(((median(head) - median(base)) / median(base) * 100).toFixed(1))
       // the sign, round by round: a delta that changes direction between
       // rounds is the runner talking, whatever its size
       entry.headFasterInRounds = head.filter((h, i) => h < base[i]).length
+      // Two independent facts, and neither one alone is a result: whether the
+      // delta clears the runner's own spread, and whether every round agreed
+      // on its sign. The first version of this let the noise gate win outright,
+      // and reported a -14.9% that head won 3 rounds out of 3 as flatly
+      // "inside the noise" - true of the magnitude, misleading about the
+      // direction. A unanimous sign is worth saying out loud, qualified
+      const clearsNoise = Math.abs(entry.delta) > entry.noise
+      const faster = entry.headFasterInRounds === ROUNDS
+      const unanimous = faster || entry.headFasterInRounds === 0
       entry.verdict =
         entry.noise === null ? "one round: no noise estimate"
-        : Math.abs(entry.delta) <= entry.noise ? "inside the noise"
-        : entry.headFasterInRounds === ROUNDS ? "faster, every round"
-        : entry.headFasterInRounds === 0 ? "slower, every round"
-        : "inconsistent"
+        : unanimous && clearsNoise ? `${faster ? "faster" : "slower"}, every round`
+        : unanimous ? `${faster ? "faster" : "slower"} every round, under the noise`
+        : clearsNoise ? "inconsistent: the sign changed between rounds"
+        : "inside the noise"
     }
     return entry
   }),
@@ -217,21 +247,23 @@ lines.push("")
 lines.push(`- **generated** ${report.generatedAt}`)
 lines.push(`- **runner** ${report.runner.cpu} · node ${report.runner.node} · chromium ${report.runner.chromium}`)
 if (report.runner.ci) lines.push(`- **run** ${report.runner.ci}`)
-lines.push(`- **method** ${ROUNDS} alternating rounds × ${SAMPLES} samples per operation, medians`)
+lines.push(`- **method** ${ROUNDS} alternating rounds × ${SAMPLES} samples per operation, medians${WARMUP ? `, after ${WARMUP} discarded warm-up round${WARMUP > 1 ? "s" : ""}` : ""}`)
 for (const b of report.builds) lines.push(`- **${b.id}** ${b.label} \`${b.ref.slice(0, 12)}\``)
 lines.push("")
 
 if (builds.length === 2) {
-  lines.push(`| operation | base | head | delta | noise | verdict |`)
-  lines.push(`|---|---:|---:|---:|---:|---|`)
+  lines.push(`| operation | base | head | delta | per round | noise | verdict |`)
+  lines.push(`|---|---:|---:|---:|---|---:|---|`)
   for (const op of report.operations) {
     lines.push(
-      `| ${op.label} | ${op.median.base.toFixed(1)}ms | ${op.median.head.toFixed(1)}ms | ${pct(op.delta)} | ${noiseCell(op.noise)} | ${op.verdict} (${op.headFasterInRounds}/${ROUNDS}) |`
+      `| ${op.label} | ${op.median.base.toFixed(1)}ms | ${op.median.head.toFixed(1)}ms | ${pct(op.delta)} | ${op.deltaPerRound.map(pct).join(" / ")} | ${noiseCell(op.noise)} | ${op.verdict} |`
     )
   }
   lines.push("")
+  lines.push(`**delta** is the median of the **per round** deltas beside it - each of those is one base/head pair measured minutes apart on this machine, which is the only thing a shared runner controls for. It is not the difference of the two medians, which compares measurements taken under different conditions.`)
+  lines.push("")
   lines.push(`**noise** is how far this operation moved between rounds of the same build - the runner's own spread.`)
-  lines.push(`A delta smaller than it says nothing. \`(k/${ROUNDS})\` is how many rounds head won: only ${ROUNDS}/${ROUNDS} or 0/${ROUNDS} is a direction.`)
+  lines.push(`A delta smaller than it says nothing about size. **"every round"** means the ${ROUNDS} rounds also agreed on the sign - supporting evidence, not proof: ${ROUNDS} coin flips land the same way ${(2 ** (1 - ROUNDS) * 100).toFixed(1)}% of the time. More rounds is the only thing that shrinks both columns.`)
   if (ROUNDS < 2) lines.push("")
   if (ROUNDS < 2) lines.push(`> One round measures no noise at all, so every verdict above is unqualified. Re-run with \`--rounds 3\` or more before believing any of them.`)
 } else {
