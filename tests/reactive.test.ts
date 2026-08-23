@@ -702,6 +702,23 @@ describe("a splice announced as the shift it is", () => {
     expect(rowRuns).toBe(1)
   })
 
+  it("wakes a slot reader that also read the length, through the length", () => {
+    // the clause that lets `indexable` prune a slot: an effect holding
+    // `data.length` hears every splice there is, because a splice always
+    // changes the length and notifyReplaced announces it exactly. This is what
+    // keeps the `:each` list effect - which reads the length and every slot -
+    // from indexing a second dep per row. If the splice path ever stops
+    // announcing the length, this test is the one that goes red
+    const store = $reactive({ data: rows(10) })
+
+    const seen: string[] = []
+    store.$effect(() => { seen.push(`${store.data.length}:${store.data[6]?.label}`) })
+
+    store.data = ($toRaw(store.data) as any[]).filter(item => item.id !== 1)
+
+    expect(seen).toEqual(["10:l6", "9:l7"])
+  })
+
   it("wakes an effect reading the length, and one reading the container", () => {
     const store = $reactive({ data: rows(10) })
 

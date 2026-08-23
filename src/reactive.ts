@@ -326,6 +326,14 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // label. A row binding inside a `:each` never read the slot and so keeps
   // nothing extra - it holds one dep and doesn't reach this code at all
   //
+  // ...unless the effect also holds the container's **length**, and then the
+  // slots are redundant again: a splice always changes the length and
+  // `notifyReplaced` announces it exactly, so whoever tracked the length hears
+  // every shift there is without a slot dep of their own. That is not a
+  // detail - the `:each` list effect reads the length *and* every slot, so
+  // without this clause it indexes a second dep per row, and `clearLarge`
+  // measured +4.5% (4 of 4 rounds, ±2.7% noise) tearing them all down again
+  //
   // Not for a `deep` effect, where it is exactly backwards - a forwarding
   // effect wakes off its *ancestor* entries, so its shallowest dep is the one
   // doing the work and the leaves are the redundant ones
@@ -339,7 +347,11 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     deps.forEach(dep => {
       let from = 0
       for (let dot = dep.indexOf("."); dot !== -1; dot = dep.indexOf(".", dot + 1)) {
-        if (!isSlotSegment(dep, from, dot)) redundant.add(dep.slice(0, dot))
+        // `from > 0` because a slot needs a container to be a slot of: a
+        // top-level numeric key is a key of the store's root object, and no
+        // splice can shift it
+        const slot = from > 0 && isSlotSegment(dep, from, dot)
+        if (!slot || deps.has(`${dep.slice(0, from - 1)}.length`)) redundant.add(dep.slice(0, dot))
         from = dot + 1
       }
     })
