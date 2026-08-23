@@ -86,6 +86,11 @@ const KEYS_SEGMENT = " keys"
 
 const keysPath = (path: string): string => (path ? `${path}.${KEYS_SEGMENT}` : KEYS_SEGMENT)
 
+// an array's length, as a dep suffix: see indexable, which asks whether an
+// effect holds the length of the container a slot sits in
+const LENGTH_SUFFIX = ".length"
+
+
 const createTrieNode = (parent: TrieNode | null, segment: string): TrieNode =>
   ({ children: null, own: null, deep: null, parent, segment })
 
@@ -343,15 +348,26 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // walking each dep's own dots rather than comparing deps against each
     // other: a `:each` over 10,000 rows tracks 10,000 deps, and the pairwise
     // version of this was 100,000,000 string comparisons
+    // which containers this effect tracks the length of, resolved in one pass
+    // so the walk below can ask without building a `${container}.length` per
+    // slot it meets - a list effect meets one per row
+    const lengthTracked = new Set<string>()
+    deps.forEach(dep => { if (dep.endsWith(LENGTH_SUFFIX)) lengthTracked.add(dep.slice(0, -LENGTH_SUFFIX.length)) })
+
     const redundant = new Set<string>()
     deps.forEach(dep => {
       let from = 0
+      // the ancestor one level up, carried rather than re-sliced: it is the
+      // container of the segment being looked at, and it was already built
+      let parent = ""
       for (let dot = dep.indexOf("."); dot !== -1; dot = dep.indexOf(".", dot + 1)) {
+        const ancestor = dep.slice(0, dot)
         // `from > 0` because a slot needs a container to be a slot of: a
         // top-level numeric key is a key of the store's root object, and no
         // splice can shift it
         const slot = from > 0 && isSlotSegment(dep, from, dot)
-        if (!slot || deps.has(`${dep.slice(0, from - 1)}.length`)) redundant.add(dep.slice(0, dot))
+        if (!slot || lengthTracked.has(parent)) redundant.add(ancestor)
+        parent = ancestor
         from = dot + 1
       }
     })
