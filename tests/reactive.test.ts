@@ -661,3 +661,109 @@ describe("what a write wakes", () => {
     expect(runs).toBe(3)
   })
 })
+
+describe("a splice announced as the shift it is", () => {
+  // TODOS/2026-08-23.notify-a-splice.md. `data = data.filter(...)` used to look
+  // like a wholesale replacement to the container diff - every index after the
+  // cut holds a different object - and cost a sweep of the whole subtree
+  const rows = (length: number) => Array.from({ length }, (_, id) => ({ id, label: `l${id}` }))
+
+  it("wakes a reader of a shifted slot without waking the rows themselves", () => {
+    const store = $reactive({ data: rows(10) })
+
+    // reads the array, so it holds the slot: its answer is "whoever sits at 6"
+    const bySlot: any[] = []
+    store.$effect(() => { bySlot.push(store.data[6]?.label) })
+
+    // holds the row itself, the way a `:each` item binding does - it never
+    // reads the array and has no stake in where its row now sits
+    const row = (store.data as any[])[6]
+    let rowRuns = 0
+    store.$effect(() => { rowRuns++; void row.label })
+
+    store.data = ($toRaw(store.data) as any[]).filter(item => item.id !== 1)
+
+    expect(bySlot).toEqual(["l6", "l7"])
+    expect(rowRuns).toBe(1)
+  })
+
+  it("wakes the same slots when an element is inserted", () => {
+    const store = $reactive({ data: rows(10) })
+
+    const bySlot: any[] = []
+    store.$effect(() => { bySlot.push(store.data[6]?.label) })
+    const row = (store.data as any[])[6]
+    let rowRuns = 0
+    store.$effect(() => { rowRuns++; void row.label })
+
+    store.data = [{ id: -1, label: "new" }, ...($toRaw(store.data) as any[])]
+
+    expect(bySlot).toEqual(["l6", "l5"])
+    expect(rowRuns).toBe(1)
+  })
+
+  it("wakes an effect reading the length, and one reading the container", () => {
+    const store = $reactive({ data: rows(10) })
+
+    const lengths: number[] = []
+    store.$effect(() => { lengths.push(store.data.length) })
+    const containers: number[] = []
+    store.$effect(() => { containers.push(($toRaw(store.data) as any[]).length) })
+
+    store.data = ($toRaw(store.data) as any[]).filter(item => item.id !== 1)
+
+    expect(lengths).toEqual([10, 9])
+    expect(containers).toEqual([10, 9])
+  })
+
+  it("hands a slot listener the row that moved into it", () => {
+    const store = $reactive({ data: rows(10) })
+
+    const seen: any[] = []
+    store.$on("data.6", value => seen.push(value?.label))
+
+    store.data = ($toRaw(store.data) as any[]).filter(item => item.id !== 1)
+
+    expect(seen).toEqual(["l7"])
+  })
+
+  it("leaves an untouched slot before the cut alone", () => {
+    const store = $reactive({ data: rows(10) })
+
+    let runs = 0
+    store.$effect(() => { runs++; void store.data[0]?.label })
+
+    store.data = ($toRaw(store.data) as any[]).filter(item => item.id !== 5)
+
+    // nothing before the cut moved, so slot 0 is not among the shifted ones
+    expect(runs).toBe(1)
+  })
+
+  it("still gives up when two elements go at once", () => {
+    const store = $reactive({ data: rows(10) })
+
+    const row = (store.data as any[])[6]
+    let rowRuns = 0
+    store.$effect(() => { rowRuns++; void row.label })
+
+    store.data = ($toRaw(store.data) as any[]).filter(item => item.id !== 1 && item.id !== 2)
+
+    // not a shift by one - the walk finds most of the container different and
+    // the sweep comes back, which is the correct answer for a rewrite
+    expect(rowRuns).toBe(2)
+  })
+
+  it("still gives up when an element is replaced as well as removed", () => {
+    const store = $reactive({ data: rows(4) })
+
+    const row = (store.data as any[])[3]
+    let rowRuns = 0
+    store.$effect(() => { rowRuns++; void row.label })
+
+    const next = ($toRaw(store.data) as any[]).filter(item => item.id !== 0)
+    next[0] = { id: 9, label: "fresh" }
+    store.data = next
+
+    expect(rowRuns).toBe(2)
+  })
+})
