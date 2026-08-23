@@ -2,16 +2,17 @@ import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { rm } from "node:fs/promises"
 
-// `npm install` has occasionally come back with an incomplete tree here
-// (missing "vite" itself, or one of its own optional native binaries) with no
-// non-zero exit code to catch - a proxy hiccup on one of vite 8's many
-// platform-specific optional rolldown packages, as far as we can tell. Retry
-// a full clean install rather than trust a single run
+// vite's preview()/build() set process.env.NODE_ENV = "production" and leave
+// it set - so once one app has been previewed, npm install for the next one
+// (inheriting that env) silently omits devDependencies, which is where vite
+// itself lives in every one of these apps. "--include=dev" overrides that
+// regardless of NODE_ENV; the existsSync check is a belt-and-braces guard
+// against this same class of silent partial install
 export const installAndBuild = async (dir, installArgs = []) => {
   for (let attempt = 1; attempt <= 3; attempt++) {
     await rm(`${dir}node_modules`, { recursive: true, force: true })
     await rm(`${dir}package-lock.json`, { force: true })
-    execFileSync("npm", ["install", ...installArgs, "--no-audit", "--no-fund"], { cwd: dir, stdio: "inherit" })
+    execFileSync("npm", ["install", ...installArgs, "--include=dev", "--no-audit", "--no-fund"], { cwd: dir, stdio: "inherit" })
     if (existsSync(`${dir}node_modules/vite/package.json`)) break
     console.warn(`[install] "vite" missing from node_modules after attempt ${attempt}/3, retrying ...`)
     if (attempt === 3) throw new Error(`${dir}: npm install would not produce a working node_modules/vite after 3 attempts`)
