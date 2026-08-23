@@ -67,9 +67,11 @@ jobs:
         run: gh release create "$NEW_TAG" dist/* --title "$NEW_TAG" --generate-notes
 
   # GitHub Pages site: rendered docs, self-hosted badges (npm version, test
-  # coverage), the HTML coverage report, and the dist files at the site root
-  # so the Pages URL doubles as a CDN. Requires Pages to be configured with
-  # "GitHub Actions" as the source (repo Settings > Pages)
+  # coverage), the HTML coverage report, the /benchmark/ page (freshly
+  # measured against this release, not the committed benchmark-results.json),
+  # and the dist files at the site root so the Pages URL doubles as a CDN.
+  # Requires Pages to be configured with "GitHub Actions" as the source
+  # (repo Settings > Pages)
   pages:
     needs: release
     runs-on: ubuntu-latest
@@ -95,6 +97,10 @@ jobs:
       - run: npm run build
 
       - run: npm run test:coverage
+
+      - run: npx playwright install --with-deps chromium
+
+      - run: npm run benchmark
 
       - run: npm run site
 
