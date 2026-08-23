@@ -49,6 +49,25 @@ A write re-runs an effect when it lands on something the effect read, or
 effect that only read a different one, which is what keeps a 1,000-row list
 costing one re-render per changed row rather than a thousand.
 
+Replacing a list with a copy of itself one element longer or shorter is not a
+wholesale replacement, and isn't treated as one — the rows that stay are the
+same objects, so an effect that read *into* one of them is left alone, wherever
+that row has ended up. What does re-run is whatever read the list itself (a
+`:each`, its `length`) and whatever read a **slot** the shift moved, since
+`rows[6]` means "whoever sits at slot 6":
+
+```js
+const row = data.rows[6]
+
+data.$effect(() => console.log(row.label))           // this row, wherever it is
+data.$effect(() => console.log(data.rows[6].label))  // whoever sits at slot 6
+
+data.rows = data.rows.filter(r => r.id !== 1)        // silent / re-runs
+```
+
+Any other reshuffle — a sort, a reorder, two rows removed at once — re-runs
+everything that read under the list, as a replacement does.
+
 The case to know about is an effect that reads an object **without** reading
 into it:
 

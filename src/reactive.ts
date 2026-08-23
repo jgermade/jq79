@@ -331,10 +331,10 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // doing the work and the leaves are the redundant ones
   const indexable = (effect: Effect, deps: Set<string>): Set<string> => {
     if (effect.deep || deps.size < 2) return deps
-    // every ancestor of every dep is redundant, so mark them by walking each
-    // dep's own dots rather than comparing deps against each other: a `:each`
-    // over 10,000 rows tracks 10,000 deps, and the pairwise version of this
-    // was 100,000,000 string comparisons
+    // an ancestor that isn't a slot is redundant, and they are marked by
+    // walking each dep's own dots rather than comparing deps against each
+    // other: a `:each` over 10,000 rows tracks 10,000 deps, and the pairwise
+    // version of this was 100,000,000 string comparisons
     const redundant = new Set<string>()
     deps.forEach(dep => {
       let from = 0
