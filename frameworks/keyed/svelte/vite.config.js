@@ -1,7 +1,7 @@
 import { defineConfig } from "vite"
-import { jq79 } from "jq79/vite"
+import { svelte } from "@sveltejs/vite-plugin-svelte"
 
 export default defineConfig({
-  plugins: [jq79()],
+  plugins: [svelte()],
   publicDir: "../_shared/public",
 })

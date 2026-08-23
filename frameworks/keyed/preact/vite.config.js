@@ -1,7 +1,7 @@
 import { defineConfig } from "vite"
-import { jq79 } from "jq79/vite"
+import preact from "@preact/preset-vite"
 
 export default defineConfig({
-  plugins: [jq79()],
+  plugins: [preact()],
   publicDir: "../_shared/public",
 })

@@ -1,7 +1,7 @@
 import { defineConfig } from "vite"
-import { jq79 } from "jq79/vite"
+import react from "@vitejs/plugin-react"
 
 export default defineConfig({
-  plugins: [jq79()],
+  plugins: [react()],
   publicDir: "../_shared/public",
 })
