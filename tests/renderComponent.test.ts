@@ -789,6 +789,31 @@ describe("renderComponent", () => {
       expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b"])
     })
 
+    it("moves only the rows that really moved, not every row after them", () => {
+      // the positioning walk used to demand that each entry follow the one
+      // before it, which is minimal for an append and quadratic for a reorder:
+      // one row out of place cascaded into a move for every row behind it. The
+      // longest increasing run of old positions is what says which rows are
+      // already in order relative to each other, and those are left alone
+      const component = parseComponent(`<li :each="u in users" :key="u.id">{{ u.name }}</li>`)
+      const data = $reactive({ users: Array.from({ length: 100 }, (_, i) => ({ id: i, name: `u${i}` })) })
+      container.appendChild(renderComponent(component, data))
+
+      const next = [...($toRaw(data.users) as any[])]
+      ;[next[1], next[98]] = [next[98], next[1]]
+      const insertBefore = vi.spyOn(Node.prototype, "insertBefore")
+      data.users = next
+      const moves = insertBefore.mock.calls.length
+      insertBefore.mockRestore()
+
+      const names = $$(container, "li").map(el => el.textContent)
+      expect(names[0]).toBe("u0")
+      expect(names[1]).toBe("u98")
+      expect(names[98]).toBe("u1")
+      expect(names[99]).toBe("u99")
+      expect(moves).toBe(2)
+    })
+
     it("evaluates a :key without ever writing the loop name into the store", () => {
       // the key expression needs the item bound to a scope to read it from, and
       // one scratch scope now serves the whole pass - the loop variable written

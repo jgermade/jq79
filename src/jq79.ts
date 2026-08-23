@@ -1401,7 +1401,47 @@ const defineScopeVar = (scope: Record<string, any>, key: string, value: any) => 
   Object.defineProperty(scope, key, { value, writable: true, enumerable: true, configurable: true })
 }
 
-type EachEntry = { key: any; item: any; scope: Record<string, any>; range: NodeRange; fx: EffectScope }
+// `pos` is where the entry sat in the previous pass, refreshed as the buckets
+// are built - the positioning pass needs the old order to work out which rows
+// are already where they belong (see longestIncreasingRun)
+type EachEntry = { key: any; item: any; scope: Record<string, any>; range: NodeRange; fx: EffectScope; pos: number }
+
+// the indices of one longest strictly increasing subsequence of `positions`,
+// as a flag per index. Fed the old position of every entry in the new order
+// (-1 for one rendered this pass), it names the rows that are ALREADY in the
+// right order relative to each other: move everything else and the pass issues
+// the fewest insertions it can. The walk this serves used to demand only that
+// each entry follow the one before it, which is minimal for an append and
+// quadratic for a reorder - one row out of place cascaded into a move for
+// every row after it, so swapping rows 1 and 998 of a 1,000-row table issued
+// 997 insertBefore calls where two would do.
+// Patience sorting, O(n log n): `tails[l]` is the index of the smallest value
+// that can end an increasing run of length l+1, and `before` remembers what
+// each index was appended to, which is what makes the run reconstructible
+const longestIncreasingRun = (positions: number[]): Uint8Array => {
+  const inRun = new Uint8Array(positions.length)
+  const tails: number[] = []
+  const before = new Int32Array(positions.length).fill(-1)
+
+  for (let index = 0; index < positions.length; index++) {
+    const position = positions[index]
+    if (position < 0) continue // rendered this pass: it has no old position to be in order with
+    let low = 0
+    let high = tails.length
+    while (low < high) {
+      const mid = (low + high) >> 1
+      if (positions[tails[mid]] < position) low = mid + 1
+      else high = mid
+    }
+    if (low > 0) before[index] = tails[low - 1]
+    tails[low] = index
+  }
+
+  for (let index = tails.length ? tails[tails.length - 1] : -1; index !== -1; index = before[index]) {
+    inRun[index] = 1
+  }
+  return inRun
+}
 
 // what :each iterates besides arrays: dictionaries, as their entries. Class
 // instances, Maps and the rest stay out - the store doesn't wrap them
@@ -1508,7 +1548,8 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       // appearance, so no entry is ever matched twice - matching one twice is
       // how a reused row got disposed and a removed one resurrected
       const previous = new Map<any, EachEntry[]>()
-      entries.forEach(entry => {
+      entries.forEach((entry, index) => {
+        entry.pos = index
         const bucket = previous.get(entry.key)
         if (bucket) bucket.push(entry)
         else previous.set(entry.key, [entry])
@@ -1517,6 +1558,9 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       const seen = new Set<any>()
       const moved: EachEntry[] = []
       const nextEntries: EachEntry[] = []
+      // each entry's position in the previous pass, in the new order, for the
+      // positioning walk below - -1 for one rendered here, which has none
+      const positions: number[] = []
       // one scratch scope for the whole pass, not one per item. A :key
       // expression reads the item by name (`row.id`), so it needs a scope to
       // read it from - but which entry that key names, and so whether anything
@@ -1569,6 +1613,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
           }
           if (atName && entryScope[atName] !== at) entryScope[atName] = at
           nextEntries.push(existing)
+          positions.push(existing.pos)
           continue
         }
 
@@ -1585,7 +1630,8 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         // bounds captured before the positioning pass inserts the entry: a
         // component entry is a fragment, which empties on insertion (see boundsOf)
         const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
-        nextEntries.push({ key, item, scope: itemScope, fx: itemFx, range })
+        nextEntries.push({ key, item, scope: itemScope, fx: itemFx, range, pos: index })
+        positions.push(-1)
       }
 
       // whatever no new item consumed is gone. Effects are torn down one by one
@@ -1599,8 +1645,12 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       }
 
       let prevNode: Node = anchor
-      nextEntries.forEach(entry => {
-        if (prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
+      // rows already in order relative to each other stay where they are; the
+      // rest are placed after the row that precedes them in the new order,
+      // which is where the pass has just left `prevNode`
+      const inPlace = longestIncreasingRun(positions)
+      nextEntries.forEach((entry, index) => {
+        if (!inPlace[index] && prevNode.nextSibling !== entry.range.first) moveRangeAfter(entry.range, prevNode)
         prevNode = entry.range.last
       })
 
