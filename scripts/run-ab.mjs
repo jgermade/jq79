@@ -12,6 +12,7 @@
 //
 // Usage:
 //   node scripts/run-ab.mjs                        # this checkout alone
+//   node scripts/run-ab.mjs --base none            # the same, said out loud
 //   node scripts/run-ab.mjs --base main            # this checkout vs main
 //   node scripts/run-ab.mjs --base v0.6.1 --rounds 4 --samples 12
 //
@@ -36,7 +37,12 @@ const arg = (name, fallback) => {
   return at === -1 ? fallback : process.argv[at + 1]
 }
 
-const BASE = arg("base", null)
+// "none" as well as empty, because a workflow_dispatch input given as "" comes
+// through as the input's *default* - so there has to be a word that means none
+const BASE = (() => {
+  const value = (arg("base", "") || "").trim()
+  return !value || value === "none" ? null : value
+})()
 const SAMPLES = Number(arg("samples", 10))
 const ROUNDS = Number(arg("rounds", 3))
 // the first round of a session is the expensive one - cold JIT, cold page
@@ -89,6 +95,39 @@ const shortSha = ref => {
   try { return capture("git", ["rev-parse", "--short", ref]) } catch { return ref }
 }
 
+const tryCapture = args => {
+  try { return capture("git", args) } catch { return null }
+}
+
+// The base ref by whatever name the caller had for it. A CI checkout has the
+// commits but not necessarily the branch *names*: `git worktree add main` on a
+// runner is `fatal: invalid reference: main`, because nothing there ever
+// created a local branch called that. So try the name, then the remote-tracking
+// name, then go and fetch it - and hand back a sha, which is the one form
+// `worktree add` can never misread
+const resolveBaseRef = ref => {
+  for (const candidate of [ref, `origin/${ref}`]) {
+    const sha = tryCapture(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`])
+    if (sha) return sha
+  }
+  console.log(`[base] ${ref} is not a ref here yet; fetching it from origin ...`)
+  try {
+    run("git", ["fetch", "--no-tags", "--force", "origin", `+refs/heads/${ref}:refs/remotes/origin/${ref}`], ROOT)
+  } catch {
+    // not a branch name - a tag or a sha, which the next fetch handles
+  }
+  const fetched = tryCapture(["rev-parse", "--verify", "--quiet", `origin/${ref}^{commit}`])
+  if (fetched) return fetched
+  try {
+    run("git", ["fetch", "--no-tags", "origin", ref], ROOT)
+    const head = tryCapture(["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"])
+    if (head) return head
+  } catch {
+    // falls through to the error below
+  }
+  throw new Error(`--base ${ref}: no such ref here or on origin`)
+}
+
 // ---------------------------------------------------------------- the builds
 
 const builds = []
@@ -107,16 +146,17 @@ let worktree = null
 if (BASE) {
   // the base checkout gets its own node_modules, so it stays out of the stage
   worktree = join(await mkdtemp(join(tmpdir(), "jq79-base-")), "checkout")
-  console.log(`[base] checking out ${BASE} into a worktree ...`)
+  const baseSha = resolveBaseRef(BASE)
+  console.log(`[base] checking out ${BASE} (${baseSha.slice(0, 7)}) into a worktree ...`)
   // a run killed before its cleanup leaves the registration behind, and git
   // refuses to reuse the name; pruning first makes a rerun the fix
   run("git", ["worktree", "prune"], ROOT)
-  run("git", ["worktree", "add", "--detach", worktree, BASE], ROOT)
+  run("git", ["worktree", "add", "--detach", worktree, baseSha], ROOT)
   run("npm", ["install", "--no-audit", "--no-fund", "--include=dev"], worktree)
   builds.unshift({
     id: "base",
-    label: `${BASE} (${shortSha(BASE)})`,
-    ref: capture("git", ["rev-parse", BASE]),
+    label: `${BASE} (${baseSha.slice(0, 7)})`,
+    ref: baseSha,
     dist: await buildInto(worktree, "base"),
   })
 }

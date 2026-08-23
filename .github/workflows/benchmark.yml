@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       base:
-        description: 'Git ref to compare this branch against (empty = measure this branch alone)'
+        description: 'Git ref to compare this branch against, or "none" to measure this branch alone (an empty value falls back to this default)'
         required: false
         default: main
         type: string
@@ -89,13 +89,15 @@ jobs:
       - run: npx playwright install --with-deps chromium
 
       # a PR is measured against the branch it targets; a manual run against
-      # whatever was asked for, or nothing at all
+      # whatever was asked for, or nothing at all. Either way the name is
+      # handed over as written - run-ab.mjs resolves it, and fetches it if the
+      # checkout never created a local branch by that name, which is the usual
+      # case on a runner
       - name: Resolve the base ref
         id: base
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
-            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
           else
             echo "ref=${{ inputs.base }}" >> "$GITHUB_OUTPUT"
           fi
@@ -103,7 +105,7 @@ jobs:
       - name: Benchmark
         run: |
           mkdir -p benchmark-report
-          if [ -n "${{ steps.base.outputs.ref }}" ]; then
+          if [ -n "${{ steps.base.outputs.ref }}" ] && [ "${{ steps.base.outputs.ref }}" != "none" ]; then
             node scripts/run-ab.mjs \
               --base "${{ steps.base.outputs.ref }}" \
               --rounds "${{ inputs.rounds || '4' }}" \
