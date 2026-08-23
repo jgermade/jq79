@@ -388,9 +388,62 @@ const moveRangeAfter = ({ first, last }: NodeRange, prev: Node) => {
 // case-insensitive with dashes stripped (<nested-component> works too). Only
 // PascalCase scope keys participate, so ordinary variables named like real
 // elements (title, code, ...) never hijack them
-const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
+const scanComponentKey = (scope: Record<string, any>, tag: string): string | null => {
   const normalized = tag.replace(/-/g, "").toLowerCase()
   for (let obj: any = scope; obj && obj !== Object.prototype; obj = Object.getPrototypeOf(obj)) {
+    for (const key of Object.keys(obj)) {
+      if (/^[A-Z]/.test(key) && key.replace(/-/g, "").toLowerCase() === normalized) return key
+    }
+  }
+  return null
+}
+
+// The scan above is run for every element rendered, and it walks the whole
+// scope chain calling Object.keys at each level - which profiling puts at 13.7%
+// of the create path, four times the next attributable frame, almost all of it
+// answering "no" for tags like <td>. Within one render pass the answer can't
+// change: it is a *key*, not the value behind it, so every row of a :each
+// resolves a tag identically, and a store write mid-pass restarts the pass
+// rather than continuing it (the reentrancy guard in reactive.ts).
+//
+// So it is memoized for exactly one pass and no longer. It has to be no longer:
+// a template renders before its setup script settles, so `const Row = await
+// $import(...)` arrives as a new store key *after* elements are on the page -
+// and a cached "no component called Row" that outlived the pass would never be
+// revisited. See TODOS/2026-08-23.component-key-scan.md
+// The memo answers for one *base* scope - the one the pass was opened with -
+// and nothing below it. A lookup walks from wherever it starts up to that base,
+// checking own keys as it goes (an :each item scope has two or three, a :with
+// a handful), and only then consults the memo. So a name introduced under the
+// base still shadows correctly, and a scope that never reaches the base at all
+// - a nested component renders against its own store - has simply been fully
+// scanned by the time the walk ends, which is the answer anyway
+let tagMemo: Map<string, string | null> | null = null
+let memoBase: object | null = null
+
+const inRenderPass = <T>(base: Record<string, any>, run: () => T): T => {
+  const outerMemo = tagMemo
+  const outerBase = memoBase
+  tagMemo = new Map()
+  memoBase = base
+  try {
+    return run()
+  } finally {
+    tagMemo = outerMemo
+    memoBase = outerBase
+  }
+}
+
+const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
+  if (!tagMemo) return scanComponentKey(scope, tag)
+  const normalized = tag.replace(/-/g, "").toLowerCase()
+  for (let obj: any = scope; obj && obj !== Object.prototype; obj = Object.getPrototypeOf(obj)) {
+    if (obj === memoBase) {
+      if (tagMemo.has(tag)) return tagMemo.get(tag)!
+      const key = scanComponentKey(obj, tag)
+      tagMemo.set(tag, key)
+      return key
+    }
     for (const key of Object.keys(obj)) {
       if (/^[A-Z]/.test(key) && key.replace(/-/g, "").toLowerCase() === normalized) return key
     }
@@ -1340,7 +1393,10 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   let entries: EachEntry[] = []
   let warnedDuplicates = false
 
-  fx.effect(() => {
+  // one memo for the whole diff: every row resolves its tags to the same scope
+  // keys, so the scan that used to run per element per row now runs once per
+  // distinct tag (see findComponentKey)
+  fx.effect(() => inRenderPass(scope, () => {
     const list = evalExpr(listExpr, scope)
     // both sources normalize to [at, item] pairs: the index for an array, the
     // property key for a plain object (insertion order). Object entries are
@@ -1413,7 +1469,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
     moved.forEach(entry => untracked(() => entry.fx.refresh()))
 
     entries = nextEntries
-  })
+  }))
 
   return wrapper
 }
