@@ -14,7 +14,10 @@ export type ReactiveDeepData<T> = T & {
   // re-runs it whenever a changed dotKey overlaps one of those - see TrieNode.
   // `alsoWakenBy` registers the same effect with other stores as well, so a
   // change in any of them wakes it too (see ATTACH)
-  $effect: (run: () => void, alsoWakenBy?: Record<string, any>[]) => Unsubscribe
+  // `deep` opts the effect into waking for writes *below* its deps too - for
+  // an effect that forwards a value wholesale (a prop sync) rather than
+  // reading into it, which is the one shape that can't track what it passes on
+  $effect: (run: () => void, alsoWakenBy?: Record<string, any>[], deep?: boolean) => Unsubscribe
   // drops this store's subscriptions to the stores nested inside it (see
   // bridge). A store that outlives the one holding it - the shared-state case -
   // would otherwise keep the dead holder's listeners on its own list forever
@@ -41,18 +44,43 @@ const walkLeaves = (obj: Record<string, any>, path: string, visit: (dotKey: stri
   })
 }
 
-// An effect wakes when a changed dotKey sits on the same ancestor/descendant
-// line as one of its deps: "user" & "user.address.city" affect each other,
-// siblings like "user.name" & "user.age" don't. Answering that by comparing
-// the changed key against every dep of every effect in the store is what made
-// a single row update cost more than rebuilding the whole list - see
-// TODOS/2026-08-23.notify-dependency-index.md. The deps live in a trie keyed
-// by path segment instead, so a write reaches exactly the effects on its line:
-// the ancestors are the nodes the walk passes through, the descendants are the
-// subtree it ends on
-type TrieNode = { children: Map<string, TrieNode>; own: Set<Effect> }
+// Effect deps live in a trie keyed by path segment: a write walks down its own
+// segments, so the nodes it passes through are its ancestors and the subtree it
+// lands on is its descendants, with no comparison against unrelated effects.
+// `own` holds effects depending on this node's exact path; `deep` holds the ones
+// that want everything under it too (see the `deep` flag on $effect).
+//
+// Which of the two directions actually wakes an effect is the thing that makes
+// this fast, and it is not symmetric - see effectsFor and
+// TODOS/2026-08-23.narrow-the-wake-rule.md
+//
+// `children`/`own`/`deep` are allocated on first use and `parent`/`segment` let
+// a removal walk back up without re-splitting the path: a 10,000-row table is
+// ~40,000 nodes, and three eager allocations each (a Map and two Sets, almost
+// all of them staying empty) cost more than the index saves
+type TrieNode = {
+  children: Map<string, TrieNode> | null
+  own: Set<Effect> | null
+  deep: Set<Effect> | null
+  parent: TrieNode | null
+  segment: string
+}
 
-const createTrieNode = (): TrieNode => ({ children: new Map(), own: new Set() })
+// the dep an `ownKeys` read records, as a reserved last segment on the
+// enumerated object's own path: an ordinary trie child that no walk for a real
+// key can reach, and that the subtree sweep still reaches when the whole object
+// is replaced - which is correct, a new object is a new key set. A real
+// property named " keys" collides with it, the same way a flat key containing
+// a dot collides with the nested path of the same name (tests/reactive.test.ts)
+const KEYS_SEGMENT = " keys"
+
+const keysPath = (path: string): string => (path ? `${path}.${KEYS_SEGMENT}` : KEYS_SEGMENT)
+
+const createTrieNode = (parent: TrieNode | null, segment: string): TrieNode =>
+  ({ children: null, own: null, deep: null, parent, segment })
+
+const isEmptyNode = (node: TrieNode): boolean =>
+  !node.own?.size && !node.deep?.size && !node.children?.size
 
 // reads the raw object behind a store proxy. Module-level (not per-store) so a
 // value that is already reactive - in this store or in another one - can be
@@ -101,7 +129,16 @@ export const untracked = <T>(fn: () => T): T => {
 // own, plus any it was attached to), each keeping that store's trie in step
 // with the deps of the last settled run. It lives on the effect rather than
 // in a per-store map because `run` has to reach it without a lookup
-type Effect = { deps: Set<string>; run: () => void; reindex: Set<(deps: Set<string>) => void> }
+type Effect = { deps: Set<string>; run: () => void; reindex: Set<(deps: Set<string>) => void>; deep: boolean; order: number }
+
+// creation order, module-wide. The flat `effects` set used to give this for
+// free - iterating it ran effects oldest-first, so a parent's bindings always
+// went before those of a child it had rendered. Matching through the trie
+// returns them in walk order instead, and the tutorial's setup scripts are
+// sensitive to it (a child effect running before its parent's re-sync reads
+// state the parent has not written yet). Effects are ordered explicitly rather
+// than left to whatever the index happens to yield
+let effectsCreated = 0
 
 // an effect lives in exactly one store's `effects` set - the one whose
 // $effect created it - and only that store's notify walks it. Content that
@@ -151,78 +188,189 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // dotKey on ".", which is also why a flat key written as "a.b" indexes
   // exactly where the nested a.b lives - the collision dot-paths have always
   // had, preserved rather than special-cased
-  const depTrie = createTrieNode()
+  const depTrie = createTrieNode(null, "")
 
-  const insertDep = (dep: string, effect: Effect) => {
+  // hands back the node it registered on, which is what lets a removal skip the
+  // path entirely (see indexEffect)
+  const insertDep = (dep: string, effect: Effect): TrieNode => {
     let node = depTrie
     dep.split(".").forEach(segment => {
-      let child = node.children.get(segment)
+      const children = (node.children ??= new Map())
+      let child = children.get(segment)
       if (!child) {
-        child = createTrieNode()
-        node.children.set(segment, child)
+        child = createTrieNode(node, segment)
+        children.set(segment, child)
       }
       node = child
     })
-    node.own.add(effect)
+    ;((effect.deep ? (node.deep ??= new Set()) : (node.own ??= new Set()))).add(effect)
+    return node
   }
 
   // prunes the nodes it empties on the way back up, so a list that churns
-  // through rows doesn't leave the trie growing over the dead ones
-  const removeDep = (dep: string, effect: Effect) => {
-    const trail: TrieNode[] = [depTrie]
-    const segments = dep.split(".")
-    for (const segment of segments) {
-      const child = trail[trail.length - 1].children.get(segment)
-      if (!child) return
-      trail.push(child)
-    }
-    trail[trail.length - 1].own.delete(effect)
-    for (let depth = trail.length - 1; depth > 0; depth--) {
-      const node = trail[depth]
-      if (node.own.size || node.children.size) break
-      trail[depth - 1].children.delete(segments[depth - 1])
+  // through rows doesn't leave the trie growing over the dead ones. Follows
+  // `parent` rather than re-walking from the root: tearing down a 10,000-row
+  // table is 30,000 of these, and splitting each path again to find a node the
+  // caller was already holding is most of what that used to cost
+  const removeDep = (node: TrieNode, effect: Effect) => {
+    ;(effect.deep ? node.deep : node.own)?.delete(effect)
+    let current: TrieNode | null = node
+    while (current?.parent && isEmptyNode(current)) {
+      current.parent.children!.delete(current.segment)
+      current = current.parent
     }
   }
 
-  // every effect whose deps overlap `dotKey`: the ancestors are the nodes the
-  // walk passes through (a dep of "data" hears "data.5.label"), the
-  // descendants are whatever hangs off the node it lands on (a dep of
-  // "data.5.label" hears "data"). Returned as a snapshot, so the effects it
-  // wakes can reindex themselves - or dispose each other - while it drains
+  const nodeAt = (dep: string): TrieNode | undefined => {
+    let node: TrieNode | undefined = depTrie
+    for (const segment of dep.split(".")) {
+      node = node.children?.get(segment)
+      if (!node) return undefined
+    }
+    return node
+  }
+
+  // every effect this write concerns. Two directions, and they are not
+  // symmetric:
+  //
+  // - **downwards**, always: whatever hangs off the node the walk lands on. A
+  //   dep of "user.name" hears `user = {...}`, because replacing the object
+  //   replaced the name with it.
+  // - **upwards**, only where an ancestor dep is the only channel a change
+  //   has (see `coarsePath`). A dep of "data" does NOT hear
+  //   `data[5].label = x`: an effect that read the array on its way to row
+  //   7's label has no stake in row 5's, and waking all of them is what made
+  //   100 row writes cost 100,000 effect runs - see
+  //   TODOS/2026-08-23.narrow-the-wake-rule.md
+  //
+  // Returned as a snapshot, so the effects it wakes can reindex themselves -
+  // or dispose each other - while it drains
   const effectsFor = (dotKey: string): Set<Effect> => {
     const matched = new Set<Effect>()
+    const sweep = (from: TrieNode) => {
+      const pending = from.children ? [...from.children.values()] : []
+      while (pending.length) {
+        const next = pending.pop()!
+        next.own?.forEach(effect => matched.add(effect))
+        next.deep?.forEach(effect => matched.add(effect))
+        next.children?.forEach(child => pending.push(child))
+      }
+    }
+
     let node: TrieNode | undefined = depTrie
-    for (const segment of dotKey.split(".")) {
-      node = node.children.get(segment)
+    const segments = dotKey.split(".")
+    let path = ""
+    for (let depth = 0; depth < segments.length - 1; depth++) {
+      node = node.children?.get(segments[depth])
       if (!node) return matched
-      node.own.forEach(effect => matched.add(effect))
+      path = path ? `${path}.${segments[depth]}` : segments[depth]
+      node.deep?.forEach(effect => matched.add(effect))
+      // a nested store sits here: an effect that read through it holds this
+      // path and nothing below it, so its own set is the whole channel
+      if (bridges.has(path)) node.own?.forEach(effect => matched.add(effect))
+      // ...whereas an array's length stands for the array: everything that
+      // read an element has to hear a truncation, and those deps are below
+      if (depth === segments.length - 2 && segments[depth + 1] === "length") {
+        node.own?.forEach(effect => matched.add(effect))
+        sweep(node)
+      }
     }
-    const pending = [...node.children.values()]
-    while (pending.length) {
-      const next = pending.pop()!
-      next.own.forEach(effect => matched.add(effect))
-      next.children.forEach(child => pending.push(child))
-    }
+    node = node.children?.get(segments[segments.length - 1])
+    if (!node) return matched
+    node.own?.forEach(effect => matched.add(effect))
+    node.deep?.forEach(effect => matched.add(effect))
+    sweep(node)
     return matched
+  }
+
+  // Reaching `data[5].label` reads three paths and tracks all three, but for an
+  // ordinary effect the two ancestors carry no information the leaf doesn't: a
+  // write to "data" or "data.5" reaches "data.5.label" through the subtree
+  // sweep anyway. Dropping them is a third of the index to build, hold and tear
+  // down on a list of any size.
+  //
+  // Not for a `deep` effect, where it is exactly backwards - a forwarding
+  // effect wakes off its *ancestor* entries, so its shallowest dep is the one
+  // doing the work and the leaves are the redundant ones
+  const indexable = (effect: Effect, deps: Set<string>): Set<string> => {
+    if (effect.deep || deps.size < 2) return deps
+    // every ancestor of every dep is redundant, so mark them by walking each
+    // dep's own dots rather than comparing deps against each other: a `:each`
+    // over 10,000 rows tracks 10,000 deps, and the pairwise version of this
+    // was 100,000,000 string comparisons
+    const redundant = new Set<string>()
+    deps.forEach(dep => {
+      for (let dot = dep.indexOf("."); dot !== -1; dot = dep.indexOf(".", dot + 1)) {
+        redundant.add(dep.slice(0, dot))
+      }
+    })
+    if (!redundant.size) return deps
+    const kept = new Set<string>()
+    deps.forEach(dep => { if (!redundant.has(dep)) kept.add(dep) })
+    return kept
   }
 
   // registers `effect` with this store's trie and keeps it in step. Each store
   // tracks what it indexed for the effect separately, because a detach must
   // clear this trie without touching the others
   const indexEffect = (effect: Effect): Unsubscribe => {
-    let indexed: Set<string> = new Set()
-    const sync = (deps: Set<string>) => {
-      indexed.forEach(dep => { if (!deps.has(dep)) removeDep(dep, effect) })
-      deps.forEach(dep => { if (!indexed.has(dep)) insertDep(dep, effect) })
-      indexed = deps
+    // dep -> the node it sits on, so removal never re-walks a path: the
+    // overwhelmingly common re-run has identical deps and touches the trie not
+    // at all, and a disposal goes straight to the nodes it registered
+    let indexed = new Map<string, TrieNode>()
+    // what the last run tracked, before pruning. The comparison has to happen
+    // against these rather than against `indexed`, because pruning them is
+    // itself work this fast path exists to skip
+    let lastTracked = new Set<string>()
+    const sync = (tracked: Set<string>) => {
+      // an effect that re-runs almost always reads exactly what it read last
+      // time, and this is on the path of every single run: same count and every
+      // path seen before means nothing about the index can have changed
+      if (tracked.size === lastTracked.size) {
+        let unchanged = true
+        tracked.forEach(dep => { unchanged &&= lastTracked.has(dep) })
+        if (unchanged) return
+      }
+      lastTracked = tracked
+      const deps = indexable(effect, tracked)
+      indexed.forEach((node, dep) => {
+        if (deps.has(dep)) return
+        removeDep(node, effect)
+        indexed.delete(dep)
+      })
+      deps.forEach(dep => { if (!indexed.has(dep)) indexed.set(dep, insertDep(dep, effect)) })
     }
     effect.reindex.add(sync)
     sync(effect.deps) // an effect attached after it first ran arrives with deps
     return () => {
       effect.reindex.delete(sync)
-      indexed.forEach(dep => removeDep(dep, effect))
-      indexed = new Set()
+      indexed.forEach(node => removeDep(node, effect))
+      indexed = new Map()
+      lastTracked = new Set()
     }
+  }
+
+  // an object's key set changed. Effects only - a key set isn't a value, so
+  // there is nothing to hand $on/$onAny that they don't already get from the
+  // key's own notification
+  const notifyKeys = (path: string) => {
+    const node = nodeAt(keysPath(path))
+    if (node) runMatched(new Set([...(node.own ?? []), ...(node.deep ?? [])]))
+  }
+
+  // oldest first, and re-checking membership as it goes: an effect disposed by
+  // an earlier one in this same pass (a list diff tearing down the rows it just
+  // woke) must not run
+  const runMatched = (matched: Set<Effect>) => {
+    const ordered = Array.from(matched)
+    // effects are usually collected in creation order already - one node's set
+    // is filled as its effects are made, and a subtree sweep of a freshly-built
+    // list walks them the same way. Checking costs one pass; sorting a woken
+    // set of 10,000 costs rather more
+    let sorted = true
+    for (let i = 1; sorted && i < ordered.length; i++) sorted = ordered[i - 1].order < ordered[i].order
+    if (!sorted) ordered.sort((a, b) => a.order - b.order)
+    ordered.forEach(effect => { if (effects.has(effect)) effect.run() })
   }
 
   const notify = (dotKey: string, value: any, isNewKey = false) => {
@@ -235,7 +383,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // `effects.has` stands in for the membership check `effects.forEach` used
     // to give for free: an effect disposed by an earlier effect in this same
     // notify (a list diff tearing down the rows it just woke) must not run
-    else effectsFor(dotKey).forEach(effect => { if (effects.has(effect)) effect.run() })
+    else runMatched(effectsFor(dotKey))
   }
 
   const isWrappable = (value: any): value is Record<string, any> =>
@@ -284,6 +432,17 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     const proxy: Record<string, any> = new Proxy(raw, {
       has(target, key) {
         return Reflect.has(target, key) || (typeof key === "string" && tombstones?.has(key) === true)
+      },
+      // reading the key set is a dependency of its own: `Object.keys(props)`,
+      // `{...props}`, `for...in` and renderEach's `Object.entries` all care
+      // about which keys exist, not about what any one of them holds. It used
+      // to be caught only by the coarse ancestor rule, which is now gone -
+      // this is the same job Svelte gives a per-object `version` signal, held
+      // as an ordinary trie child under a reserved final segment (see
+      // KEYS_SEGMENT), so adds and deletes wake exactly the effects enumerating
+      ownKeys(target) {
+        trackerStack[trackerStack.length - 1]?.add(keysPath(path))
+        return Reflect.ownKeys(target)
       },
       get(target, key, receiver) {
         if (key === RAW) return target
@@ -339,6 +498,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         if (isStore(stored)) bridge(stored, dotKey)
         else unbridge(dotKey)
         const notified = isStore(stored) || !isWrappable(stored) ? stored : wrap(stored, dotKey)
+        // a new key already re-runs every effect in the store (see notify), so
+        // the key set growing needs no announcement of its own - only a delete,
+        // which wakes precisely, does
         notify(dotKey, notified, isNewKey)
         return true
       },
@@ -356,6 +518,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
           ;(tombstones ??= new Set()).add(key)
           unbridge(dotKey) // a nested store it held: stop listening to it
           notify(dotKey, undefined)
+          // the key set shrank: whoever enumerated this object hears it even
+          // if it never read the key that went (see the ownKeys trap)
+          notifyKeys(path)
         }
         return deleted
       }
@@ -390,7 +555,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     return () => anyListeners.delete(listener)
   }
 
-  const $effect = (run: () => void, alsoWakenBy?: Record<string, any>[]): Unsubscribe => {
+  const $effect = (run: () => void, alsoWakenBy?: Record<string, any>[], deep = false): Unsubscribe => {
     // a notify landing while this effect runs (an item's render writing to
     // the store, waking the very effect that is rendering it) must not
     // re-enter mid-run - the half-done run would race its own repeat over
@@ -403,6 +568,8 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     const effect: Effect = {
       deps: new Set(),
       reindex: new Set(),
+      deep,
+      order: effectsCreated++,
       run: () => {
         if (running) {
           dirty = true
@@ -502,7 +669,10 @@ export type EffectScope = {
   dispose: () => void
 }
 
-export const createEffectScope = (scope: Record<string, any>): EffectScope => {
+// `deep` marks every effect this scope creates as forwarding a value wholesale
+// rather than reading into it - the prop-sync scope, and nothing else so far.
+// See the `deep` flag on $effect
+export const createEffectScope = (scope: Record<string, any>, deep = false): EffectScope => {
   const disposers: Unsubscribe[] = []
   const runs: (() => void)[] = []
   // whatever the scope was handed (slot content is the only thing that sets
@@ -511,7 +681,7 @@ export const createEffectScope = (scope: Record<string, any>): EffectScope => {
   const alsoWakenBy: Record<string, any>[] | undefined = (scope as any)[ALSO_WAKEN_BY]
   return {
     effect: run => {
-      disposers.push(scope.$effect(run, alsoWakenBy))
+      disposers.push(scope.$effect(run, alsoWakenBy, deep))
       runs.push(run)
     },
     onDispose: fn => { disposers.push(fn) },

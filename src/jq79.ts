@@ -902,7 +902,11 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     }
     endAnchor.parentNode!.insertBefore(holder, endAnchor)
 
-    const syncFx = createEffectScope(scope)
+    // deep: a prop sync forwards whatever the expression evaluates to, whole,
+    // into the child's store - it reads `user`, never `user.name`, so it can't
+    // track what it passes on. A parent's deep mutation reaches the child
+    // through this effect or not at all (see $effect's `deep`)
+    const syncFx = createEffectScope(scope, true)
     // without a spread the prop set is fixed and known: one effect per prop, so
     // a change to one prop re-syncs only that prop. A spread's key set is
     // dynamic and its precedence is positional, so it can't be resolved a key at

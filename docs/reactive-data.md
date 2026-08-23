@@ -28,6 +28,45 @@ stop()
 data.$dispose()
 ```
 
+## An effect wakes for what it read, not for the object it read it through
+
+Reaching `data.user.address.city` reads three objects on the way, but the effect
+depends on the value it actually took:
+
+```js
+const data = $reactive({ rows: [{ label: "a" }, { label: "b" }] })
+
+data.$effect(() => console.log(data.rows[0].label))
+
+data.rows[1].label = "changed"  // silent: this effect never read row 1
+data.rows[0].label = "changed"  // re-runs
+data.rows = []                  // re-runs: replacing the array replaced the row
+```
+
+A write re-runs an effect when it lands on something the effect read, or
+*inside* it — replacing `rows` re-runs everything that read anything under
+`rows`. It does not travel the other way: touching one row does not wake an
+effect that only read a different one, which is what keeps a 1,000-row list
+costing one re-render per changed row rather than a thousand.
+
+The case to know about is an effect that reads an object **without** reading
+into it:
+
+```js
+data.$effect(() => console.log(data.user))    // logs the object itself
+data.user.name = "Grace"                      // silent
+```
+
+Nothing the effect read changed — `data.user` is the same object. Read the
+values you actually depend on (`data.user.name`), which is what a template
+interpolation like `{{ user.name }}` does anyway.
+
+Two things deliberately stay coarse, because nothing finer is observable:
+enumerating an object (`Object.keys`, `{...spread}`, `:each` over a plain
+object) re-runs when a key is added or removed, and an array's `length`
+re-runs everything that read an element, since a truncation removes them
+without notifying each one.
+
 ## The object you hand it is left alone
 
 `$reactive(data)` doesn't modify `data` — it returns a reactive *view* of it.
