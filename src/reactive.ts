@@ -140,6 +140,12 @@ type Effect = { deps: Set<string>; run: () => void; reindex: Set<(deps: Set<stri
 // than left to whatever the index happens to yield
 let effectsCreated = 0
 
+// the deps an effect has before its first run, and what indexEffect compares
+// its first run against. Never written to - every run installs a fresh set -
+// so one frozen instance stands in for the two empty sets each effect used to
+// allocate. 30,000 effects is 60,000 of them
+const NO_DEPS: ReadonlySet<string> = new Set()
+
 // an effect lives in exactly one store's `effects` set - the one whose
 // $effect created it - and only that store's notify walks it. Content that
 // reads two stores at once (a component's slot content: the parent's names
@@ -317,11 +323,51 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // dep -> the node it sits on, so removal never re-walks a path: the
     // overwhelmingly common re-run has identical deps and touches the trie not
     // at all, and a disposal goes straight to the nodes it registered
-    let indexed = new Map<string, TrieNode>()
+    // almost every effect ends up with exactly one dep once the redundant
+    // ancestors are pruned - a row binding reads one path - so the single case
+    // is held in two slots and the Map is allocated only when a second arrives
+    let soleDep: string | null = null
+    let soleNode: TrieNode | null = null
+    let indexed: Map<string, TrieNode> | null = null
     // what the last run tracked, before pruning. The comparison has to happen
-    // against these rather than against `indexed`, because pruning them is
-    // itself work this fast path exists to skip
-    let lastTracked = new Set<string>()
+    // against these rather than against what is indexed, because pruning them
+    // is itself work this fast path exists to skip
+    let lastTracked: ReadonlySet<string> = NO_DEPS
+
+    const placed = (dep: string): boolean =>
+      indexed ? indexed.has(dep) : soleDep === dep
+
+    const place = (dep: string) => {
+      const node = insertDep(dep, effect)
+      if (indexed) indexed.set(dep, node)
+      else if (soleDep === null) { soleDep = dep; soleNode = node }
+      else {
+        indexed = new Map([[soleDep, soleNode!], [dep, node]])
+        soleDep = soleNode = null
+      }
+    }
+
+    const unplaceStale = (deps: Set<string>) => {
+      if (indexed) {
+        indexed.forEach((node, dep) => {
+          if (deps.has(dep)) return
+          removeDep(node, effect)
+          indexed!.delete(dep)
+        })
+        return
+      }
+      if (soleDep !== null && !deps.has(soleDep)) {
+        removeDep(soleNode!, effect)
+        soleDep = soleNode = null
+      }
+    }
+
+    const unplaceAll = () => {
+      if (indexed) indexed.forEach(node => removeDep(node, effect))
+      else if (soleNode) removeDep(soleNode, effect)
+      indexed = null
+      soleDep = soleNode = null
+    }
     const sync = (tracked: Set<string>) => {
       // an effect that re-runs almost always reads exactly what it read last
       // time, and this is on the path of every single run: same count and every
@@ -333,20 +379,15 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       }
       lastTracked = tracked
       const deps = indexable(effect, tracked)
-      indexed.forEach((node, dep) => {
-        if (deps.has(dep)) return
-        removeDep(node, effect)
-        indexed.delete(dep)
-      })
-      deps.forEach(dep => { if (!indexed.has(dep)) indexed.set(dep, insertDep(dep, effect)) })
+      unplaceStale(deps)
+      deps.forEach(dep => { if (!placed(dep)) place(dep) })
     }
     effect.reindex.add(sync)
     sync(effect.deps) // an effect attached after it first ran arrives with deps
     return () => {
       effect.reindex.delete(sync)
-      indexed.forEach(node => removeDep(node, effect))
-      indexed = new Map()
-      lastTracked = new Set()
+      unplaceAll()
+      lastTracked = NO_DEPS
     }
   }
 
@@ -678,7 +719,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     let running = false
     let dirty = false
     const effect: Effect = {
-      deps: new Set(),
+      deps: NO_DEPS as Set<string>,
       reindex: new Set(),
       deep,
       order: effectsCreated++,

@@ -1311,9 +1311,9 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     // for them. They render (bindings and all) and go there - appended as
     // childNodes they would be in the DOM but in no document fragment, seen by
     // nothing and rendered by nobody
-    el.content.appendChild(renderNodes(node.children, scope, fx, shadow))
+    renderNodes(node.children, scope, fx, shadow, el.content)
   } else {
-    el.appendChild(renderNodes(node.children, scope, fx, shadow))
+    renderNodes(node.children, scope, fx, shadow, el)
   }
 
   // :value / :checked / :selected write the DOM *property*, not the
@@ -1559,8 +1559,21 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
 // renders a list of sibling template nodes (text + elements), grouping
 // consecutive :if/:elseif/:else nodes into a single conditional block
-const renderNodes = (nodes: (TemplateNode | string)[], scope: Record<string, any>, fx: EffectScope, shadow = false): DocumentFragment => {
-  const fragment = document.createDocumentFragment()
+// `into` renders straight into an element that is not in the document yet -
+// what renderElement does for an element's own children. Every element used to
+// get a DocumentFragment of its own, filled and then emptied into it: for a
+// 10,000-row table that is 70,000 fragments and a second pass over every node,
+// and the intermediate is invisible either way because the element is still
+// detached. Callers that need a standalone chunk (a component's content, an
+// :if branch) omit it and get the fragment
+const renderNodes = <T extends ParentNode>(
+  nodes: (TemplateNode | string)[],
+  scope: Record<string, any>,
+  fx: EffectScope,
+  shadow = false,
+  into?: T
+): T | DocumentFragment => {
+  const fragment = into ?? document.createDocumentFragment()
   let i = 0
 
   while (i < nodes.length) {
