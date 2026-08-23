@@ -788,6 +788,24 @@ describe("renderComponent", () => {
 
       expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b"])
     })
+
+    it("evaluates a :key without ever writing the loop name into the store", () => {
+      // the key expression needs the item bound to a scope to read it from, and
+      // one scratch scope now serves the whole pass - the loop variable written
+      // into it by plain assignment, which is only safe because the property is
+      // already the scratch's own (see defineScopeVar). Were it not, the write
+      // would delegate up to the store's set trap and land as a real mutation
+      // of the same-named key, here `item`
+      const component = parseComponent(`<li :each="item in items" :key="item.id">{{ item.name }}</li>`)
+      const data = $reactive({ item: "untouched", items: [{ id: 1, name: "a" }, { id: 2, name: "b" }] })
+      container.appendChild(renderComponent(component, data))
+
+      // a second pass, so the scratch is reused rather than freshly defined
+      data.items = [...data.items, { id: 3, name: "c" }]
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(["a", "b", "c"])
+      expect(data.item).toBe("untouched")
+    })
   })
 
   describe(":each second binding", () => {

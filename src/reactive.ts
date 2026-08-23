@@ -595,7 +595,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         return Reflect.has(target, key) || (typeof key === "string" && tombstones?.has(key) === true)
       },
       // reading the key set is a dependency of its own: `Object.keys(props)`,
-      // `{...props}`, `for...in` and renderEach's `Object.entries` all care
+      // `{...props}`, `for...in` and renderEach's walk of a list's keys all care
       // about which keys exist, not about what any one of them holds. It used
       // to be caught only by the coarse ancestor rule, which is now gone -
       // this is the same job Svelte gives a per-object `version` signal, held

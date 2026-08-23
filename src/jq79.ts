@@ -1389,7 +1389,14 @@ const renderConditional = (branches: ConditionalBranch[], scope: Record<string, 
 // reactive proxy's `set` trap: it would wrap `value` as if it were a genuine
 // store mutation and fire a bogus notify() under a name (e.g. "item") shared
 // by every unrelated item in every :each on the page. defineProperty always
-// writes to `scope` itself, never delegating, so this can't happen
+// writes to `scope` itself, never delegating, so this can't happen.
+//
+// Only while the key is *missing*, though: once this has run, the property is
+// own and writable, and a plain assignment finds it there and writes it in
+// place. That is what renderEach's reuse paths do, and why they may - a
+// defineProperty costs several times an assignment, and a list that never
+// reorders would otherwise pay one per row per pass to rewrite the value it
+// already held
 const defineScopeVar = (scope: Record<string, any>, key: string, value: any) => {
   Object.defineProperty(scope, key, { value, writable: true, enumerable: true, configurable: true })
 }
@@ -1486,13 +1493,16 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
     const pass = openRenderPass(scope)
     try {
       const list = evalExpr(listExpr, scope)
-      // both sources normalize to [at, item] pairs: the index for an array, the
-      // property key for a plain object (insertion order). Object entries are
-      // read off the store proxy, so each value is tracked under its own key -
-      // adds, deletes and changes all wake this effect
-      const pairs: [any, any][] = Array.isArray(list)
-        ? list.map((item, index): [any, any] => [index, item])
-        : isPlainObject(list) ? Object.entries(list) : []
+      // read the source in place rather than normalizing it to [at, item] pairs
+      // first: a list of 1,000 rows built 1,000 two-element arrays per pass,
+      // every one of them garbage by the end of it. `keys` carries a plain
+      // object's property list (insertion order, which is also its identity)
+      // and is null for an array, where the index is the key. Either way the
+      // items are read off the store proxy one at a time, so each stays tracked
+      // under its own key - adds, deletes and changes all wake this effect
+      const array = Array.isArray(list)
+      const keys: string[] | null = array ? null : isPlainObject(list) ? Object.keys(list) : []
+      const length = array ? list.length : keys!.length
       // buckets rather than a key->entry map: duplicate keys (a user error, but
       // one that must degrade instead of corrupt) consume entries in order of
       // appearance, so no entry is ever matched twice - matching one twice is
@@ -1506,12 +1516,41 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
       const seen = new Set<any>()
       const moved: EachEntry[] = []
-      const nextEntries = pairs.map(([at, item], index): EachEntry => {
-        const itemScope = Object.create(scope)
-        defineScopeVar(itemScope, itemName, item)
-        if (atName) defineScopeVar(itemScope, atName, at)
-        defineScopeVar(itemScope, "$index", index)
-        const key = keyExpr !== undefined ? evalExpr(keyExpr, itemScope) : at
+      const nextEntries: EachEntry[] = []
+      // one scratch scope for the whole pass, not one per item. A :key
+      // expression reads the item by name (`row.id`), so it needs a scope to
+      // read it from - but which entry that key names, and so whether anything
+      // has to be rendered at all, is only known once it has been evaluated.
+      // Building the entry's real scope up front meant every reused row - the
+      // common case, and nearly all of removeRow, selectRow and swapRows - paid
+      // for an object and three defineProperty calls that were then dropped on
+      // the floor. Nothing outlives the evaluation, which is synchronous, so one
+      // scratch serves the whole list; a row that really is rendered gets a
+      // scope of its own, below
+      let scratch: Record<string, any> | undefined
+
+      for (let index = 0; index < length; index++) {
+        const at = array ? index : keys![index]
+        const item = array ? list[index] : list[at]
+
+        let key: any = at
+        if (keyExpr !== undefined) {
+          if (scratch === undefined) {
+            scratch = Object.create(scope) as Record<string, any>
+            defineScopeVar(scratch, itemName, item)
+            if (atName) defineScopeVar(scratch, atName, at)
+            defineScopeVar(scratch, "$index", index)
+          } else {
+            // own and writable already, so a plain assignment writes to
+            // `scratch` itself - the delegation defineScopeVar exists to
+            // prevent can only happen while the key is missing from it
+            scratch[itemName] = item
+            if (atName) scratch[atName] = at
+            scratch.$index = index
+          }
+          key = evalExpr(keyExpr, scratch)
+        }
+
         if (seen.has(key) && !warnedDuplicates) {
           warnedDuplicates = true
           console.warn(`jq79: duplicate :key in :each "${node.attrs[":each"]}"; duplicates pair up by position`)
@@ -1520,10 +1559,17 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         const existing = previous.get(key)?.shift()
 
         if (existing && Object.is(existing.item, item)) {
-          if (readsPosition && existing.scope.$index !== index) moved.push(existing)
-          defineScopeVar(existing.scope, "$index", index)
-          if (atName) defineScopeVar(existing.scope, atName, at)
-          return existing
+          // same reason as `scratch`: these are own writable properties of the
+          // entry's scope from the moment it was rendered, and writing only
+          // what moved keeps a list that never reorders from paying anything
+          const entryScope = existing.scope
+          if (entryScope.$index !== index) {
+            if (readsPosition) moved.push(existing)
+            entryScope.$index = index
+          }
+          if (atName && entryScope[atName] !== at) entryScope[atName] = at
+          nextEntries.push(existing)
+          continue
         }
 
         if (existing) {
@@ -1531,12 +1577,16 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
           removeRange(existing.range)
         }
 
+        const itemScope = Object.create(scope)
+        defineScopeVar(itemScope, itemName, item)
+        if (atName) defineScopeVar(itemScope, atName, at)
+        defineScopeVar(itemScope, "$index", index)
         const itemFx = createEffectScope(scope)
         // bounds captured before the positioning pass inserts the entry: a
         // component entry is a fragment, which empties on insertion (see boundsOf)
         const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
-        return { key, item, scope: itemScope, fx: itemFx, range }
-      })
+        nextEntries.push({ key, item, scope: itemScope, fx: itemFx, range })
+      }
 
       // whatever no new item consumed is gone. Effects are torn down one by one
       // as always; the DOM goes in runs of neighbours, which is what makes
