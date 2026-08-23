@@ -1,0 +1,30 @@
+{
+  "name": "js-framework-benchmark-preact",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Boilerplate for Preact",
+  "js-framework-benchmark": {
+    "frameworkVersionFromPackage": "preact",
+    "frameworkHomeURL": "https://preactjs.com/",
+    "issues": []
+  },
+  "scripts": {
+    "dev": "vite",
+    "build-prod": "vite build",
+    "build": "vite build"
+  },
+  "license": "ISC",
+  "homepage": "https://github.com/krausest/js-framework-benchmark",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krausest/js-framework-benchmark.git"
+  },
+  "dependencies": {
+    "preact": "^10.24.3"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.9.3",
+    "vite": "^8.1.4"
+  }
+}

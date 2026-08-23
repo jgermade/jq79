@@ -65,6 +65,7 @@
     "site": "node scripts/build-site.mjs",
     "site.dev": "node scripts/site-dev.mjs",
     "benchmark": "node scripts/run-benchmark.mjs",
+    "benchmark:comparison": "node scripts/run-comparison.mjs",
     "prepublishOnly": "npm test && npm run build"
   },
   "peerDependencies": {

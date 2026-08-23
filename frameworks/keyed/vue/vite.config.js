@@ -1,7 +1,7 @@
 import { defineConfig } from "vite"
-import { jq79 } from "jq79/vite"
+import vue from "@vitejs/plugin-vue"
 
 export default defineConfig({
-  plugins: [jq79()],
+  plugins: [vue()],
   publicDir: "../_shared/public",
 })

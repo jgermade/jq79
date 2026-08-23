@@ -1,0 +1,30 @@
+{
+  "name": "js-framework-benchmark-vue",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Boilerplate for Vue",
+  "js-framework-benchmark": {
+    "frameworkVersionFromPackage": "vue",
+    "frameworkHomeURL": "https://vuejs.org/",
+    "issues": []
+  },
+  "scripts": {
+    "dev": "vite",
+    "build-prod": "vite build",
+    "build": "vite build"
+  },
+  "license": "ISC",
+  "homepage": "https://github.com/krausest/js-framework-benchmark",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krausest/js-framework-benchmark.git"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "vite": "^8.1.4"
+  }
+}

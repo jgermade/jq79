@@ -1,0 +1,26 @@
+{
+  "name": "js-framework-benchmark-vanillajs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Boilerplate for VanillaJS",
+  "js-framework-benchmark": {
+    "frameworkVersionFromPackage": "none",
+    "frameworkHomeURL": "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+    "issues": []
+  },
+  "scripts": {
+    "dev": "vite",
+    "build-prod": "vite build",
+    "build": "vite build"
+  },
+  "license": "ISC",
+  "homepage": "https://github.com/krausest/js-framework-benchmark",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/krausest/js-framework-benchmark.git"
+  },
+  "devDependencies": {
+    "vite": "^8.1.4"
+  }
+}

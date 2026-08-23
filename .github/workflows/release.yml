@@ -67,11 +67,13 @@ jobs:
         run: gh release create "$NEW_TAG" dist/* --title "$NEW_TAG" --generate-notes
 
   # GitHub Pages site: rendered docs, self-hosted badges (npm version, test
-  # coverage), the HTML coverage report, the /benchmark/ page (freshly
-  # measured against this release, not the committed benchmark-results.json),
-  # and the dist files at the site root so the Pages URL doubles as a CDN.
-  # Requires Pages to be configured with "GitHub Actions" as the source
-  # (repo Settings > Pages)
+  # coverage), the HTML coverage report, /benchmark/ and /benchmark/comparison/
+  # (freshly measured against this release and the other frameworks under
+  # frameworks/keyed/, not the committed *-results.json files), and the dist
+  # files at the site root so the Pages URL doubles as a CDN. Requires Pages
+  # to be configured with "GitHub Actions" as the source (repo Settings >
+  # Pages). The comparison step installs React/Vue/Svelte/Preact from npm and
+  # measures all six implementations, adding real time to this job
   pages:
     needs: release
     runs-on: ubuntu-latest
@@ -101,6 +103,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
 
       - run: npm run benchmark
+
+      - run: npm run benchmark:comparison
 
       - run: npm run site
 
