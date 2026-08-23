@@ -373,6 +373,43 @@ const removeRange = ({ first, last }: NodeRange) => {
   }
 }
 
+// removes several ranges that sit next to each other, in one DOM call each run
+// rather than one per node. A list dropping all its rows hands them over as a
+// single span: unlinking 10,000 rows one at a time is 40% of that operation,
+// profiled - see TODOS/2026-08-23.batch-range-removal.md. Runs are built by the
+// caller, which is the only place that knows what else is going
+const removeRuns = (runs: NodeRange[][]) => {
+  runs.forEach(run => {
+    if (run.length === 1) return removeRange(run[0])
+    const parent = run[0].first.parentNode
+    if (!parent) return
+    // both ends sit between nodes, so nothing is partially selected and whole
+    // nodes are what gets unlinked
+    const range = document.createRange()
+    range.setStartBefore(run[0].first)
+    range.setEndAfter(run[run.length - 1].last)
+    range.deleteContents()
+  })
+}
+
+// groups the entries `isDead` selects into runs of DOM neighbours, walking
+// `ordered` (which is in DOM order). Adjacency is confirmed rather than assumed:
+// a gap - an entry removed earlier in the same pass - starts a new run, so a
+// live entry can never end up inside one
+const contiguousRuns = <T extends { range: NodeRange }>(ordered: T[], isDead: (entry: T) => boolean): NodeRange[][] => {
+  const runs: NodeRange[][] = []
+  let run: NodeRange[] | null = null
+  ordered.forEach(entry => {
+    if (!isDead(entry)) {
+      run = null
+      return
+    }
+    if (run && run[run.length - 1].last.nextSibling === entry.range.first) run.push(entry.range)
+    else runs.push((run = [entry.range]))
+  })
+  return runs
+}
+
 // moves [first..last] inclusive so the range starts right after `prev`
 const moveRangeAfter = ({ first, last }: NodeRange, prev: Node) => {
   const ref = prev.nextSibling
@@ -1450,11 +1487,15 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       return { key, item, scope: itemScope, fx: itemFx, range }
     })
 
-    // whatever no new item consumed is gone
-    previous.forEach(bucket => bucket.forEach(entry => {
-      entry.fx.dispose()
-      removeRange(entry.range)
-    }))
+    // whatever no new item consumed is gone. Effects are torn down one by one
+    // as always; the DOM goes in runs of neighbours, which is what makes
+    // clearing a long list one mutation instead of one per row
+    const dead = new Set<EachEntry>()
+    previous.forEach(bucket => bucket.forEach(entry => dead.add(entry)))
+    if (dead.size) {
+      dead.forEach(entry => entry.fx.dispose())
+      removeRuns(contiguousRuns(entries, entry => dead.has(entry)))
+    }
 
     let prevNode: Node = anchor
     nextEntries.forEach(entry => {
