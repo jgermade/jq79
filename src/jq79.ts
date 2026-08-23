@@ -267,8 +267,49 @@ const evalHandler = (expr: string, scope: Record<string, any>, extras: Record<st
 
 // [\s\S] rather than `.` so an expression can span lines, like the ones in
 // directive attributes (which reach evalExpr wrapped in parens either way)
-const interpolate = (template: string, scope: Record<string, any>): string =>
-  template.replace(/{{\s*([\s\S]+?)\s*}}/g, (_, expr) => evalExpr(expr, scope) ?? "")
+const INTERPOLATION_RE = /{{\s*([\s\S]+?)\s*}}/g
+
+// A text template split once into its literal and expression parts. The split
+// used to happen on every run of every instance - `String.replace` over the
+// whole text, a fresh match object and a callback per expression - and a
+// :each over 1,000 rows runs it 1,000 times per text node to reach the same
+// answer about the same string. Keyed by the template text, like compileExpr's
+// cache and bounded the same way: by how many distinct texts the source holds
+//
+// An expression part is boxed so a literal `"x"` and an expression `x` stay
+// distinguishable without a second array
+type TextPart = string | { expr: string }
+
+const textParts = new Map<string, TextPart[]>()
+
+const splitText = (template: string): TextPart[] => {
+  const cached = textParts.get(template)
+  if (cached) return cached
+  const parts: TextPart[] = []
+  let at = 0
+  INTERPOLATION_RE.lastIndex = 0
+  for (let match = INTERPOLATION_RE.exec(template); match; match = INTERPOLATION_RE.exec(template)) {
+    if (match.index > at) parts.push(template.slice(at, match.index))
+    parts.push({ expr: match[1] })
+    at = match.index + match[0].length
+  }
+  if (at < template.length) parts.push(template.slice(at))
+  textParts.set(template, parts)
+  return parts
+}
+
+// what an interpolated text node renders to, from the parts. `?? ""` on each
+// expression, and String() over the join, is what template.replace did: a
+// nullish value contributes nothing and everything else is coerced
+const renderText = (parts: TextPart[], scope: Record<string, any>): string => {
+  if (parts.length === 1) {
+    const only = parts[0]
+    return typeof only === "string" ? only : String(evalExpr(only.expr, scope) ?? "")
+  }
+  let out = ""
+  for (const part of parts) out += typeof part === "string" ? part : String(evalExpr(part.expr, scope) ?? "")
+  return out
+}
 
 
 const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed", ":props"])
@@ -378,16 +419,16 @@ const removeRange = ({ first, last }: NodeRange) => {
 // single span: unlinking 10,000 rows one at a time is 40% of that operation,
 // profiled - see TODOS/2026-08-23.batch-range-removal.md. Runs are built by the
 // caller, which is the only place that knows what else is going
-const removeRuns = (runs: NodeRange[][]) => {
+const removeRuns = (runs: NodeRange[]) => {
   runs.forEach(run => {
-    if (run.length === 1) return removeRange(run[0])
-    const parent = run[0].first.parentNode
+    if (run.first === run.last) return removeRange(run)
+    const parent = run.first.parentNode
     if (!parent) return
     // both ends sit between nodes, so nothing is partially selected and whole
     // nodes are what gets unlinked
     const range = document.createRange()
-    range.setStartBefore(run[0].first)
-    range.setEndAfter(run[run.length - 1].last)
+    range.setStartBefore(run.first)
+    range.setEndAfter(run.last)
     range.deleteContents()
   })
 }
@@ -396,16 +437,19 @@ const removeRuns = (runs: NodeRange[][]) => {
 // `ordered` (which is in DOM order). Adjacency is confirmed rather than assumed:
 // a gap - an entry removed earlier in the same pass - starts a new run, so a
 // live entry can never end up inside one
-const contiguousRuns = <T extends { range: NodeRange }>(ordered: T[], isDead: (entry: T) => boolean): NodeRange[][] => {
-  const runs: NodeRange[][] = []
-  let run: NodeRange[] | null = null
+const contiguousRuns = <T extends { range: NodeRange }>(ordered: T[], isDead: (entry: T) => boolean): NodeRange[] => {
+  const runs: NodeRange[] = []
+  let run: NodeRange | null = null
   ordered.forEach(entry => {
     if (!isDead(entry)) {
       run = null
       return
     }
-    if (run && run[run.length - 1].last.nextSibling === entry.range.first) run.push(entry.range)
-    else runs.push((run = [entry.range]))
+    // a run is a span, not the list of ranges inside it: only its two ends are
+    // ever read, and a list dropping 10,000 rows was building an array of
+    // 10,000 entries to hand over two of them
+    if (run && run.last.nextSibling === entry.range.first) run.last = entry.range.last
+    else runs.push((run = { first: entry.range.first, last: entry.range.last }))
   })
   return runs
 }
@@ -1218,7 +1262,14 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     })
   }
 
-  Object.entries(node.attrs).forEach(([key, value]) => {
+  // walked with `for...in` rather than Object.entries().forEach: a 1,000-row
+  // :each renders every element of its template a thousand times, and the
+  // entries form allocates one array of pairs plus one two-element array per
+  // attribute *per instance*. Nothing here reads the pairs as pairs, so the
+  // allocation buys nothing and the garbage it makes is measurable - see
+  // TODOS/2026-08-23.where-the-create-time-goes.md
+  for (const key in node.attrs) {
+    const value = node.attrs[key]
     if (key.startsWith("@")) bindEvent(el, key, value, scope)
     else if (key === ":model" || key.startsWith(":model.")) {
       // :model binds component tags only (see TODOS/2026-07-15.model-directive.md;
@@ -1249,7 +1300,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
         fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
       }
     } else el.setAttribute(key, value)
-  })
+  }
 
   const bindExpr = node.attrs[":attrs"]
   if (bindExpr !== undefined) {
@@ -1271,17 +1322,23 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // static list survives every re-run, even when the expression names one of
   // its classes and then drops it (class="btn" :class="{ btn: cond }" keeps
   // btn on false)
+  //
+  // The toggle list stays null until a `:class.` attribute is actually found,
+  // for the reason the attribute walk above is a `for...in`: entries + filter +
+  // map allocated three arrays for every element rendered, and the
+  // overwhelming majority of elements carry no `:class.` at all
   const classExpr = node.attrs[":class"]
-  const classToggles = Object.entries(node.attrs)
-    .filter(([key]) => key.startsWith(":class."))
-    .map(([key, expr]): [string, string] => [key.slice(":class.".length), expr])
-  if (classExpr !== undefined || classToggles.length) {
+  let classToggles: [string, string][] | null = null
+  for (const key in node.attrs) {
+    if (key.startsWith(":class.")) (classToggles ??= []).push([key.slice(":class.".length), node.attrs[key]])
+  }
+  if (classExpr !== undefined || classToggles) {
     const staticClasses = new Set(classNames(node.attrs.class ?? ""))
     let bound: string[] = []
 
     fx.effect(() => {
       const next = classExpr !== undefined ? classNames(evalExpr(classExpr, scope)) : []
-      classToggles.forEach(([name, expr]) => {
+      classToggles?.forEach(([name, expr]) => {
         if (evalExpr(expr, scope)) next.push(...classNames(name))
       })
       bound.forEach(name => {
@@ -1404,7 +1461,10 @@ const defineScopeVar = (scope: Record<string, any>, key: string, value: any) => 
 // `pos` is where the entry sat in the previous pass, refreshed as the buckets
 // are built - the positioning pass needs the old order to work out which rows
 // are already where they belong (see longestIncreasingRun)
-type EachEntry = { key: any; item: any; scope: Record<string, any>; range: NodeRange; fx: EffectScope; pos: number }
+// `dead` is set by the pass that disposes the entry, and read by the run walk
+// right after: a Set membership test per row was the alternative, and a list
+// dropping 10,000 rows does 10,000 of them
+type EachEntry = { key: any; item: any; scope: Record<string, any>; range: NodeRange; fx: EffectScope; pos: number; dead?: boolean }
 
 // the indices of one longest strictly increasing subsequence of `positions`,
 // as a flag per index. Fed the old position of every entry in the new order
@@ -1661,8 +1721,11 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       const dead = new Set<EachEntry>()
       previous.forEach(bucket => bucket.forEach(entry => dead.add(entry)))
       if (dead.size) {
-        dead.forEach(entry => entry.fx.dispose())
-        removeRuns(contiguousRuns(entries, entry => dead.has(entry)))
+        dead.forEach(entry => {
+          entry.dead = true
+          entry.fx.dispose()
+        })
+        removeRuns(contiguousRuns(entries, entry => entry.dead === true))
       }
 
       let prevNode: Node = anchor
@@ -1716,7 +1779,17 @@ const renderNodes = <T extends ParentNode>(
       const textNode = document.createTextNode(node)
       // static text is most of a template (all of its indentation, for a start):
       // only text with a {{ expression }} in it needs an effect to stay in sync
-      if (node.includes("{{")) fx.effect(() => { textNode.textContent = interpolate(node, scope) })
+      // the write is guarded: an effect woken by a sibling's change (one entry
+      // of a :each refreshed on a move, a grouped notification) recomputes the
+      // same string it already wrote, and assigning it back is a DOM mutation
+      // the browser has to take seriously
+      if (node.includes("{{")) {
+        const parts = splitText(node)
+        fx.effect(() => {
+          const text = renderText(parts, scope)
+          if (textNode.textContent !== text) textNode.textContent = text
+        })
+      }
       fragment.appendChild(textNode)
       i++
       continue
@@ -3050,7 +3123,7 @@ export class Component79 {
           }
           declareProps(store, parseFactoryProps(script.content))
           const body = deferred ? defer(factoryCode) : factoryCode
-          return runFactoryScript(body, store, fx.effect, instanceHelpers, $import, at)
+          return runFactoryScript(body, store, run => fx.effect(run), instanceHelpers, $import, at)
         }
         const { vars, code } = transformSetupScript(script.content)
         declareProps(store, setupSignature(script))
@@ -3058,7 +3131,7 @@ export class Component79 {
         // to them (and reads of them) through the reactive proxy
         vars.forEach(name => { if (!(name in store)) (store as any)[name] = undefined })
         const body = deferred ? defer(code) : code
-        return runSetupScript(body, store, fx.effect, instanceHelpers, $import, at)
+        return runSetupScript(body, store, run => fx.effect(run), instanceHelpers, $import, at)
       })()
       // a script that threw has nothing left to contribute, so its rejection
       // releases the gate exactly as completion does - the error is already

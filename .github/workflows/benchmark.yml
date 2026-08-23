@@ -1,0 +1,248 @@
+# Benchmark. Two things a shared runner can actually support:
+#
+#  - an A/B of two builds measured on ONE machine, in one session, alternating
+#    between them, with the runner's own noise reported beside every delta.
+#    Measuring a single build and comparing it against numbers from another
+#    day, or another machine, is what this exists to avoid: one build against
+#    itself on a busy box has swung -23% to +50% on create1k
+#    (TODOS/2026-08-23.where-the-create-time-goes.md).
+#  - optionally, the cross-framework comparison, which is only ever read as
+#    ratios between the frameworks measured in that same run.
+#
+# On a pull request the base is the branch it targets, and the report is posted
+# as a comment (one comment, rewritten on every push). It never fails the
+# build: a delta under the runner's noise is not a regression, and this job is
+# not qualified to say which is which - it reports, a human decides.
+#
+# The report also goes to the job summary, the job log and an artifact, so it
+# can be read without downloading anything.
+
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Git ref to compare this branch against, or "none" to measure this branch alone (an empty value falls back to this default)'
+        required: false
+        default: main
+        type: string
+      rounds:
+        description: 'Alternating rounds per build (2 or more, or no noise can be measured; 4+ before a unanimous sign means much)'
+        required: false
+        default: '4'
+        type: string
+      samples:
+        description: 'Samples per operation, per round'
+        required: false
+        default: '10'
+        type: string
+      frameworks:
+        description: 'Also run the cross-framework comparison (slower: installs and builds six apps)'
+        required: false
+        default: false
+        type: boolean
+      gate:
+        description: 'Fail the regression job when an operation is at least this much slower than the last release (0 = never fail)'
+        required: false
+        default: '10'
+        type: string
+
+  pull_request:
+    branches: [main]
+    # `synchronize` is every push to the PR's branch - the default set already
+    # includes it, spelled out here because "does this re-run when I push?" is
+    # the first thing anyone asks of a benchmark on a PR. It does, and the
+    # concurrency group below cancels the run it just made obsolete
+    types: [opened, synchronize, reopened]
+    # only what can move the numbers: the library itself, the harness, and the
+    # app being measured. A docs-only PR does not spend twenty runner-minutes
+    paths:
+      - 'src/**'
+      - 'scripts/run-ab.mjs'
+      - 'scripts/lib/benchmark-ops.mjs'
+      - 'frameworks/keyed/jq79/**'
+      - '.github/workflows/benchmark.yml'
+
+# a push to a PR makes the run in flight obsolete: it measured the commit
+# before it
+concurrency:
+  group: benchmark-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write # the report comment
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the A/B checks the base ref out into a worktree
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm install
+
+      - run: npx playwright install --with-deps chromium
+
+      # a PR is measured against the branch it targets; a manual run against
+      # whatever was asked for, or nothing at all. Either way the name is
+      # handed over as written - run-ab.mjs resolves it, and fetches it if the
+      # checkout never created a local branch by that name, which is the usual
+      # case on a runner
+      - name: Resolve the base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ inputs.base }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Benchmark
+        run: |
+          mkdir -p benchmark-report
+          if [ -n "${{ steps.base.outputs.ref }}" ] && [ "${{ steps.base.outputs.ref }}" != "none" ]; then
+            node scripts/run-ab.mjs \
+              --base "${{ steps.base.outputs.ref }}" \
+              --rounds "${{ inputs.rounds || '4' }}" \
+              --samples "${{ inputs.samples || '10' }}" \
+              --out benchmark-report
+          else
+            node scripts/run-ab.mjs \
+              --rounds "${{ inputs.rounds || '4' }}" \
+              --samples "${{ inputs.samples || '10' }}" \
+              --out benchmark-report
+          fi
+
+      - name: Framework comparison
+        if: ${{ inputs.frameworks }}
+        run: |
+          npm run build
+          node scripts/run-comparison.mjs
+          cp frameworks/keyed/comparison-results.json benchmark-report/
+          node scripts/report-comparison.mjs > benchmark-report/comparison-report.md
+          cat benchmark-report/comparison-report.md
+          cat benchmark-report/comparison-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-report
+          path: benchmark-report/
+
+      # one comment per PR, rewritten in place: a benchmark posted per push
+      # buries the review it is meant to inform. A fork's token is read-only,
+      # so this is allowed to fail - the summary and the artifact still carry
+      # the whole report
+      - name: Comment on the pull request
+        if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { readFileSync } = require("node:fs")
+            const MARKER = "<!-- jq79-benchmark -->"
+            let report = readFileSync("benchmark-report/benchmark-report.md", "utf8")
+            // a comment caps at 65536 characters; the raw json is the part
+            // worth dropping, and the artifact still has it
+            if (report.length > 60000) report = report.slice(0, report.indexOf("<details>")) +
+              "_(raw json trimmed - it is in the `benchmark-report` artifact)_\n"
+            // context.sha on a pull_request event is the merge commit, which
+            // is the right thing to measure and the wrong thing to name: it
+            // belongs to no branch anyone can check out. Name the PR's own head
+            const head = context.payload.pull_request.head.sha.slice(0, 12)
+            const body = `${MARKER}\n${report}\n---\n_\`${head}\` merged into \`${context.payload.pull_request.base.ref}\`, by [this run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})_`
+            const { owner, repo } = context.repo
+            const issue_number = context.payload.pull_request.number
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
+            const existing = comments.find(c => c.body?.startsWith(MARKER))
+            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body })
+
+  # The gate: is this branch slower than what people have installed from npm?
+  # A separate job, and the only one that can fail, so a red check means one
+  # thing and the report job stays informational.
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true # the release to compare against is a tag
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm install
+
+      - run: npx playwright install --with-deps chromium
+
+      # the highest vX.Y.Z, not the nearest ancestor: "the last release" means
+      # what is published, whatever this branch descends from
+      - name: Find the last release
+        id: release
+        run: |
+          tag=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then
+            echo "No release tag yet - nothing to compare against." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Compare against the last release
+        if: steps.release.outputs.tag != ''
+        run: |
+          mkdir -p regression-report
+          node scripts/run-ab.mjs \
+            --base "${{ steps.release.outputs.tag }}" \
+            --gate "${{ inputs.gate || '10' }}" \
+            --rounds "${{ inputs.rounds || '4' }}" \
+            --samples "${{ inputs.samples || '10' }}" \
+            --out regression-report
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.release.outputs.tag != ''
+        with:
+          name: regression-report
+          path: regression-report/
+
+      # loud only when it matters: a comment appears when the gate trips and is
+      # deleted the moment a later push comes back clean, so the PR never
+      # carries a regression notice that is no longer true
+      - name: Comment on the pull request
+        if: always() && github.event_name == 'pull_request' && steps.release.outputs.tag != ''
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { readFileSync, existsSync } = require("node:fs")
+            const MARKER = "<!-- jq79-regression -->"
+            const path = "regression-report/benchmark-report.json"
+            const regressed = existsSync(path) && JSON.parse(readFileSync(path, "utf8")).regressions?.length
+            const { owner, repo } = context.repo
+            const issue_number = context.payload.pull_request.number
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
+            const existing = comments.find(c => c.body?.startsWith(MARKER))
+            if (!regressed) {
+              if (existing) await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id })
+              return
+            }
+            let report = readFileSync("regression-report/benchmark-report.md", "utf8")
+            if (report.length > 60000) report = report.slice(0, report.indexOf("<details>")) +
+              "_(raw json trimmed - it is in the `regression-report` artifact)_\n"
+            const head = context.payload.pull_request.head.sha.slice(0, 12)
+            const body = `${MARKER}\n${report}\n---\n_\`${head}\` against the last release, by [this run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})_`
+            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body })
