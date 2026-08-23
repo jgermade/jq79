@@ -350,13 +350,19 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     }
   }
 
+  // wakes the effects sitting on one exact path, without the subtree sweep a
+  // full notify does. Two callers want this: a key-set change (nothing under
+  // the object changed, only which keys it has) and a container replaced by one
+  // holding the same elements (see notifyReplaced)
+  const wakeExactly = (dep: string) => {
+    const node = nodeAt(dep)
+    if (node) runMatched(new Set([...(node.own ?? []), ...(node.deep ?? [])]))
+  }
+
   // an object's key set changed. Effects only - a key set isn't a value, so
   // there is nothing to hand $on/$onAny that they don't already get from the
   // key's own notification
-  const notifyKeys = (path: string) => {
-    const node = nodeAt(keysPath(path))
-    if (node) runMatched(new Set([...(node.own ?? []), ...(node.deep ?? [])]))
-  }
+  const notifyKeys = (path: string) => wakeExactly(keysPath(path))
 
   // oldest first, and re-checking membership as it goes: an effect disposed by
   // an earlier one in this same pass (a list diff tearing down the rows it just
@@ -384,6 +390,110 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // to give for free: an effect disposed by an earlier effect in this same
     // notify (a list diff tearing down the rows it just woke) must not run
     else runMatched(effectsFor(dotKey))
+  }
+
+  // both sides are containers of the same kind, so what changed can be asked
+  // rather than assumed. Not the same object - that case never gets here (a
+  // same-reference write is the deep-touch channel and stays loud), and not a
+  // store on either side, which passes through whole
+  const replaceable = (previous: any, next: any): boolean =>
+    previous !== next &&
+    previous !== null && next !== null &&
+    typeof previous === "object" && typeof next === "object" &&
+    !isStore(previous) && !isStore(next) &&
+    isPlainData(previous) && isPlainData(next) &&
+    Array.isArray(previous) === Array.isArray(next)
+
+  const keyCount = (container: any): number =>
+    Array.isArray(container) ? container.length : Object.keys(container).length
+
+  // which keys hold a different value than they did, or null when so many do
+  // that notifying them one at a time would cost more than sweeping the
+  // container. Arrays - the case this exists for - are walked by index, so a
+  // 10,000 element list is compared without building a key array or a set of
+  // them: that bookkeeping alone was costing more than it saved on every
+  // replacement that ends up sweeping anyway
+  const GIVE_UP: null = null
+
+  const whatChanged = (previous: any, next: any): string[] | null => {
+    if (Array.isArray(next)) {
+      const before = previous.length
+      const after = next.length
+      // nothing on one side means nothing to reuse on the other
+      if (!before || !after) return GIVE_UP
+      const span = Math.max(before, after)
+      const changed: string[] = []
+      for (let index = 0; index < span; index++) {
+        if (Object.is($toRaw(previous[index]), $toRaw(next[index]))) continue
+        changed.push(String(index))
+        if (changed.length * 2 >= span) return GIVE_UP
+      }
+      return changed
+    }
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)])
+    if (!keys.size) return GIVE_UP
+    const changed: string[] = []
+    keys.forEach(key => { if (!Object.is($toRaw(previous[key]), $toRaw(next[key]))) changed.push(key) })
+    return changed.length * 2 >= keys.size ? GIVE_UP : changed
+  }
+
+  // A container replaced by another container: notify the elements that
+  // actually differ instead of the container and everything under it.
+  // `data = [...data, ...more]` holds the very same row objects at every index
+  // it had before, so waking all thirty thousand of their bindings to re-render
+  // identical output is ~150ms of a 208ms append - see
+  // TODOS/2026-08-23.notify-the-difference.md
+  //
+  // One level deep on purpose: an element that differs is a changed value, and
+  // notifying it sweeps its own subtree, which is what a changed value deserves
+  const notifyReplaced = (dotKey: string, previous: any, next: any, notified: any) => {
+    // one write, one wake: every path below contributes to a single set that
+    // runs once at the end. Notifying them one at a time re-ran an effect that
+    // depends on several of them once per path
+    const matched = new Set<Effect>()
+    const collectExact = (dep: string) => {
+      const node = nodeAt(dep)
+      node?.own?.forEach(effect => matched.add(effect))
+      node?.deep?.forEach(effect => matched.add(effect))
+    }
+
+    const changed = whatChanged(previous, next)
+    // when most of the container differs there is nothing to spare: `data = []`
+    // and a wholesale replacement change every key, and reaching each one
+    // through its own trie walk costs more than the single sweep it replaces.
+    // whatChanged says so by giving up. The decision has to come before
+    // anything is announced, or the plain notify would fire the container's
+    // listeners a second time
+    if (!changed) return notify(dotKey, notified)
+
+    exactListeners.get(dotKey)?.forEach(listener => listener(notified, dotKey))
+    // $onAny hears the container and nothing else, exactly as it did when this
+    // was one notify. It is what a bridge re-notifies upstairs, and the holder
+    // sweeps its own side off that one path - announcing each changed element
+    // as well would be a thousand redundant notifications for the same news
+    anyListeners.forEach(listener => listener(dotKey, notified))
+    // the container itself did change: whoever read it, or forwards it whole,
+    // hears that - but nothing is swept on its account
+    collectExact(dotKey)
+
+    changed.forEach(key => {
+      const after = $toRaw(next[key])
+      const child = `${dotKey}.${key}`
+      const value = isWrappable(after) ? wrap(after, child) : after
+      exactListeners.get(child)?.forEach(listener => listener(value, child))
+      effectsFor(child).forEach(effect => matched.add(effect))
+    })
+    if (keyCount(previous) !== keyCount(next)) collectExact(keysPath(dotKey))
+    // an array's length is a real dep (a `:each` reads it on its way through
+    // list.map) and is not one of the keys walked above. Collected exactly:
+    // the sweep a length write normally carries is for a truncation, and the
+    // elements that a shrink dropped are already in `keys`
+    if (Array.isArray(next) && previous.length !== next.length) {
+      const lengthKey = `${dotKey}.length`
+      exactListeners.get(lengthKey)?.forEach(listener => listener(next.length, lengthKey))
+      collectExact(lengthKey)
+    }
+    runMatched(matched)
   }
 
   const isWrappable = (value: any): value is Record<string, any> =>
@@ -493,6 +603,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         // listeners live on the child's store, not the parent's. A new key
         // always announces itself - the sweep is its whole point
         if (!isNewKey && Object.is(target[key], stored) && (stored === null || typeof stored !== "object")) return true
+        const previous = target[key]
         target[key] = stored
         tombstones?.delete(key) // the key exists again: no claim needed
         if (isStore(stored)) bridge(stored, dotKey)
@@ -501,7 +612,8 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         // a new key already re-runs every effect in the store (see notify), so
         // the key set growing needs no announcement of its own - only a delete,
         // which wakes precisely, does
-        notify(dotKey, notified, isNewKey)
+        if (!isNewKey && replaceable(previous, stored)) notifyReplaced(dotKey, previous, stored, notified)
+        else notify(dotKey, notified, isNewKey)
         return true
       },
       // `delete data.user` is a plain-object mutation like any other, so it
