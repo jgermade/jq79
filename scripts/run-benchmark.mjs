@@ -14,11 +14,10 @@
 
 import { chromium } from "playwright"
 import { preview } from "vite"
-import { execFileSync } from "node:child_process"
 import { cpus } from "node:os"
-import { readFile, writeFile, rm } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import { measureApp } from "./lib/benchmark-ops.mjs"
+import { installAndBuild, measureApp } from "./lib/benchmark-ops.mjs"
 
 const APP_DIR = fileURLToPath(new URL("../frameworks/keyed/jq79/", import.meta.url))
 const RESULTS_PATH = fileURLToPath(new URL("../frameworks/keyed/jq79/benchmark-results.json", import.meta.url))
@@ -27,18 +26,8 @@ const SAMPLES = 10 // per operation; the fastest and slowest are dropped, the re
 
 const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
 
-console.log("installing the benchmark app against this checkout's dist/ ...")
-// a stale node_modules/lockfile from a previous local run can leave npm
-// resolving only a partial tree; a clean install is slower but deterministic
-await rm(`${APP_DIR}node_modules`, { recursive: true, force: true })
-await rm(`${APP_DIR}package-lock.json`, { force: true })
-execFileSync("npm", ["install", "--no-save", "--no-audit", "--no-fund", `jq79@file:${fileURLToPath(new URL("..", import.meta.url))}`], {
-  cwd: APP_DIR,
-  stdio: "inherit",
-})
-
-console.log("building the benchmark app ...")
-execFileSync("npx", ["vite", "build"], { cwd: APP_DIR, stdio: "inherit" })
+console.log("installing and building the benchmark app against this checkout's dist/ ...")
+await installAndBuild(APP_DIR, [`jq79@file:${fileURLToPath(new URL("..", import.meta.url))}`, "--no-save"])
 
 const server = await preview({ root: APP_DIR, preview: { port: PORT, strictPort: true }, logLevel: "warn" })
 const url = `http://localhost:${PORT}/`

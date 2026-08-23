@@ -11,11 +11,10 @@
 
 import { chromium } from "playwright"
 import { preview } from "vite"
-import { execFileSync } from "node:child_process"
 import { cpus } from "node:os"
-import { readFile, writeFile, rm } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import { measureApp } from "./lib/benchmark-ops.mjs"
+import { installAndBuild, measureApp } from "./lib/benchmark-ops.mjs"
 
 const KEYED_DIR = fileURLToPath(new URL("../frameworks/keyed/", import.meta.url))
 const RESULTS_PATH = fileURLToPath(new URL("../frameworks/keyed/comparison-results.json", import.meta.url))
@@ -40,18 +39,11 @@ const results = []
 for (const app of APPS) {
   const dir = `${KEYED_DIR}${app.id}/`
 
-  console.log(`[${app.id}] installing ...`)
-  // a stale node_modules/lockfile from a previous local run can leave npm
-  // resolving only a partial tree; a clean install is slower but deterministic
-  await rm(`${dir}node_modules`, { recursive: true, force: true })
-  await rm(`${dir}package-lock.json`, { force: true })
+  console.log(`[${app.id}] installing and building ...`)
   // jq79 installs from this checkout's dist/, not npm - --no-save keeps that
   // one-off resolution out of the app's committed package.json
   const installArgs = app.installArg ? [app.installArg, "--no-save"] : []
-  execFileSync("npm", ["install", ...installArgs, "--no-audit", "--no-fund"], { cwd: dir, stdio: "inherit" })
-
-  console.log(`[${app.id}] building ...`)
-  execFileSync("npx", ["vite", "build"], { cwd: dir, stdio: "inherit" })
+  await installAndBuild(dir, installArgs)
 
   const version = app.pkg
     ? JSON.parse(await readFile(`${dir}node_modules/${app.pkg}/package.json`, "utf8")).version
