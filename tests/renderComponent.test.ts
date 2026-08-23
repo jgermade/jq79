@@ -814,6 +814,30 @@ describe("renderComponent", () => {
       expect(moves).toBe(2)
     })
 
+    it("keys a list the same whether or not the expression takes the fast path", () => {
+      // `row.id` is read straight off the item; a deeper path, a call, or a
+      // name from the outer scope still goes through evalExpr. All four have to
+      // agree on identity, or a reorder rebuilds rows it should have reused
+      for (const keyExpr of ["u.id", "u.meta.id", "String(u.id)", "ids[u.id]"]) {
+        const host = document.createElement("div")
+        container.appendChild(host)
+        const component = parseComponent(`<li :each="u in users" :key="${keyExpr}">{{ u.name }}</li>`)
+        const data = $reactive({
+          users: [{ id: 1, name: "a", meta: { id: 1 } }, { id: 2, name: "b", meta: { id: 2 } }],
+          ids: { 1: "one", 2: "two" },
+        })
+        host.appendChild(renderComponent(component, data))
+        const [first, second] = $$(host, "li")
+
+        data.users = [data.users[1], data.users[0]]
+
+        expect($$(host, "li").map(el => el.textContent)).toEqual(["b", "a"])
+        // reused, not rebuilt: the same two elements came back in the new order
+        expect($$(host, "li")[0]).toBe(second)
+        expect($$(host, "li")[1]).toBe(first)
+      }
+    })
+
     it("evaluates a :key without ever writing the loop name into the store", () => {
       // the key expression needs the item bound to a scope to read it from, and
       // one scratch scope now serves the whole pass - the loop variable written

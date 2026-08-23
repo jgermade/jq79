@@ -1483,6 +1483,10 @@ const mentionsAny = (node: TemplateNode | string, names: string[]): boolean => {
 // as a boundary and would find the `i` of `$index` when looking for `i`
 const IDENTIFIER_CHAR = /[A-Za-z0-9_$]/
 
+// `a.b` and nothing else: two plain identifiers, one dot. A deeper path could
+// walk a null halfway down, which is a diagnostic evalExpr owns
+const KEY_MEMBER = /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/
+
 const identifierIn = (text: string, name: string): boolean => {
   for (let at = text.indexOf(name); at !== -1; at = text.indexOf(name, at + 1)) {
     const before = at === 0 ? "" : text[at - 1]
@@ -1498,6 +1502,21 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
   const [, itemName, atName, listExpr] = match
   const keyExpr = node.attrs[":key"]
+
+  // `:key="row.id"`, or the loop variable itself, is what a key almost always
+  // is - and reading one needs neither a scope to resolve names against nor a
+  // compiled expression, because the item is already in hand. A pass evaluates
+  // one key per row, so a 1,000-row list paid 1,000 `with`-scoped calls through
+  // the store proxy to discover that nothing had changed: most of the 37% of a
+  // pass that goes on evaluating expressions
+  // (TODOS/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
+  // an index, a deeper path, a name from the outer scope - still goes through
+  // evalExpr, and so does a non-object item, which keeps every diagnostic a
+  // property read of a null row would have raised
+  const keyIsItem = keyExpr === itemName
+  const keyProp = keyExpr !== undefined && !keyIsItem && KEY_MEMBER.test(keyExpr) && keyExpr.startsWith(`${itemName}.`)
+    ? keyExpr.slice(itemName.length + 1)
+    : undefined
   const { [":each"]: _each, [":key"]: _key, ...itemAttrs } = node.attrs
   const itemNode: TemplateNode = { ...node, attrs: itemAttrs }
 
@@ -1578,7 +1597,9 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         const item = array ? list[index] : list[at]
 
         let key: any = at
-        if (keyExpr !== undefined) {
+        if (keyIsItem) key = item
+        else if (keyProp !== undefined && item !== null && typeof item === "object") key = item[keyProp]
+        else if (keyExpr !== undefined) {
           if (scratch === undefined) {
             scratch = Object.create(scope) as Record<string, any>
             defineScopeVar(scratch, itemName, item)
