@@ -101,7 +101,7 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ title: "t", disabled: false }), d => { d.title = "t2"; d.disabled = true }],
     ["form state", `<form class="a"><input :value="name" /><input type="checkbox" :checked="ok" /><select :value="lang"><option value="en">en</option><option value="es">es</option></select></form>`,
       () => ({ name: "ada", ok: false, lang: "en" }), d => { d.name = "grace"; d.ok = true; d.lang = "es" }],
-    ["an unknown tag stays interpreted", `<div class="a"><weird-thing class="w"><span>x</span></weird-thing><svg class="s"><circle /></svg></div>`,
+    ["an unknown tag stays interpreted", `<div class="a"><weird-thing class="w"><span>x</span></weird-thing></div>`,
       () => ({}), () => {}],
     ["a nested component", `<div class="a"><p class="b">{{ v }}</p><Chip :label="v" /><p class="c">{{ v }}</p></div>`,
       () => ({ v: "x", Chip: parseComponent(`<span class="chip">{{ label }}</span>`) }), d => { d.v = "y" }],
@@ -132,6 +132,17 @@ describe("the clone path renders what the interpreted path renders", () => {
     // the clone either way. The read log is what tells the two orders apart
     [":value on a select whose options are bound", `<div class="w"><span class="p">uno</span><select class="q" :value="pick"><option :attrs="{ value: a }">A</option><option :attrs="{ value: b }">B</option></select><span class="r">dos</span></div>`,
       () => ({ pick: "b", a: "a", b: "b" }), d => { d.pick = "a" }],
+    // <svg> used to be rejected by plannableNode as an HTMLUnknownElement, so it
+    // sat in SHAPE_CORPUS proving it fell through. It is a real namespaced
+    // element now (TODOS/2026-08-24.svg-namespace.md) and therefore plannable,
+    // so what it proves moved: the cloner has to build it in the same namespace
+    // the interpreted path does, or the two disagree about `viewBox`
+    ["an svg", `<div class="w"><span class="p">uno</span><svg class="q" viewBox="0 0 10 10"><circle cx="5" r="4" :fill="color" /></svg><span class="r">dos</span></div>`,
+      () => ({ color: "red" }), d => { d.color = "blue" }],
+    ["an svg with camelCase tags", `<div class="w"><span class="p">uno</span><svg class="q"><defs><linearGradient id="g"><stop :offset="at" /></linearGradient><clipPath id="c"><circle r="1" /></clipPath></defs></svg><span class="r">dos</span></div>`,
+      () => ({ at: "0" }), d => { d.at = "1" }],
+    ["a foreignObject hands the namespace back", `<div class="w"><span class="p">uno</span><svg class="q"><foreignObject><p>{{ v }}</p></foreignObject></svg><span class="r">dos</span></div>`,
+      () => ({ v: "x" }), d => { d.v = "y" }],
     ["a mixed row", `<table class="a"><tbody><tr :each="row in rows" :key="row.id" :class="{ danger: row.id === sel }">
         <td class="c1">{{ row.id }}</td>
         <td class="c2"><a @click="sel = row.id">{{ row.label }}</a></td>
@@ -176,8 +187,6 @@ describe("the clone path renders what the interpreted path renders", () => {
     ["a dashed tag", `<div class="w"><span class="p">uno</span><drop-area class="q"><b>x</b></drop-area><span class="r">dos</span></div>`,
       () => ({}), () => {}],
     ["a nested template element", `<div class="w"><span class="p">uno</span><template class="q"><b>x</b></template><span class="r">dos</span></div>`,
-      () => ({}), () => {}],
-    ["an svg", `<div class="w"><span class="p">uno</span><svg class="q"><circle r="1" /></svg><span class="r">dos</span></div>`,
       () => ({}), () => {}],
     // the upgrade watch: an unknown, undashed tag is a component that has not
     // arrived yet (an async factory writes the key in after the template has

@@ -25,6 +25,13 @@ type TemplateNode = {
   // parse (see stampComponentTag) and lifted off attrs here, where it stops
   // looking like an attribute to every loop downstream
   component?: string
+  // the element's namespace, present only when it is NOT HTML - an <svg>
+  // subtree, or MathML. Read straight off the parsed tree, because the HTML
+  // parser has already run the foreign-content algorithm over it and knows
+  // things a tag name cannot say: whether this <title> is SVG's or HTML's, and
+  // where a <foreignObject> hands the namespace back. Absent is the common
+  // case and means HTML, so an ordinary node is exactly the shape it was
+  ns?: string
 }
 
 type TagBlock = {
@@ -51,17 +58,25 @@ const elementAttrs = (el: Element): Record<string, string> =>
 // they are not in the AST at all - which is where slot content is written
 // (<template :slot.name>), and why a nested <template> used to render as an
 // empty element whatever was inside it
+const HTML_NS = "http://www.w3.org/1999/xhtml"
+
 const elementToAST = (el: Element): TemplateNode => {
   const attrs = elementAttrs(el)
+  // `tagName` is uppercase for HTML and as-authored for everything else, so the
+  // lowercasing that normalizes <DIV> would destroy <clipPath>, <linearGradient>
+  // and <feGaussianBlur>, whose names are case-sensitive
+  const ns = el.namespaceURI
   // the pre-parse stamp becomes a field and leaves attrs entirely: it is not a
   // prop, not a directive and not an attribute, and every loop that walks attrs
   // would otherwise need to know its name
   const component = attrs[COMPONENT_TAG_ATTR]
   delete attrs[COMPONENT_TAG_ATTR]
+  const foreign = ns !== null && ns !== HTML_NS
   return {
-    tag: el.tagName.toLowerCase(),
+    tag: foreign ? el.tagName : el.tagName.toLowerCase(),
     attrs,
     ...(component === undefined ? {} : { component }),
+    ...(foreign ? { ns } : {}),
     children: Array.from((el instanceof HTMLTemplateElement ? el.content : el).childNodes).flatMap((node): (TemplateNode | string)[] => {
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent ?? ""
@@ -1194,6 +1209,14 @@ const BOOLEAN_ATTRS = new Set([
 // browser doesn't have - and `readonly`/`novalidate`/`ismap` reflect under
 // camelCase property names no kebab->camel pass can produce, failing toward
 // `readonly="false"`, which is read-only
+// the one place an element is built, so the interpreted path and the cloner
+// cannot disagree about what a tag means. `ns` is set only for a foreign
+// element (see TemplateNode) - and creating one in its own namespace is what
+// makes `viewBox` keep its case, because setAttribute only lowercases a
+// qualified name on an HTML element
+const createFor = (node: TemplateNode): Element =>
+  node.ns === undefined ? document.createElement(node.tag) : document.createElementNS(node.ns, node.tag)
+
 const applyAttr = (el: Element, name: string, value: any) => {
   const boolean = BOOLEAN_ATTRS.has(name)
   if (boolean ? !value : value == null) el.removeAttribute(name)
@@ -1297,9 +1320,13 @@ const plannableAttr = (name: string): boolean => {
 const plannableNode = (node: TemplateNode): boolean => {
   if (node.component || node.tag.includes("-")) return false
   if (isSlotTag(node.tag) || node.tag === "template") return false
-  // an unknown tag may still become a component, and <svg> is one of them:
-  // createElement builds SVG names in the HTML namespace (see renderNode)
-  if (document.createElement(node.tag) instanceof HTMLUnknownElement) return false
+  // an unknown tag may still become a component, so it stays interpreted - the
+  // upgrade watch lives there and a clone cannot carry it. A *foreign* element
+  // skips the test rather than failing it: <circle> is an HTMLUnknownElement
+  // when built with createElement, which is exactly the mistake this used to
+  // make, and nothing in an <svg> subtree can ever become a component (no SVG
+  // tag is uppercase-initial, so none is ever stamped as one)
+  if (node.ns === undefined && document.createElement(node.tag) instanceof HTMLUnknownElement) return false
   for (const key in node.attrs) if (!plannableAttr(key)) return false
   // an element with :text has no children on either path (see buildSkeleton), so
   // what the source wrote inside it cannot make the subtree unplannable - a
@@ -1331,7 +1358,7 @@ type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[]; tags: string[] }
 // registration order, so this is not cosmetic
 const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], tags: Set<string>): Element => {
   tags.add(node.tag)
-  const el = document.createElement(node.tag)
+  const el = createFor(node)
 
   let classExpr: string | undefined
   let toggles: [string, string][] | null = null
@@ -1536,7 +1563,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     if (plan && !plan.tags.some(tag => findComponentKey(scope, tag))) return renderFromSkeleton(plan, scope, fx)
   }
 
-  const el = document.createElement(node.tag)
+  const el = createFor(node)
 
   // <UserCrad /> - written as a component (node.component), resolving to no
   // component, and not an element either. Nothing else on the page can supply
