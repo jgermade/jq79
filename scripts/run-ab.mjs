@@ -15,6 +15,7 @@
 //   node scripts/run-ab.mjs --base none            # the same, said out loud
 //   node scripts/run-ab.mjs --base main            # this checkout vs main
 //   node scripts/run-ab.mjs --base v0.6.1 --rounds 4 --samples 12
+//   node scripts/run-ab.mjs --flags                # cloneSkeletons on vs off
 //
 // Writes <out>/benchmark-report.md and <out>/benchmark-report.json, and prints
 // the markdown to stdout so it survives in a CI log with no artifact download.
@@ -43,6 +44,12 @@ const BASE = (() => {
   const value = (arg("base", "") || "").trim()
   return !value || value === "none" ? null : value
 })()
+// --flags measures THIS checkout against itself with the skeleton clone path
+// off, which is a pairing no ref can express: one build, one dist, two URLs.
+// The benchmark app reads ?clone=0 and calls Component79.debug (see its
+// src/main.js), so nothing about the bundle differs between the two sides
+const FLAGS = process.argv.includes("--flags")
+if (FLAGS && BASE) throw new Error("--flags measures one build against itself; drop --base")
 const SAMPLES = Number(arg("samples", 10))
 const ROUNDS = Number(arg("rounds", 3))
 // the first round of a session is the expensive one - cold JIT, cold page
@@ -144,11 +151,28 @@ const builds = []
 await mkdir(STAGE_PKG, { recursive: true })
 await cp(join(ROOT, "package.json"), join(STAGE_PKG, "package.json"))
 
+const headDist = await buildInto(ROOT, "head")
+
+if (FLAGS) {
+  // base is the flag OFF, so a negative delta reads "cloning is faster", the
+  // same direction every other run of this script reports
+  builds.push({
+    id: "base",
+    label: `${shortSha("HEAD")}, cloneSkeletons off`,
+    ref: capture("git", ["rev-parse", "HEAD"]),
+    dist: headDist,
+    query: "?clone=0",
+  })
+}
+
 builds.push({
   id: "head",
-  label: BASE ? `this checkout (${shortSha("HEAD")})` : `jq79 ${shortSha("HEAD")}`,
+  label: FLAGS
+    ? `${shortSha("HEAD")}, cloneSkeletons on`
+    : BASE ? `this checkout (${shortSha("HEAD")})` : `jq79 ${shortSha("HEAD")}`,
   ref: capture("git", ["rev-parse", "HEAD"]),
-  dist: await buildInto(ROOT, "head"),
+  dist: headDist,
+  query: FLAGS ? "?clone=1" : "",
 })
 
 let worktree = null
@@ -269,6 +293,7 @@ const isRegression = entry =>
 // rounds[i][buildId][opId] = one operation's measurement. A round measures
 // every build, which is what makes rounds[i] a pair and the pairing meaningful
 const rounds = []
+let staged = null
 let chromiumVersion = "unknown"
 let confirmed = []
 
@@ -285,9 +310,14 @@ try {
     const measured = {}
     for (const build of order) {
       console.log(`\n--- ${name}: ${build.label} ---`)
-      await useBuild(build.dist)
+      // --flags puts the same dist on both sides, and rebuilding the app to
+      // stage a bundle it already has would cost more than the measurement
+      if (build.dist !== staged) {
+        await useBuild(build.dist)
+        staged = build.dist
+      }
       const server = await preview({ root: APP_DIR, preview: { port: PORT, strictPort: true }, logLevel: "warn" })
-      const operations = await measureApp(page, `http://localhost:${PORT}/`, SAMPLES, only)
+      const operations = await measureApp(page, `http://localhost:${PORT}/${build.query ?? ""}`, SAMPLES, only)
       await server.close()
       measured[build.id] = Object.fromEntries(operations.map(op => [op.id, op]))
     }

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { Component79, parseComponent, renderComponent, $reactive, __setCloneSkeletons } from "../src/jq79"
+import { Component79, parseComponent, renderComponent, $reactive } from "../src/jq79"
 
 // The differential test for the clone path.
 //
@@ -17,15 +17,18 @@ import { Component79, parseComponent, renderComponent, $reactive, __setCloneSkel
 // but adding one to the *allowlist* without implementing it is, and that is
 // what this catches.
 
+const setClone = (on: boolean) => Component79.debug({ cloneSkeletons: on })
+
 const bothWays = <T>(render: () => T): [T, T] => {
-  const was = __setCloneSkeletons(false)
+  const { cloneSkeletons: was } = Component79.debug()
   try {
+    setClone(false)
     const interpreted = render()
-    __setCloneSkeletons(true)
+    setClone(true)
     const cloned = render()
     return [interpreted, cloned]
   } finally {
-    __setCloneSkeletons(was)
+    setClone(was)
   }
 }
 
@@ -225,8 +228,9 @@ describe("the clone path renders every tutorial exercise identically", () => {
         return html
       }
 
-      const was = __setCloneSkeletons(false)
+      const { cloneSkeletons: was } = Component79.debug()
       try {
+        setClone(false)
         // the null control, inside the test: two interpreted mounts must agree
         // before a cloned one can be judged against them. An exercise that is
         // not deterministic across mounts fails as that, not as a clone bug
@@ -234,11 +238,11 @@ describe("the clone path renders every tutorial exercise identically", () => {
         const again = await mount()
         expect(again, "this exercise does not render the same twice").toBe(interpreted)
 
-        __setCloneSkeletons(true)
+        setClone(true)
         const cloned = await mount()
         expect(cloned).toBe(interpreted)
       } finally {
-        __setCloneSkeletons(was)
+        setClone(was)
       }
     })
   })

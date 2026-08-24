@@ -1239,13 +1239,22 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // what makes rule 1 enforceable rather than a promise.
 // ---------------------------------------------------------------------------
 
-// Internal, for that differential test: flipping this must never change what
-// renders, only how. Not part of the public API.
-let cloneSkeletons = false
-export const __setCloneSkeletons = (on: boolean): boolean => {
-  const was = cloneSkeletons
-  cloneSkeletons = on
-  return was
+// Flipping this must never change what renders, only how - which is what
+// tests/skeleton.test.ts exists to keep true. It is on, and switchable through
+// `Component79.debug({ cloneSkeletons: false })`, because a second render path
+// is the kind of change that wants an off switch a user can reach without a
+// rebuild: a page that renders wrong is a bug report either way, but one whose
+// reporter can say "it goes away with cloning off" is a bug report that names
+// the file
+const debugFlags: DebugFlags = { cloneSkeletons: true }
+
+// What `Component79.debug()` can switch. One flag today; the shape is an object
+// so the next one does not change the call
+export type DebugFlags = {
+  // build a fixed-shape subtree by cloning a skeleton made once per definition,
+  // instead of walking the AST for every instance of it. Off means every
+  // element goes through renderNode, exactly as before this existed
+  cloneSkeletons: boolean
 }
 
 // The four things a hole can be, in the order renderNode registers them.
@@ -1416,7 +1425,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // somebody might name a component after. "It is a known HTML tag" is not on
   // its own an answer; this is. It costs what the interpreted path already
   // pays - one findComponentKey per distinct tag, memoized per render pass
-  if (cloneSkeletons) {
+  if (debugFlags.cloneSkeletons) {
     const plan = planOf(node)
     if (plan && !plan.tags.some(tag => findComponentKey(scope, tag))) return renderFromSkeleton(plan, scope, fx)
   }
@@ -3297,6 +3306,26 @@ export class Component79 {
   //
   //   Component79.fetch("./app.html").mount("main")
   //   const app = await Component79.fetch("./app.html")
+  // Reads the debug flags, and sets the ones it is given:
+  //
+  //   Component79.debug()                            // what is on right now
+  //   Component79.debug({ cloneSkeletons: false })   // turn one off
+  //
+  // Returns the flags as they stand after the call, so a caller can put them
+  // back. Global to the module, not per component: these switch how the
+  // renderer works, and a page rendering two ways at once is the one state
+  // nobody could debug
+  static debug(options?: Partial<DebugFlags>): DebugFlags {
+    if (options) {
+      for (const key in options) {
+        const value = options[key as keyof DebugFlags]
+        if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
+        else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)
+      }
+    }
+    return { ...debugFlags }
+  }
+
   static fetch(url: string): PendingComponent79 {
     if (Array.isArray(url)) throw new TypeError("Component79.fetch takes one URL; use fetchAll for an array")
     return new PendingComponent79(fetchComponent(url))

@@ -25,6 +25,7 @@ npm run test:coverage # + coverage/ (the site's badge reads lines.pct)
 npm run build         # tsup → dist/
 npm run site.dev      # the site + tutorial on a watch loop → localhost:4179
 npm run benchmark:ab -- --base main   # this branch vs a ref, on one machine
+npm run benchmark:ab -- --flags       # one build against itself, cloneSkeletons off vs on
 ```
 
 CI runs `npm test` and `npm run build` on every push/PR to `main`.

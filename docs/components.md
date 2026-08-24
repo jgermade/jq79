@@ -362,3 +362,36 @@ It's baked in at build time, so it's the same string in every build — the ESM
 and CJS bundles, and `window.jq79` from the CDN `<script>`, where nothing else
 says which release the page pulled. Running the library straight from `src/`
 (the tests do) reports `"0.0.0-dev"`, since there is no build to stamp it.
+
+## Switching off an optimization: `Component79.debug()`
+
+Reads the renderer's debug flags, and sets the ones you pass:
+
+```js
+Component79.debug()                            // { cloneSkeletons: true }
+Component79.debug({ cloneSkeletons: false })   // turn it off, get the flags back
+```
+
+Global to the page, not per component — these change how the renderer works,
+and a page rendering two ways at once is the one state nobody can debug. Call it
+before mounting: components already on the page keep the DOM they were built
+with.
+
+### `cloneSkeletons`
+
+**On by default.** Where a subtree's *shape* never varies — the elements, their
+static attributes and their nesting are fixed, and only the values bound into
+them change — jq79 builds that shape once per component definition and gives
+each instance a `cloneNode` of it, instead of walking the template again for
+every instance. Worth about a fifth of the time it takes to build a 1,000-row
+list, and more on a row with more markup in it.
+
+It is meant to be invisible: the same DOM, the same bindings, in the same order.
+If you ever see a page that renders wrong and comes right with
+
+```js
+Component79.debug({ cloneSkeletons: false })
+```
+
+that is a bug in jq79 and a very good bug report — say so in the issue, because
+it names the file.
