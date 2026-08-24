@@ -201,20 +201,32 @@ describe("the clone path renders what the interpreted path renders", () => {
   ;[...CORPUS, ...SHAPE_CORPUS].forEach(([name, template, makeData, mutate]) => {
     it(`${name}`, () => {
       const [before, after] = bothWays(() => {
-        const host = document.createElement("div")
-        container.appendChild(host)
-        const [raw, reads] = probe(makeData())
-        const data = $reactive(raw)
-        host.appendChild(renderComponent(parseComponent(template), data))
-        const initial = host.innerHTML
-        const registered = [...reads]
-        mutate(data)
-        return { initial, registered, mutated: host.innerHTML }
+        // ONE parse, rendered TWICE. The plan is built on the second render
+        // (TODOS/2026-08-24.plan-on-the-second-render.md), so a template parsed
+        // fresh for every render would never reach the clone path and every
+        // assertion below would pass without testing anything
+        const component = parseComponent(template)
+        const renderOnce = () => {
+          const host = document.createElement("div")
+          container.appendChild(host)
+          const [raw, reads] = probe(makeData())
+          const data = $reactive(raw)
+          host.appendChild(renderComponent(component, data))
+          const initial = host.innerHTML
+          const registered = [...reads]
+          mutate(data)
+          return { initial, registered, mutated: host.innerHTML }
+        }
+        return { first: renderOnce(), second: renderOnce() }
       })
 
-      expect(after.initial).toBe(before.initial)
-      expect(after.mutated).toBe(before.mutated)
-      expect(after.registered, "the bindings register in a different order").toEqual(before.registered)
+      // the first render is interpreted on both arms, so this is a control: it
+      // says the pair of renders is deterministic before the second is judged
+      expect(after.first.initial, "the first render already differs").toBe(before.first.initial)
+      // the one that matters - interpreted, against a render built by cloning
+      expect(after.second.initial).toBe(before.second.initial)
+      expect(after.second.mutated).toBe(before.second.mutated)
+      expect(after.second.registered, "the bindings register in a different order").toEqual(before.second.registered)
     })
   })
 })
@@ -265,14 +277,27 @@ describe("the clone path renders every tutorial exercise identically", () => {
     it(name, async () => {
       // the tutorial's own preview logic, as tests/tutorial.test.ts does it:
       // sibling files become the entry's pre-resolved modules
-      const mount = async () => {
-        const host = document.createElement("div")
-        document.body.appendChild(host)
+      // built ONCE per arm and mounted twice. The plan is built on the second
+      // render of a definition, so a component reparsed per mount would never
+      // reach the clone path - and this whole describe block would pass while
+      // testing nothing (TODOS/2026-08-24.plan-on-the-second-render.md)
+      const build = () => {
         const modules: Record<string, Component79> = {}
         Object.entries(files)
           .filter(([file]) => file !== ENTRY)
           .forEach(([file, source]) => { modules[`./${file}`] = new Component79(source) })
-        new Component79(files[ENTRY], { modules }).mountShadow(host)
+        return new Component79(files[ENTRY], { modules })
+      }
+
+      const mount = async (component: Component79) => {
+        const host = document.createElement("div")
+        document.body.appendChild(host)
+        // the `{}` is load-bearing. mountShadow only renders when it has no
+        // content yet, so mounting an already-rendered instance re-ATTACHES the
+        // DOM it already built - the second mount would render nothing, reach
+        // no plan, and compare a moved tree against itself. Passing data forces
+        // renderWith, with exactly the arguments the no-data call makes
+        component.mountShadow(host, {})
         // a setup script that awaits renders on a later tick, and one exercise
         // (03-components/08-slots) settles a tick after the first: read when the
         // DOM stops moving rather than at a fixed tick, or the comparison races
@@ -297,15 +322,21 @@ describe("the clone path renders every tutorial exercise identically", () => {
       const { cloneSkeletons: was } = Component79.debug()
       try {
         setClone(false)
-        // the null control, inside the test: two interpreted mounts must agree
-        // before a cloned one can be judged against them. An exercise that is
-        // not deterministic across mounts fails as that, not as a clone bug
-        const interpreted = await mount()
-        const again = await mount()
+        // the null control, inside the test: two interpreted mounts of one
+        // component must agree before a cloned one can be judged against them.
+        // An exercise that is not deterministic across mounts fails as that,
+        // not as a clone bug
+        const plain = build()
+        const interpreted = await mount(plain)
+        const again = await mount(plain)
         expect(again, "this exercise does not render the same twice").toBe(interpreted)
 
         setClone(true)
-        const cloned = await mount()
+        // the first mount is the definition's first sighting and is interpreted
+        // whatever the flag says; the second is the one built by cloning
+        const cloning = build()
+        await mount(cloning)
+        const cloned = await mount(cloning)
         expect(cloned).toBe(interpreted)
       } finally {
         setClone(was)

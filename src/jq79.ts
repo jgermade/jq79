@@ -1433,9 +1433,35 @@ const countElements = (node: TemplateNode): number =>
 
 const skeletonPlans = new WeakMap<TemplateNode, SkeletonPlan | null>()
 
+// A definition rendered ONCE pays for a plan it never reuses: +23% at
+// MIN_SKELETON_ELEMENTS, +11.5% at six elements, measured in
+// TODOS/2026-08-24.one-shot-render-measured.md. So the plan is built on the
+// SECOND render, not the first - a one-shot definition never builds one at all,
+// and a :each of 1,000 rows interprets row 1 and clones the other 999.
+//
+// The element count could not answer this. It is a proxy for "will this be
+// rendered again", and raising it to protect the one-shot case would take a
+// 9-element list row - which amortizes beautifully - off the clone path. This
+// keys on the thing itself.
+//
+// renderEach calls renderNode per row and renderNode calls planOf, so the list
+// case needs no special handling; it falls out.
+//
+// The third state is a WeakSet rather than a sentinel in the map, so the map's
+// type keeps saying what it means: absent is "never seen", null is "examined,
+// not plannable"
+const seenOnce = new WeakSet<TemplateNode>()
+
 const planOf = (node: TemplateNode): SkeletonPlan | null => {
   const cached = skeletonPlans.get(node)
   if (cached !== undefined) return cached
+
+  // first sighting: interpret it, and decide nothing. Examining it here is the
+  // cost the one-shot case was paying
+  if (!seenOnce.has(node)) {
+    seenOnce.add(node)
+    return null
+  }
 
   let plan: SkeletonPlan | null = null
   if (plannableNode(node) && countElements(node) >= MIN_SKELETON_ELEMENTS) {
