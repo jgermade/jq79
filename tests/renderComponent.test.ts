@@ -1,5 +1,5 @@
 
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { $, $$, parseComponent, $reactive, renderComponent, $toRaw } from "../src/jq79"
 
 describe("renderComponent", () => {
@@ -1566,5 +1566,174 @@ describe("nested component recursion", () => {
 
     expect(container.querySelectorAll("div.a").length).toBe(2)
     expect(container.querySelector("div.a div.a a")).not.toBeNull()
+  })
+})
+
+// findComponentKey skips a scope level it knows declares no PascalCase key, and
+// an :each item scope is marked from the loop names. A capitalised loop name is
+// exactly the case that marking must not swallow: it *is* a component tag
+describe(":each with a component in the loop variable", () => {
+  it("renders the component the loop variable holds", () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const Red = parseComponent(`<b class="red">rojo</b>`)
+    const Blue = parseComponent(`<i class="blue">azul</i>`)
+    const component = parseComponent(`<div><Cell :each="Cell in cells" /></div>`)
+
+    container.appendChild(renderComponent(component, $reactive({ cells: [Red, Blue] })))
+
+    expect(container.querySelector(".red")).not.toBeNull()
+    expect(container.querySelector(".blue")).not.toBeNull()
+  })
+
+  it("still resolves an outer component from inside a plain-named loop", () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const Chip = parseComponent(`<span class="chip">{{ label }}</span>`)
+    const component = parseComponent(`<div><p :each="item in items"><Chip :label="item" /></p></div>`)
+
+    container.appendChild(renderComponent(component, $reactive({ items: ["a", "b"], Chip })))
+
+    expect($$(container, ".chip").map(el => el.textContent)).toEqual(["a", "b"])
+  })
+})
+
+// The chain grammar is :if, then :elseif, then :else, on adjacent siblings.
+// Both ways of breaking it render something, so both have to say so - the
+// orphan especially, which renders the branch unconditionally and used to do it
+// in complete silence
+describe(":if/:elseif/:else chain validation", () => {
+  let container: HTMLDivElement
+  let warn: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+  })
+
+  afterEach(() => warn.mockRestore())
+
+  const messages = () => warn.mock.calls.map(call => String(call[0]))
+
+  it("warns about an :else that continues no :if, and renders it unconditionally", () => {
+    const component = parseComponent(`<div><p :else class="c">huerfano</p></div>`)
+
+    container.appendChild(renderComponent(component, $reactive({})))
+
+    expect(container.querySelector(".c")).not.toBeNull()
+    expect(messages()).toContainEqual(expect.stringContaining(":else on <p> continues no :if"))
+  })
+
+  it("warns when an element between the branches breaks the chain", () => {
+    const component = parseComponent(
+      `<div><p :if="a">A</p><span>corta</span><p :elseif="b">B</p></div>`
+    )
+
+    // b is false: a chain would hide it. It renders anyway, which is the point
+    container.appendChild(renderComponent(component, $reactive({ a: false, b: false })))
+
+    expect(container.textContent).toContain("B")
+    expect(messages()).toContainEqual(expect.stringContaining(":elseif on <p> continues no :if"))
+  })
+
+  it("warns when a :each element separates a branch from its :if", () => {
+    const component = parseComponent(
+      `<div><p :if="a">A</p><span :each="n in nums">{{ n }}</span><p :else>B</p></div>`
+    )
+
+    container.appendChild(renderComponent(component, $reactive({ a: true, nums: [1] })))
+
+    // both branches in the DOM at once - a chain can never do that
+    expect(container.textContent).toContain("A")
+    expect(container.textContent).toContain("B")
+    expect(messages()).toContainEqual(expect.stringContaining(":else on <p> continues no :if"))
+  })
+
+  it("warns about two branch directives on one element, and applies the first", () => {
+    const component = parseComponent(`<div><p :if="a" :else class="c">A</p></div>`)
+
+    container.appendChild(renderComponent(component, $reactive({ a: false })))
+
+    expect(container.querySelector(".c")).toBeNull()
+    expect(messages()).toContainEqual(expect.stringContaining(":if and :else on the same <p>"))
+  })
+
+  it("tells a second :else from a stray one", () => {
+    const component = parseComponent(`
+      <div>
+        <p :if="a">A</p>
+        <p :else>B</p>
+        <p :else class="c">C</p>
+      </div>
+    `)
+
+    container.appendChild(renderComponent(component, $reactive({ a: true })))
+
+    // it renders next to the branch that won, which is what gives it away
+    expect(container.querySelector(".c")).not.toBeNull()
+    expect(messages()).toContainEqual(expect.stringContaining("a second :else on <p>"))
+    expect(messages()).not.toContainEqual(expect.stringContaining("continues no :if"))
+  })
+
+  it("warns about two directives on an element the chain itself claimed", () => {
+    const component = parseComponent(
+      `<div><p :if="a">A</p><p :elseif="b" :else class="c">B</p></div>`
+    )
+
+    container.appendChild(renderComponent(component, $reactive({ a: false, b: false })))
+
+    // claimed as the :elseif branch, so the dropped :else does not make it a
+    // fallback: nothing renders, which is what the warning is about
+    expect(container.querySelector(".c")).toBeNull()
+    expect(messages()).toContainEqual(expect.stringContaining(":elseif and :else on the same <p>"))
+  })
+
+  it("reports at parse time, before anything renders", () => {
+    parseComponent(`<div><p :else>huerfano</p></div>`)
+
+    expect(messages()).toContainEqual(expect.stringContaining(":else on <p> continues no :if"))
+  })
+
+  it("reports a stray branch inside a branch that never becomes active", () => {
+    const component = parseComponent(
+      `<div><p :if="a">A</p><p :else>B<span :else>dentro</span></p></div>`
+    )
+
+    // a is true, so the :else branch is never rendered at all - and the stray
+    // :else inside it is reported anyway, which is what parse time buys
+    container.appendChild(renderComponent(component, $reactive({ a: true })))
+
+    expect(container.textContent).not.toContain("dentro")
+    expect(messages()).toContainEqual(expect.stringContaining(":else on <span> continues no :if"))
+  })
+
+  it("says nothing about a well-formed chain, across lines and with :elseif repeated", () => {
+    const component = parseComponent(`
+      <div>
+        <p :if="score > 8">great</p>
+        <p :elseif="score > 4">ok</p>
+        <p :elseif="score > 2">meh</p>
+        <p :else>bad</p>
+      </div>
+    `)
+
+    container.appendChild(renderComponent(component, $reactive({ score: 6 })))
+
+    expect(container.textContent).toContain("ok")
+    expect(messages()).toEqual([])
+  })
+
+  it("reports a template's stray branch once, not once per :each row or per pass", () => {
+    const component = parseComponent(
+      `<ul><li :each="n in nums" :key="n"><b :if="n > 1">si</b><i :else>no</i><s :else>orphan</s></li></ul>`
+    )
+    const data = $reactive({ nums: [1, 2, 3] })
+
+    container.appendChild(renderComponent(component, data))
+    data.nums = [1, 2, 3, 4]
+
+    const orphans = messages().filter(message => message.includes(":else on <s>"))
+    expect(orphans).toHaveLength(1)
   })
 })

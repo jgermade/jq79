@@ -157,6 +157,22 @@ Consecutive siblings form one chain; only the active branch is in the DOM.
 <div :else>bad</div>
 ```
 
+A chain is **one `:if`, any number of `:elseif`, at most one `:else`**, on adjacent sibling elements — only whitespace may sit between them, and the `:else` closes the chain. Break that and the branch renders *unconditionally*, because `:elseif`/`:else` mean nothing on their own. The chains are checked when the component is **parsed**, so a broken one is reported once per definition — before any data exists, and whether or not the branch it sits in ever renders:
+
+```html
+<div :if="a">A</div>
+<hr />
+<div :else>B</div>            <!-- :else on <div> continues no :if: the <hr> broke the chain -->
+
+<div :if="a">A</div>
+<div :else>B</div>
+<div :else>C</div>            <!-- a second :else: the chain already ended -->
+
+<div :if="a" :else>A</div>    <!-- two on one element: only :if applies -->
+```
+
+A `:each` element between the branches breaks the chain like any other element, and `:if`/`:elseif`/`:else` **on** a `:each` element are ignored (with their own warning) — filter the list expression instead.
+
 ## `:each` / `:key` — lists
 
 ```html

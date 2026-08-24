@@ -502,6 +502,18 @@ const scanComponentKey = (scope: Record<string, any>, tag: string): string | nul
 let tagMemo: Map<string, string | null> | null = null
 let memoBase: object | null = null
 
+// Scope objects known to declare no PascalCase key of their own, so the walk
+// below can skip them without calling Object.keys - which allocates an array
+// and scans it, per element, per row. An :each item scope holds `item`,
+// `$index` and maybe the `, at` name, and whether any of those can be a
+// component name is decided by the template, once (see EachPlan).
+//
+// Only scopes jq79 creates and never adds a key to go in here. A store must
+// never: a setup script's `const Row = await $import(...)` arrives as a new key
+// after the template has already rendered, which is the whole reason the tag
+// memo lives for exactly one pass
+const plainScopes = new WeakSet<object>()
+
 // opened and closed by hand rather than by a wrapper taking a callback: a
 // component that renders itself through :each stacks one renderEach per level,
 // and a callback would add a frame to each of them. The cyclic-component test
@@ -532,6 +544,7 @@ const findComponentKey = (scope: Record<string, any>, tag: string): string | nul
       tagMemo.set(tag, key)
       return key
     }
+    if (plainScopes.has(obj)) continue
     for (const key of Object.keys(obj)) {
       if (/^[A-Z]/.test(key) && key.replace(/-/g, "").toLowerCase() === normalized) return key
     }
@@ -1193,6 +1206,202 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // normally. :if/:elseif/:else/:each are handled by renderNodes, which decides
 // *whether*/*how many times* a node is rendered before calling this. Tags
 // matching a PascalCase scope variable render as nested components instead
+
+// ---------------------------------------------------------------------------
+// Cloning a fixed shape instead of deriving it per instance.
+//
+// renderNode asks the same questions of the same AST node for every instance of
+// it: is this a slot, a component, an unknown tag; which of these attributes is
+// a directive; split this text on `{{`. For a :each of 1,000 rows that is ~25
+// questions per element per row whose answers were fixed by the source text.
+// Where a subtree's *shape* is fixed - the elements, their static attributes and
+// their nesting never vary, only the values bound into them - the shape is built
+// once per definition into a detached skeleton, and each instance is one
+// cloneNode plus a walk to each binding point.
+//
+// Worth -20 to -49% of create1k depending on how much fixed structure a row
+// has, and nothing at all on a row that has none. Measured, with the method and
+// the caveats, in TODOS/2026-08-24.clone-skeletons-measured.md.
+//
+// Two rules keep this from becoming the bug it could be:
+//
+// 1. **The holes are an allowlist, never a denylist.** `plannableAttr` names
+//    the four things a skeleton knows how to fill; every other attribute makes
+//    the subtree unplannable. So a directive added to renderNode later is
+//    *slower* until somebody teaches it here - never silently mis-rendered,
+//    which is the failure a second render path invites.
+// 2. **The interpreted path stays the fallback for everything else**, including
+//    every tag that could still turn into a component. The upgrade watch and
+//    the unresolved-component throw are not reimplemented here; they are never
+//    reached from here.
+//
+// tests/skeleton.test.ts renders a corpus both ways and diffs the DOM, which is
+// what makes rule 1 enforceable rather than a promise.
+// ---------------------------------------------------------------------------
+
+// Flipping this must never change what renders, only how - which is what
+// tests/skeleton.test.ts exists to keep true. It is on, and switchable through
+// `Component79.debug({ cloneSkeletons: false })`, because a second render path
+// is the kind of change that wants an off switch a user can reach without a
+// rebuild: a page that renders wrong is a bug report either way, but one whose
+// reporter can say "it goes away with cloning off" is a bug report that names
+// the file
+const debugFlags: DebugFlags = { cloneSkeletons: true }
+
+// What `Component79.debug()` can switch. One flag today; the shape is an object
+// so the next one does not change the call
+export type DebugFlags = {
+  // build a fixed-shape subtree by cloning a skeleton made once per definition,
+  // instead of walking the AST for every instance of it. Off means every
+  // element goes through renderNode, exactly as before this existed
+  cloneSkeletons: boolean
+}
+
+// The four things a hole can be, in the order renderNode registers them.
+// A `:` attribute with a dot in it is rejected wholesale except `:class.`:
+// `:model.`, `:props.`, `:slot.` and `:html.allowed` all live in that shape, and
+// so would the next directive family somebody invents
+const plannableAttr = (name: string): boolean => {
+  if (name.startsWith("@")) return true
+  if (name === ":class") return true
+  if (name.startsWith(":class.")) return true
+  if (!name.startsWith(":")) return name !== COMPONENT_TAG_ATTR // a static attribute
+  return !isControlAttr(name) && !name.includes(".")
+}
+
+const plannableNode = (node: TemplateNode): boolean => {
+  if (node.component || node.tag.includes("-")) return false
+  if (isSlotTag(node.tag) || node.tag === "template") return false
+  // an unknown tag may still become a component, and <svg> is one of them:
+  // createElement builds SVG names in the HTML namespace (see renderNode)
+  if (document.createElement(node.tag) instanceof HTMLUnknownElement) return false
+  for (const key in node.attrs) if (!plannableAttr(key)) return false
+  return node.children.every(child => typeof child === "string" || plannableNode(child))
+}
+
+// A hole, and the path from the skeleton root to the node it fills: child
+// indices rather than a query, resolved by walking childNodes. The AST keeps
+// whitespace text nodes on purpose, and the skeleton keeps them too, so the
+// indices line up on both sides by construction
+type SkeletonOp =
+  | { kind: "text"; path: number[]; parts: TextPart[] }
+  | { kind: "event"; path: number[]; attr: string; expr: string }
+  | { kind: "attr"; path: number[]; name: string; expr: string }
+  | { kind: "class"; path: number[]; classExpr?: string; toggles: [string, string][] | null; staticClasses: Set<string> }
+
+type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[]; tags: string[] }
+
+// mirrors renderNode's own order: the attribute walk (events and attribute
+// bindings as they appear), then :class, then the children. Effects run in
+// registration order, so this is not cosmetic
+const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], tags: Set<string>): Element => {
+  tags.add(node.tag)
+  const el = document.createElement(node.tag)
+
+  let classExpr: string | undefined
+  let toggles: [string, string][] | null = null
+  for (const key in node.attrs) {
+    const value = node.attrs[key]
+    if (key.startsWith("@")) ops.push({ kind: "event", path, attr: key, expr: value })
+    else if (key === ":class") classExpr = value
+    else if (key.startsWith(":class.")) (toggles ??= []).push([key.slice(":class.".length), value])
+    else if (key.startsWith(":")) {
+      const name = key.slice(1)
+      ops.push({ kind: "attr", path, name, expr: value || kebabToCamel(name) })
+    } else el.setAttribute(key, value)
+  }
+  if (classExpr !== undefined || toggles) {
+    ops.push({ kind: "class", path, classExpr, toggles, staticClasses: new Set(classNames(node.attrs.class ?? "")) })
+  }
+
+  node.children.forEach((child, index) => {
+    if (typeof child === "string") {
+      // an interpolated text node is a hole; the skeleton holds the empty node
+      // it will be written into, so the child indices match either way
+      if (child.includes("{{")) {
+        ops.push({ kind: "text", path: [...path, index], parts: splitText(child) })
+        el.appendChild(document.createTextNode(""))
+      } else el.appendChild(document.createTextNode(child))
+      return
+    }
+    el.appendChild(buildSkeleton(child, [...path, index], ops, tags))
+  })
+
+  return el
+}
+
+// how many elements a subtree is worth cloning for. Below this the fixed cost
+// of the plan - the lookup, the tag check, the path walks - is the whole
+// saving: planning fragments of one or two elements measured as a wash at best
+// and a regression on a row whose only fragments are that small
+const MIN_SKELETON_ELEMENTS = 3
+
+const countElements = (node: TemplateNode): number =>
+  1 + node.children.reduce((total, child) => total + (typeof child === "string" ? 0 : countElements(child)), 0)
+
+const skeletonPlans = new WeakMap<TemplateNode, SkeletonPlan | null>()
+
+const planOf = (node: TemplateNode): SkeletonPlan | null => {
+  const cached = skeletonPlans.get(node)
+  if (cached !== undefined) return cached
+
+  let plan: SkeletonPlan | null = null
+  if (plannableNode(node) && countElements(node) >= MIN_SKELETON_ELEMENTS) {
+    const ops: SkeletonOp[] = []
+    const tags = new Set<string>()
+    const skeleton = buildSkeleton(node, [], ops, tags)
+    plan = { skeleton, ops, tags: Array.from(tags) }
+  }
+  skeletonPlans.set(node, plan)
+  return plan
+}
+
+const atPath = (root: Node, path: number[]): Node => {
+  let at = root
+  for (let i = 0; i < path.length; i++) at = at.childNodes[path[i]]
+  return at
+}
+
+const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: EffectScope): Node => {
+  const root = plan.skeleton.cloneNode(true) as Element
+
+  for (const op of plan.ops) {
+    const target = op.path.length === 0 ? root : atPath(root, op.path)
+
+    if (op.kind === "text") {
+      const textNode = target as Text
+      const parts = op.parts
+      fx.effect(() => {
+        const text = renderText(parts, scope)
+        if (textNode.textContent !== text) textNode.textContent = text
+      })
+    } else if (op.kind === "event") {
+      bindEvent(target as Element, op.attr, op.expr, scope)
+    } else if (op.kind === "attr") {
+      const el = target as Element
+      const { name, expr } = op
+      fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
+    } else {
+      const el = target as Element
+      const { classExpr, toggles, staticClasses } = op
+      let bound: string[] = []
+      fx.effect(() => {
+        const next = classExpr !== undefined ? classNames(evalExpr(classExpr, scope)) : []
+        toggles?.forEach(([name, expr]) => {
+          if (evalExpr(expr, scope)) next.push(...classNames(name))
+        })
+        bound.forEach(name => {
+          if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
+        })
+        el.classList.add(...next)
+        bound = next
+      })
+    }
+  }
+
+  return root
+}
+
 const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   // :with applies to the element's own bindings (@events, :attrs) and its
   // whole subtree. On a :each element the item scope is already in place, so
@@ -1208,6 +1417,18 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
 
   const componentKey = findComponentKey(scope, node.tag)
   if (componentKey) return renderNestedComponent(componentKey, node, scope, fx, shadow)
+
+  // A planned subtree is cloned - unless a scope key captures one of its tags.
+  // findComponentKey strips dashes and lowercases, and every PascalCase scope
+  // key participates, so a variable named `Td` makes every <td> under it a
+  // component and `Map`, `Data`, `Table`, `Form` and `Label` are all HTML tags
+  // somebody might name a component after. "It is a known HTML tag" is not on
+  // its own an answer; this is. It costs what the interpreted path already
+  // pays - one findComponentKey per distinct tag, memoized per render pass
+  if (debugFlags.cloneSkeletons) {
+    const plan = planOf(node)
+    if (plan && !plan.tags.some(tag => findComponentKey(scope, tag))) return renderFromSkeleton(plan, scope, fx)
+  }
 
   const el = document.createElement(node.tag)
 
@@ -1395,12 +1616,18 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       if ((el as HTMLInputElement).value !== value) (el as HTMLInputElement).value = value
     })
   }
-  ;([":checked", ":selected"] as const).forEach(attr => {
-    const expr = node.attrs[attr]
-    if (expr === undefined) return
-    const prop = attr.slice(1) as "checked" | "selected"
-    fx.effect(() => { (el as any)[prop] = !!evalExpr(expr, scope) })
-  })
+  // written out rather than looped over a literal array: the loop allocated the
+  // array *and* its closure for every element rendered - 8,000 of each per
+  // create1k, almost all of them to find nothing. Same reason the attribute
+  // walk above is a `for...in` (TODOS/2026-08-23.where-the-create-time-goes.md)
+  const checkedExpr = node.attrs[":checked"]
+  if (checkedExpr !== undefined) {
+    fx.effect(() => { (el as HTMLInputElement).checked = !!evalExpr(checkedExpr, scope) })
+  }
+  const selectedExpr = node.attrs[":selected"]
+  if (selectedExpr !== undefined) {
+    fx.effect(() => { (el as HTMLOptionElement).selected = !!evalExpr(selectedExpr, scope) })
+  }
 
   return el
 }
@@ -1556,10 +1783,37 @@ const identifierIn = (text: string, name: string): boolean => {
   return false
 }
 
-const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
-  const match = node.attrs[":each"].match(EACH_PATTERN)
-  if (!match) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
+// Everything renderEach reads off the template and nothing else: the parsed
+// clause, how the key is read, the item node, and whether anything in the
+// subtree names a position. All of it is fixed by the source, and none of it
+// was cached - renderEach runs once per render of its parent, which for a
+// :each nested inside another is once per row of the outer one. `mentionsAny`
+// walks the whole item subtree, so that was a subtree walk per row per pass
+type EachPlan = {
+  itemName: string
+  atName: string | undefined
+  listExpr: string
+  keyExpr: string | undefined
+  keyIsItem: boolean
+  keyProp: string | undefined
+  itemNode: TemplateNode
+  readsPosition: boolean
+  // can either loop name be mistaken for a component? Decided from the
+  // template, so the item scope can be marked plain without being scanned
+  namesComponent: boolean
+}
 
+const eachPlans = new WeakMap<TemplateNode, EachPlan | null>()
+
+const eachPlanOf = (node: TemplateNode): EachPlan | null => {
+  const cached = eachPlans.get(node)
+  if (cached !== undefined) return cached
+
+  const match = node.attrs[":each"].match(EACH_PATTERN)
+  if (!match) {
+    eachPlans.set(node, null)
+    return null
+  }
   const [, itemName, atName, listExpr] = match
   const keyExpr = node.attrs[":key"]
 
@@ -1592,6 +1846,28 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const positionalNames = ["$index", ...(atName ? [atName] : [])]
   const readsPosition = mentionsAny(itemNode, positionalNames)
 
+  const namesComponent = /^[A-Z]/.test(itemName) || (atName !== undefined && /^[A-Z]/.test(atName))
+  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent }
+  eachPlans.set(node, plan)
+  return plan
+}
+
+const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
+  const plan = eachPlanOf(node)
+  if (!plan) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
+
+  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent } = plan
+
+  // `:key="row.id"`, or the loop variable itself, is what a key almost always
+  // is - and reading one needs neither a scope to resolve names against nor a
+  // compiled expression, because the item is already in hand. A pass evaluates
+  // one key per row, so a 1,000-row list paid 1,000 `with`-scoped calls through
+  // the store proxy to discover that nothing had changed: most of the 37% of a
+  // pass that goes on evaluating expressions
+  // (TODOS/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
+  // an index, a deeper path, a name from the outer scope - still goes through
+  // evalExpr, and so does a non-object item, which keeps every diagnostic a
+  // property read of a null row would have raised
   const anchor = document.createComment("each")
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
@@ -1707,6 +1983,8 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         defineScopeVar(itemScope, itemName, item)
         if (atName) defineScopeVar(itemScope, atName, at)
         defineScopeVar(itemScope, "$index", index)
+        // one WeakSet write per row against one Object.keys per element in it
+        if (!namesComponent) plainScopes.add(itemScope)
         const itemFx = createEffectScope(scope)
         // bounds captured before the positioning pass inserts the entry: a
         // component entry is a fragment, which empties on insertion (see boundsOf)
@@ -1751,6 +2029,168 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   })
 
   return wrapper
+}
+
+// the first sibling from `from` that is not indentation. The branches of a
+// chain are written on their own lines, so whitespace-only text sits between
+// them in the AST and must not break the chain up. One copy of the rule, used
+// by the renderer that groups a chain and by the validator that checks its
+// grammar - the two can never disagree about what "adjacent" means
+const nextSiblingAt = (nodes: (TemplateNode | string)[], from: number): number => {
+  let at = from
+  while (at < nodes.length && typeof nodes[at] === "string" && !(nodes[at] as string).trim()) at++
+  return at
+}
+
+// The grammar of a conditional chain: `:if`, then any number of `:elseif`,
+// then an optional `:else`, on adjacent sibling elements. Both ways of getting
+// it wrong render *something*, which is why they need saying out loud:
+//
+// - two of the three on one element: the first in precedence order applies and
+//   the rest are control attrs, so they are silently dropped
+// - a branch no chain claimed - no `:if` before it, or one separated from it by
+//   an element (a `:each` row, a component tag, any sibling that isn't
+//   whitespace): it falls through to renderNode, where `:elseif`/`:else` are
+//   control attrs skipped by the attribute walk, and the element renders
+//   **unconditionally**. That one had no diagnostic at all
+//
+// Reported once per definition, from the parse-time walk below
+const warnChainAttrs = (node: TemplateNode) => {
+  const hasIf = ":if" in node.attrs
+  const hasElseif = ":elseif" in node.attrs
+  const hasElse = ":else" in node.attrs
+  if ((hasIf ? 1 : 0) + (hasElseif ? 1 : 0) + (hasElse ? 1 : 0) < 2) return
+  // allocated only on the way to a warning, never on the path that finds none
+  const present = [hasIf ? ":if" : null, hasElseif ? ":elseif" : null, hasElse ? ":else" : null].filter(Boolean)
+  console.warn(
+    `jq79: ${present.join(" and ")} on the same <${node.tag}> - only ${present[0]} applies; ` +
+    "the branches of a chain are sibling elements, one directive each"
+  )
+}
+
+// `afterClosedChain`: the branch chain immediately before this node ended with
+// an `:else`, so this is a *second* one rather than a stray - which is the
+// difference between a useful message and a puzzling one ("continues no :if"
+// reads as nonsense when there is an :if two lines up)
+const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
+  const attr = ":elseif" in node.attrs ? ":elseif" : ":else"
+  console.warn(
+    afterClosedChain
+      ? `jq79: a second ${attr} on <${node.tag}> - the chain before it already ended with :else, ` +
+        "which closes it. One :if, any number of :elseif, at most one :else"
+      : `jq79: ${attr} on <${node.tag}> continues no :if - it renders unconditionally. ` +
+        "A chain is :if, then :elseif, then :else, on adjacent siblings: anything but whitespace between them breaks it"
+  )
+}
+
+// Checks one node list's chains, and every list below it, against that grammar.
+// Run once per definition from componentPartsFrom, not per render: a template
+// says what it says before any data exists, so a stray :else is reported when
+// the component is defined - once, whatever the list it sits in later renders
+// a thousand rows of, and even if it sits in a branch that never becomes
+// active. Rendering is left alone entirely; nothing below costs an instance
+// anything.
+//
+// The dispatch mirrors renderNodes' loop, because that is what decides which
+// node ends up a branch of what: a :each node is claimed before the chain
+// grouping ever sees it, which is exactly why it breaks a chain
+const validateChains = (nodes: (TemplateNode | string)[]) => {
+  nodes.forEach(node => {
+    if (typeof node !== "string") validateChains(node.children)
+  })
+
+  // the chain that ended immediately before this point closed itself with an
+  // :else, so a further branch here is a second one rather than a stray
+  let afterClosedChain = false
+
+  for (let i = 0; i < nodes.length; ) {
+    const node = nodes[i]
+
+    if (typeof node === "string") {
+      if (node.trim()) afterClosedChain = false
+      i++
+      continue
+    }
+
+    // renderEach speaks for a :each element carrying a branch attribute of its
+    // own, and says something more useful than the grammar would
+    if (":each" in node.attrs) {
+      afterClosedChain = false
+      i++
+      continue
+    }
+
+    warnChainAttrs(node)
+
+    if (":if" in node.attrs) {
+      i++
+      // the same walk renderNodes does, so the nodes claimed here are the ones
+      // it will claim: any number of :elseif, then at most one :else
+      const claim = (attr: string): TemplateNode | undefined => {
+        const next = nextSiblingAt(nodes, i)
+        const candidate = nodes[next]
+        if (typeof candidate === "object" && attr in candidate.attrs) {
+          i = next + 1
+          return candidate
+        }
+        return undefined
+      }
+      // a claimed branch never reaches the check above - `:elseif :else` on one
+      // element is claimed as an :elseif and its :else dropped, in silence
+      for (let elseif = claim(":elseif"); elseif; elseif = claim(":elseif")) warnChainAttrs(elseif)
+      const elseNode = claim(":else")
+      if (elseNode) warnChainAttrs(elseNode)
+      // an :else closes the chain. A chain that ended without one cannot be
+      // followed by a stray at all - claim() would have taken it
+      afterClosedChain = elseNode !== undefined
+      continue
+    }
+
+    // no chain claimed this node, so a branch attribute on it is an orphan and
+    // the element renders unconditionally
+    if (":elseif" in node.attrs || ":else" in node.attrs) warnOrphanBranch(node, afterClosedChain)
+    afterClosedChain = false
+    i++
+  }
+}
+
+// The chain a `:if` node heads, and the index the sibling walk resumes at.
+// Both are fixed by the template - the node list is the same array on every
+// render - and renderNodes runs per instance, so a chain inside a :each row was
+// re-grouped, and its two arrays re-allocated, once per row per pass.
+// renderConditional only reads the branches, so one array serves every instance
+type Chain = { branches: ConditionalBranch[]; next: number }
+
+const chains = new WeakMap<TemplateNode, Chain>()
+
+const chainOf = (nodes: (TemplateNode | string)[], node: TemplateNode, from: number): Chain => {
+  const cached = chains.get(node)
+  if (cached) return cached
+
+  const branches: ConditionalBranch[] = [{ expr: node.attrs[":if"], node }]
+  let at = from + 1
+  // the whitespace between the branches is indentation and nothing else, so it
+  // is skipped rather than rendered (nextSiblingAt): only one branch is ever in
+  // the DOM, so there is nothing for it to be a space *between*
+  const claim = (attr: string): TemplateNode | undefined => {
+    const next = nextSiblingAt(nodes, at)
+    const candidate = nodes[next]
+    if (typeof candidate === "object" && attr in candidate.attrs) {
+      at = next + 1
+      return candidate
+    }
+    return undefined
+  }
+
+  for (let elseif = claim(":elseif"); elseif; elseif = claim(":elseif")) {
+    branches.push({ expr: elseif.attrs[":elseif"], node: elseif })
+  }
+  const elseNode = claim(":else")
+  if (elseNode) branches.push({ node: elseNode })
+
+  const chain: Chain = { branches, next: at }
+  chains.set(node, chain)
+  return chain
 }
 
 // renders a list of sibling template nodes (text + elements), grouping
@@ -1802,31 +2242,9 @@ const renderNodes = <T extends ParentNode>(
     }
 
     if (":if" in node.attrs) {
-      const branches: ConditionalBranch[] = [{ expr: node.attrs[":if"], node }]
-      i++
-
-      // the branches of a chain are siblings in the AST, but the template writes
-      // them on their own lines - so the whitespace between them is indentation
-      // and nothing else, and it's dropped rather than rendered: only one branch
-      // is ever in the DOM, so there is nothing for it to be a space *between*
-      const nextBranch = (attr: string): TemplateNode | undefined => {
-        let next = i
-        while (next < nodes.length && typeof nodes[next] === "string" && !(nodes[next] as string).trim()) next++
-        const candidate = nodes[next]
-        if (typeof candidate === "object" && attr in candidate.attrs) {
-          i = next + 1
-          return candidate
-        }
-        return undefined
-      }
-
-      for (let elseif = nextBranch(":elseif"); elseif; elseif = nextBranch(":elseif")) {
-        branches.push({ expr: elseif.attrs[":elseif"], node: elseif })
-      }
-      const elseNode = nextBranch(":else")
-      if (elseNode) branches.push({ node: elseNode })
-
-      fragment.appendChild(renderConditional(branches, scope, fx, shadow))
+      const chain = chainOf(nodes, node, i)
+      fragment.appendChild(renderConditional(chain.branches, scope, fx, shadow))
+      i = chain.next
       continue
     }
 
@@ -2193,6 +2611,10 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
       if (isScoped(style)) style.scoped = scopeCss(style.content, scope)
     })
   }
+
+  // the template says what it says before any data exists, so its conditional
+  // chains are checked here, once per definition
+  validateChains(template)
 
   return { template, scripts, styles }
 }
@@ -2884,6 +3306,26 @@ export class Component79 {
   //
   //   Component79.fetch("./app.html").mount("main")
   //   const app = await Component79.fetch("./app.html")
+  // Reads the debug flags, and sets the ones it is given:
+  //
+  //   Component79.debug()                            // what is on right now
+  //   Component79.debug({ cloneSkeletons: false })   // turn one off
+  //
+  // Returns the flags as they stand after the call, so a caller can put them
+  // back. Global to the module, not per component: these switch how the
+  // renderer works, and a page rendering two ways at once is the one state
+  // nobody could debug
+  static debug(options?: Partial<DebugFlags>): DebugFlags {
+    if (options) {
+      for (const key in options) {
+        const value = options[key as keyof DebugFlags]
+        if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
+        else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)
+      }
+    }
+    return { ...debugFlags }
+  }
+
   static fetch(url: string): PendingComponent79 {
     if (Array.isArray(url)) throw new TypeError("Component79.fetch takes one URL; use fetchAll for an array")
     return new PendingComponent79(fetchComponent(url))
