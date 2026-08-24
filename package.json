@@ -67,6 +67,7 @@
     "benchmark": "node scripts/run-benchmark.mjs",
     "benchmark:ab": "node scripts/run-ab.mjs",
     "benchmark:comparison": "node scripts/run-comparison.mjs",
+    "benchmark:once": "node scripts/run-once-render.mjs",
     "prepublishOnly": "npm test && npm run build"
   },
   "peerDependencies": {

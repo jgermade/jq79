@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { $, $$, parseComponent, $reactive, renderComponent, $toRaw } from "../src/jq79"
+import { $, $$, Component79, parseComponent, $reactive, renderComponent, $toRaw } from "../src/jq79"
 
 describe("renderComponent", () => {
   let container: HTMLDivElement
@@ -1735,5 +1735,111 @@ describe(":if/:elseif/:else chain validation", () => {
 
     const orphans = messages().filter(message => message.includes(":else on <s>"))
     expect(orphans).toHaveLength(1)
+  })
+})
+
+// <svg> used to render as an HTMLUnknownElement in the XHTML namespace: no
+// drawing, `viewBox` flattened to `viewbox` by setAttribute, every `:` binding
+// left in the DOM verbatim (an unknown element is a component that might still
+// arrive, so renderNode keeps its `:` attributes as parameters), and any
+// camelCase tag lowercased. The namespace now rides on the AST node, read off
+// the tree DOMParser already built - TODOS/2026-08-24.svg-namespace.md
+describe("svg", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => container.remove())
+
+  const render = (template: string, data: Record<string, any> = {}) => {
+    const store = $reactive(data)
+    container.appendChild(renderComponent(parseComponent(template), store))
+    return store as any
+  }
+
+  it("builds svg elements in the svg namespace", () => {
+    render(`<div><svg><circle r="4" /></svg></div>`)
+    const svg = container.querySelector("svg")!
+
+    expect(svg.namespaceURI).toBe("http://www.w3.org/2000/svg")
+    expect(svg).toBeInstanceOf(SVGElement)
+    expect(container.querySelector("circle")!.namespaceURI).toBe("http://www.w3.org/2000/svg")
+  })
+
+  it("keeps the case of a case-sensitive attribute", () => {
+    render(`<div><svg viewBox="0 0 10 10" preserveAspectRatio="xMidYMid"><circle r="1" /></svg></div>`)
+    const svg = container.querySelector("svg")!
+
+    expect(svg.getAttributeNames()).toContain("viewBox")
+    expect(svg.getAttribute("viewBox")).toBe("0 0 10 10")
+    expect(svg.getAttributeNames()).toContain("preserveAspectRatio")
+  })
+
+  it("keeps the case of a case-sensitive tag", () => {
+    render(`<div><svg><defs><linearGradient id="g"><stop offset="0" /></linearGradient><clipPath id="c"><circle r="1" /></clipPath></defs></svg></div>`)
+
+    expect(container.querySelector("linearGradient")?.tagName).toBe("linearGradient")
+    expect(container.querySelector("clipPath")?.tagName).toBe("clipPath")
+  })
+
+  // the one that made every other binding inside an <svg> inert
+  it("binds attributes inside an svg, reactively", () => {
+    const data = render(`<div><svg><circle r="4" :fill="color" :class.on="flag" /></svg></div>`, { color: "red", flag: false })
+    const circle = container.querySelector("circle")!
+
+    expect(circle.getAttribute("fill")).toBe("red")
+    expect(circle.getAttribute(":fill")).toBeNull()
+    expect(circle.classList.contains("on")).toBe(false)
+
+    data.color = "blue"
+    data.flag = true
+    expect(circle.getAttribute("fill")).toBe("blue")
+    expect(circle.classList.contains("on")).toBe(true)
+  })
+
+  it("interpolates and repeats inside an svg", () => {
+    const data = render(`<div><svg><text>{{ label }}</text><circle :each="c in circles" :key="c.id" :r="c.r" /></svg></div>`,
+      { label: "hola", circles: [{ id: 1, r: 1 }, { id: 2, r: 2 }] })
+
+    expect(container.querySelector("text")!.textContent).toBe("hola")
+    expect(container.querySelectorAll("circle")).toHaveLength(2)
+
+    data.circles = [{ id: 2, r: 2 }]
+    expect(container.querySelectorAll("circle")).toHaveLength(1)
+    expect(container.querySelector("circle")!.namespaceURI).toBe("http://www.w3.org/2000/svg")
+  })
+
+  // the parser's foreign-content algorithm, which is the reason the namespace
+  // is read off the tree rather than guessed from a list of tag names
+  it("hands the namespace back inside a foreignObject", () => {
+    render(`<div><svg><foreignObject><p>de vuelta</p></foreignObject></svg></div>`)
+
+    expect(container.querySelector("foreignObject")!.namespaceURI).toBe("http://www.w3.org/2000/svg")
+    expect(container.querySelector("p")!.namespaceURI).toBe("http://www.w3.org/1999/xhtml")
+    expect(container.querySelector("p")).toBeInstanceOf(HTMLElement)
+  })
+
+  it("does not treat an svg tag as a component that has not arrived", () => {
+    const data = render(`<div><svg><circle r="1" /></svg></div>`)
+    // the upgrade watch swaps an unknown tag when a matching key appears. An
+    // <svg> is a real element and must sit still
+    data.Svg = parseComponent(`<b class="wrong">tomado</b>`)
+    data.Circle = parseComponent(`<b class="wrong">tomado</b>`)
+
+    expect(container.querySelector(".wrong")).toBeNull()
+    expect(container.querySelector("svg")).not.toBeNull()
+  })
+
+  it("stamps svg elements for a scoped style", () => {
+    // <style scoped> requires the stamp on every element the component
+    // rendered, and a foreign element has to be reachable by its rules too
+    new Component79(`<style scoped>circle { fill: red }</style><div><svg><circle r="4" /></svg></div>`).mount(container)
+    const circle = container.querySelector("circle")!
+
+    const stamp = circle.getAttributeNames().find(name => name.startsWith("data-jq79"))
+    expect(stamp, "an svg element carries no scope stamp, so scoped rules cannot reach it").toBeDefined()
+    expect(circle.getAttribute(stamp!)).toBe(container.querySelector("div")!.getAttribute(stamp!))
   })
 })

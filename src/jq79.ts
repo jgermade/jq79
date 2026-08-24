@@ -25,6 +25,13 @@ type TemplateNode = {
   // parse (see stampComponentTag) and lifted off attrs here, where it stops
   // looking like an attribute to every loop downstream
   component?: string
+  // the element's namespace, present only when it is NOT HTML - an <svg>
+  // subtree, or MathML. Read straight off the parsed tree, because the HTML
+  // parser has already run the foreign-content algorithm over it and knows
+  // things a tag name cannot say: whether this <title> is SVG's or HTML's, and
+  // where a <foreignObject> hands the namespace back. Absent is the common
+  // case and means HTML, so an ordinary node is exactly the shape it was
+  ns?: string
 }
 
 type TagBlock = {
@@ -51,17 +58,25 @@ const elementAttrs = (el: Element): Record<string, string> =>
 // they are not in the AST at all - which is where slot content is written
 // (<template :slot.name>), and why a nested <template> used to render as an
 // empty element whatever was inside it
+const HTML_NS = "http://www.w3.org/1999/xhtml"
+
 const elementToAST = (el: Element): TemplateNode => {
   const attrs = elementAttrs(el)
+  // `tagName` is uppercase for HTML and as-authored for everything else, so the
+  // lowercasing that normalizes <DIV> would destroy <clipPath>, <linearGradient>
+  // and <feGaussianBlur>, whose names are case-sensitive
+  const ns = el.namespaceURI
   // the pre-parse stamp becomes a field and leaves attrs entirely: it is not a
   // prop, not a directive and not an attribute, and every loop that walks attrs
   // would otherwise need to know its name
   const component = attrs[COMPONENT_TAG_ATTR]
   delete attrs[COMPONENT_TAG_ATTR]
+  const foreign = ns !== null && ns !== HTML_NS
   return {
-    tag: el.tagName.toLowerCase(),
+    tag: foreign ? el.tagName : el.tagName.toLowerCase(),
     attrs,
     ...(component === undefined ? {} : { component }),
+    ...(foreign ? { ns } : {}),
     children: Array.from((el instanceof HTMLTemplateElement ? el.content : el).childNodes).flatMap((node): (TemplateNode | string)[] => {
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent ?? ""
@@ -1194,6 +1209,14 @@ const BOOLEAN_ATTRS = new Set([
 // browser doesn't have - and `readonly`/`novalidate`/`ismap` reflect under
 // camelCase property names no kebab->camel pass can produce, failing toward
 // `readonly="false"`, which is read-only
+// the one place an element is built, so the interpreted path and the cloner
+// cannot disagree about what a tag means. `ns` is set only for a foreign
+// element (see TemplateNode) - and creating one in its own namespace is what
+// makes `viewBox` keep its case, because setAttribute only lowercases a
+// qualified name on an HTML element
+const createFor = (node: TemplateNode): Element =>
+  node.ns === undefined ? document.createElement(node.tag) : document.createElementNS(node.ns, node.tag)
+
 const applyAttr = (el: Element, name: string, value: any) => {
   const boolean = BOOLEAN_ATTRS.has(name)
   if (boolean ? !value : value == null) el.removeAttribute(name)
@@ -1226,17 +1249,26 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // Two rules keep this from becoming the bug it could be:
 //
 // 1. **The holes are an allowlist, never a denylist.** `plannableAttr` names
-//    the four things a skeleton knows how to fill; every other attribute makes
-//    the subtree unplannable. So a directive added to renderNode later is
-//    *slower* until somebody teaches it here - never silently mis-rendered,
-//    which is the failure a second render path invites.
+//    what a skeleton knows how to fill; every other attribute makes the subtree
+//    unplannable. So a directive added to renderNode later is *slower* until
+//    somebody teaches it here - never silently mis-rendered, which is the
+//    failure a second render path invites.
+//
+//    The allowlist is where the one divergence found so far came from, and it
+//    came from *widening* rather than from renderNode growing: `:model` is the
+//    single directive renderNode treats specially that CONTROL_ATTRS does not
+//    name, so it slipped through the generic `:<name>` clause. Adding to this
+//    list is the dangerous edit in this file - see
+//    TODOS/2026-08-24.more-holes-in-the-cloner.md.
 // 2. **The interpreted path stays the fallback for everything else**, including
 //    every tag that could still turn into a component. The upgrade watch and
 //    the unresolved-component throw are not reimplemented here; they are never
 //    reached from here.
 //
-// tests/skeleton.test.ts renders a corpus both ways and diffs the DOM, which is
-// what makes rule 1 enforceable rather than a promise.
+// tests/skeleton.test.ts renders a corpus both ways and diffs the DOM *and the
+// order the bindings register in*, which is what makes rule 1 enforceable
+// rather than a promise. The order axis is not decoration: :value on a <select>
+// has to run after its <option>s are bound, and no DOM diff can see that.
 // ---------------------------------------------------------------------------
 
 // Flipping this must never change what renders, only how - which is what
@@ -1257,7 +1289,16 @@ export type DebugFlags = {
   cloneSkeletons: boolean
 }
 
-// The four things a hole can be, in the order renderNode registers them.
+// the control attributes a skeleton knows how to fill. The rest of
+// CONTROL_ATTRS stays rejected on purpose: :if/:elseif/:else/:each/:key change
+// the shape rather than filling a hole, :with changes the scope its subtree
+// evaluates in, :props belongs to a component tag, and :html carries a
+// sanitizer plus a second attribute (:html.allowed) whose "without :html"
+// warning fires once per render interpreted and would fire once per definition
+// here - see TODOS/2026-08-24.more-holes-in-the-cloner.md
+const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":attrs", ":value", ":checked", ":selected"])
+
+// What a hole can be, in the order renderNode registers them.
 // A `:` attribute with a dot in it is rejected wholesale except `:class.`:
 // `:model.`, `:props.`, `:slot.` and `:html.allowed` all live in that shape, and
 // so would the next directive family somebody invents
@@ -1265,17 +1306,33 @@ const plannableAttr = (name: string): boolean => {
   if (name.startsWith("@")) return true
   if (name === ":class") return true
   if (name.startsWith(":class.")) return true
+  if (PLANNABLE_CONTROL_ATTRS.has(name)) return true
   if (!name.startsWith(":")) return name !== COMPONENT_TAG_ATTR // a static attribute
+  // `:model` is the one directive renderNode treats specially that CONTROL_ATTRS
+  // does not name, so the clause below would let it through as a generic
+  // `:<name>` binding and the skeleton would write `model="..."` where the
+  // interpreted path warns and writes nothing (`:model` binds component tags
+  // only). `:model.<name>` is caught by the dot; the bare form needs saying
+  if (name === ":model") return false
   return !isControlAttr(name) && !name.includes(".")
 }
 
 const plannableNode = (node: TemplateNode): boolean => {
   if (node.component || node.tag.includes("-")) return false
   if (isSlotTag(node.tag) || node.tag === "template") return false
-  // an unknown tag may still become a component, and <svg> is one of them:
-  // createElement builds SVG names in the HTML namespace (see renderNode)
-  if (document.createElement(node.tag) instanceof HTMLUnknownElement) return false
+  // an unknown tag may still become a component, so it stays interpreted - the
+  // upgrade watch lives there and a clone cannot carry it. A *foreign* element
+  // skips the test rather than failing it: <circle> is an HTMLUnknownElement
+  // when built with createElement, which is exactly the mistake this used to
+  // make, and nothing in an <svg> subtree can ever become a component (no SVG
+  // tag is uppercase-initial, so none is ever stamped as one)
+  if (node.ns === undefined && document.createElement(node.tag) instanceof HTMLUnknownElement) return false
   for (const key in node.attrs) if (!plannableAttr(key)) return false
+  // an element with :text has no children on either path (see buildSkeleton), so
+  // what the source wrote inside it cannot make the subtree unplannable - a
+  // component tag under a :text is markup nobody renders, not markup the clone
+  // path would get wrong
+  if (node.attrs[":text"] !== undefined) return true
   return node.children.every(child => typeof child === "string" || plannableNode(child))
 }
 
@@ -1287,7 +1344,12 @@ type SkeletonOp =
   | { kind: "text"; path: number[]; parts: TextPart[] }
   | { kind: "event"; path: number[]; attr: string; expr: string }
   | { kind: "attr"; path: number[]; name: string; expr: string }
+  | { kind: "attrs"; path: number[]; expr: string }
   | { kind: "class"; path: number[]; classExpr?: string; toggles: [string, string][] | null; staticClasses: Set<string> }
+  | { kind: "textContent"; path: number[]; expr: string }
+  | { kind: "value"; path: number[]; expr: string }
+  | { kind: "checked"; path: number[]; expr: string }
+  | { kind: "selected"; path: number[]; expr: string }
 
 type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[]; tags: string[] }
 
@@ -1296,7 +1358,7 @@ type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[]; tags: string[] }
 // registration order, so this is not cosmetic
 const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], tags: Set<string>): Element => {
   tags.add(node.tag)
-  const el = document.createElement(node.tag)
+  const el = createFor(node)
 
   let classExpr: string | undefined
   let toggles: [string, string][] | null = null
@@ -1305,16 +1367,29 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
     if (key.startsWith("@")) ops.push({ kind: "event", path, attr: key, expr: value })
     else if (key === ":class") classExpr = value
     else if (key.startsWith(":class.")) (toggles ??= []).push([key.slice(":class.".length), value])
+    // a directive of its own, bound below - the same skip renderNode's walk
+    // makes, and for the same reason: without it :text would be written out as
+    // an attribute named `text`. :class/:class. are control attrs too and are
+    // already caught above
+    else if (isControlAttr(key)) { /* handled after the walk */ }
     else if (key.startsWith(":")) {
       const name = key.slice(1)
       ops.push({ kind: "attr", path, name, expr: value || kebabToCamel(name) })
     } else el.setAttribute(key, value)
   }
+  const attrsExpr = node.attrs[":attrs"]
+  if (attrsExpr !== undefined) ops.push({ kind: "attrs", path, expr: attrsExpr })
+
   if (classExpr !== undefined || toggles) {
     ops.push({ kind: "class", path, classExpr, toggles, staticClasses: new Set(classNames(node.attrs.class ?? "")) })
   }
 
-  node.children.forEach((child, index) => {
+  // :text replaces the element's content, and renderNode never renders the
+  // children of an element carrying one. So the skeleton gives it none either:
+  // a :text node is a leaf on both paths, whatever the source wrote inside it
+  const textExpr = node.attrs[":text"]
+  if (textExpr !== undefined) ops.push({ kind: "textContent", path, expr: textExpr })
+  else node.children.forEach((child, index) => {
     if (typeof child === "string") {
       // an interpolated text node is a hole; the skeleton holds the empty node
       // it will be written into, so the child indices match either way
@@ -1327,6 +1402,18 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
     el.appendChild(buildSkeleton(child, [...path, index], ops, tags))
   })
 
+  // after the children, because renderNode registers them there and for its
+  // reason: :value on a <select> can only pick an <option> that already exists.
+  // `ops` is flat and in registration order, and this is the recursive call's
+  // tail, so a parent's form-state ops land after every op of every descendant -
+  // which is exactly what renderNode's own recursion does
+  const valueExpr = node.attrs[":value"]
+  if (valueExpr !== undefined) ops.push({ kind: "value", path, expr: valueExpr })
+  const checkedExpr = node.attrs[":checked"]
+  if (checkedExpr !== undefined) ops.push({ kind: "checked", path, expr: checkedExpr })
+  const selectedExpr = node.attrs[":selected"]
+  if (selectedExpr !== undefined) ops.push({ kind: "selected", path, expr: selectedExpr })
+
   return el
 }
 
@@ -1336,14 +1423,45 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
 // and a regression on a row whose only fragments are that small
 const MIN_SKELETON_ELEMENTS = 3
 
+// children under a :text are not built by either path, so they are not elements
+// this threshold should be counting - a <p :text="v"> with two <span>s written
+// inside it is one element's worth of cloning, not three
 const countElements = (node: TemplateNode): number =>
-  1 + node.children.reduce((total, child) => total + (typeof child === "string" ? 0 : countElements(child)), 0)
+  node.attrs[":text"] !== undefined
+    ? 1
+    : 1 + node.children.reduce((total, child) => total + (typeof child === "string" ? 0 : countElements(child)), 0)
 
 const skeletonPlans = new WeakMap<TemplateNode, SkeletonPlan | null>()
+
+// A definition rendered ONCE pays for a plan it never reuses: +23% at
+// MIN_SKELETON_ELEMENTS, +11.5% at six elements, measured in
+// TODOS/2026-08-24.one-shot-render-measured.md. So the plan is built on the
+// SECOND render, not the first - a one-shot definition never builds one at all,
+// and a :each of 1,000 rows interprets row 1 and clones the other 999.
+//
+// The element count could not answer this. It is a proxy for "will this be
+// rendered again", and raising it to protect the one-shot case would take a
+// 9-element list row - which amortizes beautifully - off the clone path. This
+// keys on the thing itself.
+//
+// renderEach calls renderNode per row and renderNode calls planOf, so the list
+// case needs no special handling; it falls out.
+//
+// The third state is a WeakSet rather than a sentinel in the map, so the map's
+// type keeps saying what it means: absent is "never seen", null is "examined,
+// not plannable"
+const seenOnce = new WeakSet<TemplateNode>()
 
 const planOf = (node: TemplateNode): SkeletonPlan | null => {
   const cached = skeletonPlans.get(node)
   if (cached !== undefined) return cached
+
+  // first sighting: interpret it, and decide nothing. Examining it here is the
+  // cost the one-shot case was paying
+  if (!seenOnce.has(node)) {
+    seenOnce.add(node)
+    return null
+  }
 
   let plan: SkeletonPlan | null = null
   if (plannableNode(node) && countElements(node) >= MIN_SKELETON_ELEMENTS) {
@@ -1365,6 +1483,9 @@ const atPath = (root: Node, path: number[]): Node => {
 const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: EffectScope): Node => {
   const root = plan.skeleton.cloneNode(true) as Element
 
+  // ordered by how often a row actually carries the kind, not by when it was
+  // added: this chain runs once per op per instance, so the four holes a
+  // benchmark row is made of are matched before the five a form is
   for (const op of plan.ops) {
     const target = op.path.length === 0 ? root : atPath(root, op.path)
 
@@ -1381,7 +1502,7 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
       const el = target as Element
       const { name, expr } = op
       fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
-    } else {
+    } else if (op.kind === "class") {
       const el = target as Element
       const { classExpr, toggles, staticClasses } = op
       let bound: string[] = []
@@ -1396,6 +1517,44 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
         el.classList.add(...next)
         bound = next
       })
+    } else if (op.kind === "attrs") {
+      const el = target as Element
+      const { expr } = op
+      let boundKeys: string[] = []
+      fx.effect(() => {
+        boundKeys.forEach(key => el.removeAttribute(key))
+        const bound = evalExpr(expr, scope)
+        boundKeys = bound && typeof bound === "object" ? Object.keys(bound) : []
+        boundKeys.forEach(key => applyAttr(el, key, bound[key]))
+      })
+    } else if (op.kind === "textContent") {
+      const el = target as Element
+      const { expr } = op
+      fx.effect(() => { el.textContent = String(evalExpr(expr, scope) ?? "") })
+    } else if (op.kind === "value") {
+      // the property, not the attribute, and skipping a write that would not
+      // change it - renderNode's reasons apply here unchanged
+      const el = target as HTMLInputElement
+      const { expr } = op
+      fx.effect(() => {
+        const value = String(evalExpr(expr, scope) ?? "")
+        if (el.value !== value) el.value = value
+      })
+    } else if (op.kind === "checked") {
+      const el = target as HTMLInputElement
+      const { expr } = op
+      fx.effect(() => { el.checked = !!evalExpr(expr, scope) })
+    } else if (op.kind === "selected") {
+      const el = target as HTMLOptionElement
+      const { expr } = op
+      fx.effect(() => { el.selected = !!evalExpr(expr, scope) })
+    } else {
+      // every kind is named above, so this is unreachable - and the assignment
+      // is what makes the compiler say so. A kind added to SkeletonOp and
+      // forgotten here is the exact failure this whole file is arranged to
+      // prevent, and it is cheaper to catch it in tsc than in the corpus
+      const unhandled: never = op
+      void unhandled
     }
   }
 
@@ -1430,7 +1589,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     if (plan && !plan.tags.some(tag => findComponentKey(scope, tag))) return renderFromSkeleton(plan, scope, fx)
   }
 
-  const el = document.createElement(node.tag)
+  const el = createFor(node)
 
   // <UserCrad /> - written as a component (node.component), resolving to no
   // component, and not an element either. Nothing else on the page can supply

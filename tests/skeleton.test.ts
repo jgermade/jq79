@@ -19,6 +19,37 @@ import { Component79, parseComponent, renderComponent, $reactive } from "../src/
 
 const setClone = (on: boolean) => Component79.debug({ cloneSkeletons: on })
 
+// The second axis: the order the bindings are REGISTERED in, not just the DOM
+// they produce.
+//
+// Diffing the DOM cannot see an ordering bug, because reversing plan.ops moves
+// no markup - :value on a <select> picks an <option> whose existence the clone
+// path guarantees either way, and the property it writes is not in innerHTML.
+// So the ops grew an "after the children" phase with nothing watching it.
+//
+// This watches it, without a hook into the library: every value in the scope is
+// an accessor that logs its own name, every effect evaluates its expression when
+// it is registered, and every expression resolves its names through the store
+// proxy onto this object. Where each binding in a template reads a distinct
+// name, the read log IS the registration order.
+//
+// It compares the two paths against each other, so a change that reorders both
+// identically still passes - which is the trade a differential test makes
+const probe = (values: Record<string, any>): [Record<string, any>, string[]] => {
+  const reads: string[] = []
+  const raw: Record<string, any> = {}
+  Object.keys(values).forEach(key => {
+    let value = values[key]
+    Object.defineProperty(raw, key, {
+      enumerable: true,
+      configurable: true,
+      get() { reads.push(key); return value },
+      set(next) { value = next },
+    })
+  })
+  return [raw, reads]
+}
+
 const bothWays = <T>(render: () => T): [T, T] => {
   const { cloneSkeletons: was } = Component79.debug()
   try {
@@ -70,12 +101,48 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ title: "t", disabled: false }), d => { d.title = "t2"; d.disabled = true }],
     ["form state", `<form class="a"><input :value="name" /><input type="checkbox" :checked="ok" /><select :value="lang"><option value="en">en</option><option value="es">es</option></select></form>`,
       () => ({ name: "ada", ok: false, lang: "en" }), d => { d.name = "grace"; d.ok = true; d.lang = "es" }],
-    ["an unknown tag stays interpreted", `<div class="a"><weird-thing class="w"><span>x</span></weird-thing><svg class="s"><circle /></svg></div>`,
+    ["an unknown tag stays interpreted", `<div class="a"><weird-thing class="w"><span>x</span></weird-thing></div>`,
       () => ({}), () => {}],
     ["a nested component", `<div class="a"><p class="b">{{ v }}</p><Chip :label="v" /><p class="c">{{ v }}</p></div>`,
       () => ({ v: "x", Chip: parseComponent(`<span class="chip">{{ label }}</span>`) }), d => { d.v = "y" }],
     ["a scope key that captures an HTML tag", `<table class="a"><tr><td class="c1">plano</td><td class="c2">plano</td></tr></table>`,
       () => ({ Td: parseComponent(`<span class="captured">tomado</span>`) }), () => {}],
+    // the five directives the cloner learned to fill in
+    // TODOS/2026-08-24.more-holes-in-the-cloner.md. They keep the container they
+    // had as trip wires - a wrapper that is otherwise perfectly clonable and big
+    // enough to be planned - because that is the only shape in which a hole is
+    // reached through the clone path at all
+    [":text in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :text="v"></p><span class="r">dos</span></div>`,
+      () => ({ v: "x" }), d => { d.v = "y" }],
+    [":text over children the interpreted path never renders", `<div class="w"><span class="p">uno</span><p class="q" :text="v"><b>{{ ignored }}</b><Chip :label="v" /></p><span class="r">dos</span></div>`,
+      () => ({ v: "x", ignored: "no", Chip: parseComponent(`<span class="chip">{{ label }}</span>`) }), d => { d.v = "y"; d.ignored = "still no" }],
+    [":attrs in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :attrs="{ title }">x</p><span class="r">dos</span></div>`,
+      () => ({ title: "t" }), d => { d.title = "t2" }],
+    [":attrs dropping a key it set", `<div class="w"><span class="p">uno</span><p class="q" :attrs="bag">x</p><span class="r">dos</span></div>`,
+      () => ({ bag: { title: "t", lang: "es" } }), d => { d.bag = { title: "t2" } }],
+    [":value in a planned subtree", `<form class="w"><span class="p">uno</span><input class="q" :value="v" /><span class="r">dos</span></form>`,
+      () => ({ v: "a" }), d => { d.v = "b" }],
+    [":checked in a planned subtree", `<form class="w"><span class="p">uno</span><input class="q" type="checkbox" :checked="on" /><span class="r">dos</span></form>`,
+      () => ({ on: false }), d => { d.on = true }],
+    [":selected in a planned subtree", `<div class="w"><span class="p">uno</span><select class="q"><option value="a" :selected="pick">a</option><option value="b">b</option></select></div>`,
+      () => ({ pick: true }), d => { d.pick = false }],
+    // the reason the order axis exists. The select's :value must register after
+    // its options' bindings; nothing about the resulting DOM says so, because
+    // the property :value writes is not in innerHTML and the options exist in
+    // the clone either way. The read log is what tells the two orders apart
+    [":value on a select whose options are bound", `<div class="w"><span class="p">uno</span><select class="q" :value="pick"><option :attrs="{ value: a }">A</option><option :attrs="{ value: b }">B</option></select><span class="r">dos</span></div>`,
+      () => ({ pick: "b", a: "a", b: "b" }), d => { d.pick = "a" }],
+    // <svg> used to be rejected by plannableNode as an HTMLUnknownElement, so it
+    // sat in SHAPE_CORPUS proving it fell through. It is a real namespaced
+    // element now (TODOS/2026-08-24.svg-namespace.md) and therefore plannable,
+    // so what it proves moved: the cloner has to build it in the same namespace
+    // the interpreted path does, or the two disagree about `viewBox`
+    ["an svg", `<div class="w"><span class="p">uno</span><svg class="q" viewBox="0 0 10 10"><circle cx="5" r="4" :fill="color" /></svg><span class="r">dos</span></div>`,
+      () => ({ color: "red" }), d => { d.color = "blue" }],
+    ["an svg with camelCase tags", `<div class="w"><span class="p">uno</span><svg class="q"><defs><linearGradient id="g"><stop :offset="at" /></linearGradient><clipPath id="c"><circle r="1" /></clipPath></defs></svg><span class="r">dos</span></div>`,
+      () => ({ at: "0" }), d => { d.at = "1" }],
+    ["a foreignObject hands the namespace back", `<div class="w"><span class="p">uno</span><svg class="q"><foreignObject><p>{{ v }}</p></foreignObject></svg><span class="r">dos</span></div>`,
+      () => ({ v: "x" }), d => { d.v = "y" }],
     ["a mixed row", `<table class="a"><tbody><tr :each="row in rows" :key="row.id" :class="{ danger: row.id === sel }">
         <td class="c1">{{ row.id }}</td>
         <td class="c2"><a @click="sel = row.id">{{ row.label }}</a></td>
@@ -93,8 +160,6 @@ describe("the clone path renders what the interpreted path renders", () => {
   // deliberate sabotage - `:text` added to the allowlist - went unnoticed
   // because nothing in the corpus above put one inside a planned subtree.
   const SHAPE_CORPUS: [name: string, template: string, data: () => Record<string, any>, mutate: (data: any) => void][] = [
-    [":text", `<div class="w"><span class="p">uno</span><p class="q" :text="v"></p><span class="r">dos</span></div>`,
-      () => ({ v: "x" }), d => { d.v = "y" }],
     [":html", `<div class="w"><span class="p">uno</span><p class="q" :html="markup"></p><span class="r">dos</span></div>`,
       () => ({ markup: "<b>x</b>" }), d => { d.markup = "<i>y</i>" }],
     [":if", `<div class="w"><span class="p">uno</span><p class="q" :if="on">si</p><span class="r">dos</span></div>`,
@@ -103,14 +168,14 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ ns: [1, 2] }), d => { d.ns = [3] }],
     [":with", `<div class="w"><span class="p">uno</span><p class="q" :with="user"><b>{{ name }}</b></p><span class="r">dos</span></div>`,
       () => ({ user: { name: "ada" } }), d => { d.user = { name: "grace" } }],
-    [":attrs", `<div class="w"><span class="p">uno</span><p class="q" :attrs="{ title }">x</p><span class="r">dos</span></div>`,
-      () => ({ title: "t" }), d => { d.title = "t2" }],
-    [":value", `<form class="w"><span class="p">uno</span><input class="q" :value="v" /><span class="r">dos</span></form>`,
-      () => ({ v: "a" }), d => { d.v = "b" }],
-    [":checked", `<form class="w"><span class="p">uno</span><input class="q" type="checkbox" :checked="on" /><span class="r">dos</span></form>`,
-      () => ({ on: false }), d => { d.on = true }],
-    [":selected", `<div class="w"><span class="p">uno</span><select class="q"><option value="a" :selected="pick">a</option><option value="b">b</option></select></div>`,
-      () => ({ pick: true }), d => { d.pick = false }],
+    // on a plain element :model binds nothing and warns - and unlike every other
+    // directive that falls through, it is not in CONTROL_ATTRS, so the allowlist
+    // used to accept it as a generic `:<name>` binding and the skeleton wrote
+    // `model="ada"` where the interpreted path wrote nothing. The existing entry
+    // below puts :model on a component tag, which is unplannable for a different
+    // reason, so it could never have caught this
+    [":model on a plain element", `<div class="w"><span class="p">uno</span><input class="q" :model="who" /><span class="r">dos</span></div>`,
+      () => ({ who: "ada" }), d => { d.who = "grace" }],
     [":model on a component tag", `<div class="w"><span class="p">uno</span><Field :model.name="who" /><span class="r">dos</span></div>`,
       () => ({ who: "ada", Field: parseComponent(`<script :setup>let name = ""</script><b class="f">{{ name }}</b>`) }),
       d => { d.who = "grace" }],
@@ -122,8 +187,6 @@ describe("the clone path renders what the interpreted path renders", () => {
     ["a dashed tag", `<div class="w"><span class="p">uno</span><drop-area class="q"><b>x</b></drop-area><span class="r">dos</span></div>`,
       () => ({}), () => {}],
     ["a nested template element", `<div class="w"><span class="p">uno</span><template class="q"><b>x</b></template><span class="r">dos</span></div>`,
-      () => ({}), () => {}],
-    ["an svg", `<div class="w"><span class="p">uno</span><svg class="q"><circle r="1" /></svg><span class="r">dos</span></div>`,
       () => ({}), () => {}],
     // the upgrade watch: an unknown, undashed tag is a component that has not
     // arrived yet (an async factory writes the key in after the template has
@@ -138,17 +201,32 @@ describe("the clone path renders what the interpreted path renders", () => {
   ;[...CORPUS, ...SHAPE_CORPUS].forEach(([name, template, makeData, mutate]) => {
     it(`${name}`, () => {
       const [before, after] = bothWays(() => {
-        const host = document.createElement("div")
-        container.appendChild(host)
-        const data = $reactive(makeData())
-        host.appendChild(renderComponent(parseComponent(template), data))
-        const initial = host.innerHTML
-        mutate(data)
-        return { initial, mutated: host.innerHTML }
+        // ONE parse, rendered TWICE. The plan is built on the second render
+        // (TODOS/2026-08-24.plan-on-the-second-render.md), so a template parsed
+        // fresh for every render would never reach the clone path and every
+        // assertion below would pass without testing anything
+        const component = parseComponent(template)
+        const renderOnce = () => {
+          const host = document.createElement("div")
+          container.appendChild(host)
+          const [raw, reads] = probe(makeData())
+          const data = $reactive(raw)
+          host.appendChild(renderComponent(component, data))
+          const initial = host.innerHTML
+          const registered = [...reads]
+          mutate(data)
+          return { initial, registered, mutated: host.innerHTML }
+        }
+        return { first: renderOnce(), second: renderOnce() }
       })
 
-      expect(after.initial).toBe(before.initial)
-      expect(after.mutated).toBe(before.mutated)
+      // the first render is interpreted on both arms, so this is a control: it
+      // says the pair of renders is deterministic before the second is judged
+      expect(after.first.initial, "the first render already differs").toBe(before.first.initial)
+      // the one that matters - interpreted, against a render built by cloning
+      expect(after.second.initial).toBe(before.second.initial)
+      expect(after.second.mutated).toBe(before.second.mutated)
+      expect(after.second.registered, "the bindings register in a different order").toEqual(before.second.registered)
     })
   })
 })
@@ -199,14 +277,27 @@ describe("the clone path renders every tutorial exercise identically", () => {
     it(name, async () => {
       // the tutorial's own preview logic, as tests/tutorial.test.ts does it:
       // sibling files become the entry's pre-resolved modules
-      const mount = async () => {
-        const host = document.createElement("div")
-        document.body.appendChild(host)
+      // built ONCE per arm and mounted twice. The plan is built on the second
+      // render of a definition, so a component reparsed per mount would never
+      // reach the clone path - and this whole describe block would pass while
+      // testing nothing (TODOS/2026-08-24.plan-on-the-second-render.md)
+      const build = () => {
         const modules: Record<string, Component79> = {}
         Object.entries(files)
           .filter(([file]) => file !== ENTRY)
           .forEach(([file, source]) => { modules[`./${file}`] = new Component79(source) })
-        new Component79(files[ENTRY], { modules }).mountShadow(host)
+        return new Component79(files[ENTRY], { modules })
+      }
+
+      const mount = async (component: Component79) => {
+        const host = document.createElement("div")
+        document.body.appendChild(host)
+        // the `{}` is load-bearing. mountShadow only renders when it has no
+        // content yet, so mounting an already-rendered instance re-ATTACHES the
+        // DOM it already built - the second mount would render nothing, reach
+        // no plan, and compare a moved tree against itself. Passing data forces
+        // renderWith, with exactly the arguments the no-data call makes
+        component.mountShadow(host, {})
         // a setup script that awaits renders on a later tick, and one exercise
         // (03-components/08-slots) settles a tick after the first: read when the
         // DOM stops moving rather than at a fixed tick, or the comparison races
@@ -231,15 +322,21 @@ describe("the clone path renders every tutorial exercise identically", () => {
       const { cloneSkeletons: was } = Component79.debug()
       try {
         setClone(false)
-        // the null control, inside the test: two interpreted mounts must agree
-        // before a cloned one can be judged against them. An exercise that is
-        // not deterministic across mounts fails as that, not as a clone bug
-        const interpreted = await mount()
-        const again = await mount()
+        // the null control, inside the test: two interpreted mounts of one
+        // component must agree before a cloned one can be judged against them.
+        // An exercise that is not deterministic across mounts fails as that,
+        // not as a clone bug
+        const plain = build()
+        const interpreted = await mount(plain)
+        const again = await mount(plain)
         expect(again, "this exercise does not render the same twice").toBe(interpreted)
 
         setClone(true)
-        const cloned = await mount()
+        // the first mount is the definition's first sighting and is interpreted
+        // whatever the flag says; the second is the one built by cloning
+        const cloning = build()
+        await mount(cloning)
+        const cloned = await mount(cloning)
         expect(cloned).toBe(interpreted)
       } finally {
         setClone(was)

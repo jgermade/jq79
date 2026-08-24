@@ -431,6 +431,28 @@ At the **top level** of a component file, `<template name="Row">` declares anoth
 
 See [components](components.md#several-components-in-one-file) for what the declared components can see, how they are exported, and how a signature decides between one of them and a prop of the same name.
 
+## SVG
+
+SVG works like any other markup — interpolation, `:attr` bindings, `:each`, `:if`, events:
+
+```html
+<svg viewBox="0 0 100 100" class="chart">
+  <circle :each="p in points" :key="p.id" :cx="p.x" :cy="p.y" r="3" :fill="p.color" @click="select(p)" />
+  <text x="4" y="12">{{ total }} puntos</text>
+</svg>
+```
+
+Elements inside an `<svg>` are built in the SVG namespace, so they draw, their case-sensitive names survive (`viewBox`, `preserveAspectRatio`, `<linearGradient>`, `<clipPath>`), and `<style scoped>` reaches them. A `<foreignObject>` hands the namespace back, so HTML inside one is real HTML.
+
+One limit, and it comes from the [name-casing rewrite](#name-casing): **binding** a camelCase SVG attribute does not work, because the rewrite turns `:viewBox` into `:view-box` and SVG has no such attribute.
+
+```html
+<svg viewBox="0 0 10 10">    <!-- fine: written out, not bound -->
+<svg :viewBox="box">         <!-- renders view-box="…", which SVG ignores -->
+```
+
+Write those out, or set them from a setup script after `await $mounted()`. Bound attributes that are already kebab-case or lowercase (`:fill`, `:cx`, `:stroke-width`) are unaffected, which is most of them.
+
 ## Name casing
 
 The HTML parser lowercases attribute and tag names before jq79 ever sees them, so a name written camelCase would arrive flattened (`:firstName` → `:firstname`) and land under the wrong key. jq79 rewrites camelCase names to kebab-case in the raw source, before parsing, so **both spellings mean the same name**:
