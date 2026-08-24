@@ -1569,6 +1569,35 @@ describe("nested component recursion", () => {
   })
 })
 
+// findComponentKey skips a scope level it knows declares no PascalCase key, and
+// an :each item scope is marked from the loop names. A capitalised loop name is
+// exactly the case that marking must not swallow: it *is* a component tag
+describe(":each with a component in the loop variable", () => {
+  it("renders the component the loop variable holds", () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const Red = parseComponent(`<b class="red">rojo</b>`)
+    const Blue = parseComponent(`<i class="blue">azul</i>`)
+    const component = parseComponent(`<div><Cell :each="Cell in cells" /></div>`)
+
+    container.appendChild(renderComponent(component, $reactive({ cells: [Red, Blue] })))
+
+    expect(container.querySelector(".red")).not.toBeNull()
+    expect(container.querySelector(".blue")).not.toBeNull()
+  })
+
+  it("still resolves an outer component from inside a plain-named loop", () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const Chip = parseComponent(`<span class="chip">{{ label }}</span>`)
+    const component = parseComponent(`<div><p :each="item in items"><Chip :label="item" /></p></div>`)
+
+    container.appendChild(renderComponent(component, $reactive({ items: ["a", "b"], Chip })))
+
+    expect($$(container, ".chip").map(el => el.textContent)).toEqual(["a", "b"])
+  })
+})
+
 // The chain grammar is :if, then :elseif, then :else, on adjacent siblings.
 // Both ways of breaking it render something, so both have to say so - the
 // orphan especially, which renders the branch unconditionally and used to do it

@@ -502,6 +502,18 @@ const scanComponentKey = (scope: Record<string, any>, tag: string): string | nul
 let tagMemo: Map<string, string | null> | null = null
 let memoBase: object | null = null
 
+// Scope objects known to declare no PascalCase key of their own, so the walk
+// below can skip them without calling Object.keys - which allocates an array
+// and scans it, per element, per row. An :each item scope holds `item`,
+// `$index` and maybe the `, at` name, and whether any of those can be a
+// component name is decided by the template, once (see EachPlan).
+//
+// Only scopes jq79 creates and never adds a key to go in here. A store must
+// never: a setup script's `const Row = await $import(...)` arrives as a new key
+// after the template has already rendered, which is the whole reason the tag
+// memo lives for exactly one pass
+const plainScopes = new WeakSet<object>()
+
 // opened and closed by hand rather than by a wrapper taking a callback: a
 // component that renders itself through :each stacks one renderEach per level,
 // and a callback would add a frame to each of them. The cyclic-component test
@@ -532,6 +544,7 @@ const findComponentKey = (scope: Record<string, any>, tag: string): string | nul
       tagMemo.set(tag, key)
       return key
     }
+    if (plainScopes.has(obj)) continue
     for (const key of Object.keys(obj)) {
       if (/^[A-Z]/.test(key) && key.replace(/-/g, "").toLowerCase() === normalized) return key
     }
@@ -1395,12 +1408,18 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       if ((el as HTMLInputElement).value !== value) (el as HTMLInputElement).value = value
     })
   }
-  ;([":checked", ":selected"] as const).forEach(attr => {
-    const expr = node.attrs[attr]
-    if (expr === undefined) return
-    const prop = attr.slice(1) as "checked" | "selected"
-    fx.effect(() => { (el as any)[prop] = !!evalExpr(expr, scope) })
-  })
+  // written out rather than looped over a literal array: the loop allocated the
+  // array *and* its closure for every element rendered - 8,000 of each per
+  // create1k, almost all of them to find nothing. Same reason the attribute
+  // walk above is a `for...in` (TODOS/2026-08-23.where-the-create-time-goes.md)
+  const checkedExpr = node.attrs[":checked"]
+  if (checkedExpr !== undefined) {
+    fx.effect(() => { (el as HTMLInputElement).checked = !!evalExpr(checkedExpr, scope) })
+  }
+  const selectedExpr = node.attrs[":selected"]
+  if (selectedExpr !== undefined) {
+    fx.effect(() => { (el as HTMLOptionElement).selected = !!evalExpr(selectedExpr, scope) })
+  }
 
   return el
 }
@@ -1556,10 +1575,37 @@ const identifierIn = (text: string, name: string): boolean => {
   return false
 }
 
-const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
-  const match = node.attrs[":each"].match(EACH_PATTERN)
-  if (!match) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
+// Everything renderEach reads off the template and nothing else: the parsed
+// clause, how the key is read, the item node, and whether anything in the
+// subtree names a position. All of it is fixed by the source, and none of it
+// was cached - renderEach runs once per render of its parent, which for a
+// :each nested inside another is once per row of the outer one. `mentionsAny`
+// walks the whole item subtree, so that was a subtree walk per row per pass
+type EachPlan = {
+  itemName: string
+  atName: string | undefined
+  listExpr: string
+  keyExpr: string | undefined
+  keyIsItem: boolean
+  keyProp: string | undefined
+  itemNode: TemplateNode
+  readsPosition: boolean
+  // can either loop name be mistaken for a component? Decided from the
+  // template, so the item scope can be marked plain without being scanned
+  namesComponent: boolean
+}
 
+const eachPlans = new WeakMap<TemplateNode, EachPlan | null>()
+
+const eachPlanOf = (node: TemplateNode): EachPlan | null => {
+  const cached = eachPlans.get(node)
+  if (cached !== undefined) return cached
+
+  const match = node.attrs[":each"].match(EACH_PATTERN)
+  if (!match) {
+    eachPlans.set(node, null)
+    return null
+  }
   const [, itemName, atName, listExpr] = match
   const keyExpr = node.attrs[":key"]
 
@@ -1592,6 +1638,28 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const positionalNames = ["$index", ...(atName ? [atName] : [])]
   const readsPosition = mentionsAny(itemNode, positionalNames)
 
+  const namesComponent = /^[A-Z]/.test(itemName) || (atName !== undefined && /^[A-Z]/.test(atName))
+  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent }
+  eachPlans.set(node, plan)
+  return plan
+}
+
+const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
+  const plan = eachPlanOf(node)
+  if (!plan) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
+
+  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent } = plan
+
+  // `:key="row.id"`, or the loop variable itself, is what a key almost always
+  // is - and reading one needs neither a scope to resolve names against nor a
+  // compiled expression, because the item is already in hand. A pass evaluates
+  // one key per row, so a 1,000-row list paid 1,000 `with`-scoped calls through
+  // the store proxy to discover that nothing had changed: most of the 37% of a
+  // pass that goes on evaluating expressions
+  // (TODOS/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
+  // an index, a deeper path, a name from the outer scope - still goes through
+  // evalExpr, and so does a non-object item, which keeps every diagnostic a
+  // property read of a null row would have raised
   const anchor = document.createComment("each")
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
@@ -1707,6 +1775,8 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         defineScopeVar(itemScope, itemName, item)
         if (atName) defineScopeVar(itemScope, atName, at)
         defineScopeVar(itemScope, "$index", index)
+        // one WeakSet write per row against one Object.keys per element in it
+        if (!namesComponent) plainScopes.add(itemScope)
         const itemFx = createEffectScope(scope)
         // bounds captured before the positioning pass inserts the entry: a
         // component entry is a fragment, which empties on insertion (see boundsOf)
@@ -1876,6 +1946,45 @@ const validateChains = (nodes: (TemplateNode | string)[]) => {
   }
 }
 
+// The chain a `:if` node heads, and the index the sibling walk resumes at.
+// Both are fixed by the template - the node list is the same array on every
+// render - and renderNodes runs per instance, so a chain inside a :each row was
+// re-grouped, and its two arrays re-allocated, once per row per pass.
+// renderConditional only reads the branches, so one array serves every instance
+type Chain = { branches: ConditionalBranch[]; next: number }
+
+const chains = new WeakMap<TemplateNode, Chain>()
+
+const chainOf = (nodes: (TemplateNode | string)[], node: TemplateNode, from: number): Chain => {
+  const cached = chains.get(node)
+  if (cached) return cached
+
+  const branches: ConditionalBranch[] = [{ expr: node.attrs[":if"], node }]
+  let at = from + 1
+  // the whitespace between the branches is indentation and nothing else, so it
+  // is skipped rather than rendered (nextSiblingAt): only one branch is ever in
+  // the DOM, so there is nothing for it to be a space *between*
+  const claim = (attr: string): TemplateNode | undefined => {
+    const next = nextSiblingAt(nodes, at)
+    const candidate = nodes[next]
+    if (typeof candidate === "object" && attr in candidate.attrs) {
+      at = next + 1
+      return candidate
+    }
+    return undefined
+  }
+
+  for (let elseif = claim(":elseif"); elseif; elseif = claim(":elseif")) {
+    branches.push({ expr: elseif.attrs[":elseif"], node: elseif })
+  }
+  const elseNode = claim(":else")
+  if (elseNode) branches.push({ node: elseNode })
+
+  const chain: Chain = { branches, next: at }
+  chains.set(node, chain)
+  return chain
+}
+
 // renders a list of sibling template nodes (text + elements), grouping
 // consecutive :if/:elseif/:else nodes into a single conditional block
 // `into` renders straight into an element that is not in the document yet -
@@ -1925,29 +2034,9 @@ const renderNodes = <T extends ParentNode>(
     }
 
     if (":if" in node.attrs) {
-      const branches: ConditionalBranch[] = [{ expr: node.attrs[":if"], node }]
-      i++
-
-      // the whitespace between the branches is indentation and nothing else, so
-      // it is skipped rather than rendered (nextSiblingAt): only one branch is
-      // ever in the DOM, so there is nothing for it to be a space *between*
-      const nextBranch = (attr: string): TemplateNode | undefined => {
-        const next = nextSiblingAt(nodes, i)
-        const candidate = nodes[next]
-        if (typeof candidate === "object" && attr in candidate.attrs) {
-          i = next + 1
-          return candidate
-        }
-        return undefined
-      }
-
-      for (let elseif = nextBranch(":elseif"); elseif; elseif = nextBranch(":elseif")) {
-        branches.push({ expr: elseif.attrs[":elseif"], node: elseif })
-      }
-      const elseNode = nextBranch(":else")
-      if (elseNode) branches.push({ node: elseNode })
-
-      fragment.appendChild(renderConditional(branches, scope, fx, shadow))
+      const chain = chainOf(nodes, node, i)
+      fragment.appendChild(renderConditional(chain.branches, scope, fx, shadow))
+      i = chain.next
       continue
     }
 
