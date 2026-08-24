@@ -86,6 +86,11 @@ const KEYS_SEGMENT = " keys"
 
 const keysPath = (path: string): string => (path ? `${path}.${KEYS_SEGMENT}` : KEYS_SEGMENT)
 
+// an array's length, as a dep suffix: see indexable, which asks whether an
+// effect holds the length of the container a slot sits in
+const LENGTH_SUFFIX = ".length"
+
+
 const createTrieNode = (parent: TrieNode | null, segment: string): TrieNode =>
   ({ children: null, own: null, deep: null, parent, segment })
 
@@ -299,25 +304,71 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     return matched
   }
 
+  // whether path[start..end) is an array index - all digits, so `data.6` is a
+  // slot and `data.tags` is not. Read off the path in place: this runs per
+  // ancestor of every dep an effect holds
+  const isSlotSegment = (path: string, start: number, end: number): boolean => {
+    if (start === end) return false
+    for (let at = start; at < end; at++) {
+      const code = path.charCodeAt(at)
+      if (code < 48 || code > 57) return false
+    }
+    return true
+  }
+
   // Reaching `data[5].label` reads three paths and tracks all three, but for an
-  // ordinary effect the two ancestors carry no information the leaf doesn't: a
-  // write to "data" or "data.5" reaches "data.5.label" through the subtree
-  // sweep anyway. Dropping them is a third of the index to build, hold and tear
-  // down on a list of any size.
+  // ordinary effect an ancestor carries no information the leaf doesn't: a
+  // write to "data" reaches "data.5.label" through the subtree sweep anyway.
+  // Dropping them is a third of the index to build, hold and tear down on a
+  // list of any size.
+  //
+  // An **array slot** is the exception, and it is the reason this isn't simply
+  // "every ancestor". A splice wakes the slots it shifted and deliberately
+  // does not sweep below them - what sits under a slot belongs to the row that
+  // was wrapped there, and that row did not change (see splicedAt). So the
+  // effect that read `data[6].label` has to keep `data.6` as a dep of its own,
+  // or removing a row ahead of it leaves the binding showing the old row's
+  // label. A row binding inside a `:each` never read the slot and so keeps
+  // nothing extra - it holds one dep and doesn't reach this code at all
+  //
+  // ...unless the effect also holds the container's **length**, and then the
+  // slots are redundant again: a splice always changes the length and
+  // `notifyReplaced` announces it exactly, so whoever tracked the length hears
+  // every shift there is without a slot dep of their own. That is not a
+  // detail - the `:each` list effect reads the length *and* every slot, so
+  // without this clause it indexes a second dep per row, and `clearLarge`
+  // measured +4.5% (4 of 4 rounds, ±2.7% noise) tearing them all down again
   //
   // Not for a `deep` effect, where it is exactly backwards - a forwarding
   // effect wakes off its *ancestor* entries, so its shallowest dep is the one
   // doing the work and the leaves are the redundant ones
   const indexable = (effect: Effect, deps: Set<string>): Set<string> => {
     if (effect.deep || deps.size < 2) return deps
-    // every ancestor of every dep is redundant, so mark them by walking each
-    // dep's own dots rather than comparing deps against each other: a `:each`
-    // over 10,000 rows tracks 10,000 deps, and the pairwise version of this
-    // was 100,000,000 string comparisons
+    // an ancestor that isn't a slot is redundant, and they are marked by
+    // walking each dep's own dots rather than comparing deps against each
+    // other: a `:each` over 10,000 rows tracks 10,000 deps, and the pairwise
+    // version of this was 100,000,000 string comparisons
+    // which containers this effect tracks the length of, resolved in one pass
+    // so the walk below can ask without building a `${container}.length` per
+    // slot it meets - a list effect meets one per row
+    const lengthTracked = new Set<string>()
+    deps.forEach(dep => { if (dep.endsWith(LENGTH_SUFFIX)) lengthTracked.add(dep.slice(0, -LENGTH_SUFFIX.length)) })
+
     const redundant = new Set<string>()
     deps.forEach(dep => {
+      let from = 0
+      // the ancestor one level up, carried rather than re-sliced: it is the
+      // container of the segment being looked at, and it was already built
+      let parent = ""
       for (let dot = dep.indexOf("."); dot !== -1; dot = dep.indexOf(".", dot + 1)) {
-        redundant.add(dep.slice(0, dot))
+        const ancestor = dep.slice(0, dot)
+        // `from > 0` because a slot needs a container to be a slot of: a
+        // top-level numeric key is a key of the store's root object, and no
+        // splice can shift it
+        const slot = from > 0 && isSlotSegment(dep, from, dot)
+        if (!slot || lengthTracked.has(parent)) redundant.add(ancestor)
+        parent = ancestor
+        from = dot + 1
       }
     })
     if (!redundant.size) return deps
@@ -466,26 +517,60 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // replacement that ends up sweeping anyway
   const GIVE_UP: null = null
 
-  const whatChanged = (previous: any, next: any): string[] | null => {
+  // `exact` marks the keys as slots whose occupant *moved* rather than values
+  // that changed: nothing under them is different, so the subtree each one
+  // would otherwise sweep must be left alone (see splicedAt)
+  type Difference = { keys: string[]; exact: boolean }
+
+  const NOT_SPLICED = -1
+
+  // one element inserted into or removed from an array: from the cut onwards
+  // every element is the very same element, one slot over. `data.filter(...)`
+  // - the most ordinary edit anyone makes to a list - reads as "over half the
+  // container differs" to the walk below, which gives up and has the whole
+  // subtree swept; this recognises the shift for what it is. O(n), no
+  // allocation, and O(1) to reject on any pair whose lengths differ by
+  // anything but one. See TODOS/2026-08-23.notify-a-splice.md
+  const splicedAt = (previous: any[], next: any[]): number => {
+    const grew = next.length > previous.length
+    const shorter = grew ? previous : next
+    const longer = grew ? next : previous
+    let start = 0
+    while (start < shorter.length && Object.is($toRaw(shorter[start]), $toRaw(longer[start]))) start++
+    for (let index = start; index < shorter.length; index++) {
+      if (!Object.is($toRaw(shorter[index]), $toRaw(longer[index + 1]))) return NOT_SPLICED
+    }
+    return start
+  }
+
+  const whatChanged = (previous: any, next: any): Difference | null => {
     if (Array.isArray(next)) {
       const before = previous.length
       const after = next.length
       // nothing on one side means nothing to reuse on the other
       if (!before || !after) return GIVE_UP
       const span = Math.max(before, after)
+      if (Math.abs(before - after) === 1) {
+        const start = splicedAt(previous, next)
+        if (start !== NOT_SPLICED) {
+          const slots: string[] = []
+          for (let index = start; index < span; index++) slots.push(String(index))
+          return { keys: slots, exact: true }
+        }
+      }
       const changed: string[] = []
       for (let index = 0; index < span; index++) {
         if (Object.is($toRaw(previous[index]), $toRaw(next[index]))) continue
         changed.push(String(index))
         if (changed.length * 2 >= span) return GIVE_UP
       }
-      return changed
+      return { keys: changed, exact: false }
     }
     const keys = new Set([...Object.keys(previous), ...Object.keys(next)])
     if (!keys.size) return GIVE_UP
     const changed: string[] = []
     keys.forEach(key => { if (!Object.is($toRaw(previous[key]), $toRaw(next[key]))) changed.push(key) })
-    return changed.length * 2 >= keys.size ? GIVE_UP : changed
+    return changed.length * 2 >= keys.size ? GIVE_UP : { keys: changed, exact: false }
   }
 
   // A container replaced by another container: notify the elements that
@@ -496,7 +581,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // TODOS/2026-08-23.notify-the-difference.md
   //
   // One level deep on purpose: an element that differs is a changed value, and
-  // notifying it sweeps its own subtree, which is what a changed value deserves
+  // notifying it sweeps its own subtree, which is what a changed value deserves.
+  // A spliced element is the exception - it did not change, it moved - and its
+  // slots are woken without that sweep (see splicedAt)
   const notifyReplaced = (dotKey: string, previous: any, next: any, notified: any) => {
     // one write, one wake: every path below contributes to a single set that
     // runs once at the end. Notifying them one at a time re-ran an effect that
@@ -508,14 +595,14 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       node?.deep?.forEach(effect => matched.add(effect))
     }
 
-    const changed = whatChanged(previous, next)
+    const difference = whatChanged(previous, next)
     // when most of the container differs there is nothing to spare: `data = []`
     // and a wholesale replacement change every key, and reaching each one
     // through its own trie walk costs more than the single sweep it replaces.
     // whatChanged says so by giving up. The decision has to come before
     // anything is announced, or the plain notify would fire the container's
     // listeners a second time
-    if (!changed) return notify(dotKey, notified)
+    if (!difference) return notify(dotKey, notified)
 
     exactListeners.get(dotKey)?.forEach(listener => listener(notified, dotKey))
     // $onAny hears the container and nothing else, exactly as it did when this
@@ -527,12 +614,22 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // hears that - but nothing is swept on its account
     collectExact(dotKey)
 
-    changed.forEach(key => {
-      const after = $toRaw(next[key])
+    difference.keys.forEach(key => {
       const child = `${dotKey}.${key}`
-      const value = isWrappable(after) ? wrap(after, child) : after
-      exactListeners.get(child)?.forEach(listener => listener(value, child))
-      effectsFor(child).forEach(effect => matched.add(effect))
+      // the value is built only for a listener that asked for it: a splice
+      // announces every slot it shifted, and wrapping a thousand rows to hand
+      // them to nobody is exactly the kind of work this path exists to avoid
+      const listeners = exactListeners.get(child)
+      if (listeners) {
+        const after = $toRaw(next[key])
+        const value = isWrappable(after) ? wrap(after, child) : after
+        listeners.forEach(listener => listener(value, child))
+      }
+      // a shifted slot has a new occupant and nothing under it changed - the
+      // rows themselves are untouched - so whoever read the slot is the whole
+      // audience, and the bindings below it are not woken
+      if (difference.exact) collectExact(child)
+      else effectsFor(child).forEach(effect => matched.add(effect))
     })
     if (keyCount(previous) !== keyCount(next)) collectExact(keysPath(dotKey))
     // an array's length is a real dep (a `:each` reads it on its way through

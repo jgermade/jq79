@@ -838,6 +838,62 @@ describe("renderComponent", () => {
       }
     })
 
+    it("removes a spliced row without re-running the bindings of the ones that stay", () => {
+      // `data.filter(...)` shifts every row behind the cut, which read as a
+      // wholesale replacement and swept the container: 1,000 rows meant ~3,000
+      // bindings re-rendering identical output. The rows did not change - they
+      // moved - and the diff now says so (TODOS/2026-08-23.notify-a-splice.md)
+      const runs: string[] = []
+      const component = parseComponent(`<li :each="u in users" :key="u.id">{{ seen(u.name) }}</li>`)
+      const data = $reactive({
+        users: Array.from({ length: 10 }, (_, i) => ({ id: i, name: `u${i}` })),
+        seen: (name: string) => { runs.push(name); return name },
+      })
+      container.appendChild(renderComponent(component, data))
+      runs.length = 0
+
+      data.users = ($toRaw(data.users) as any[]).filter(user => user.id !== 1)
+
+      expect($$(container, "li").map(el => el.textContent)).toEqual(
+        ["u0", "u2", "u3", "u4", "u5", "u6", "u7", "u8", "u9"]
+      )
+      // the `:each` heard it and dropped the row; not one survivor re-rendered
+      expect(runs).toEqual([])
+    })
+
+    it("inserts a row at the front the same way", () => {
+      const runs: string[] = []
+      const component = parseComponent(`<li :each="u in users" :key="u.id">{{ seen(u.name) }}</li>`)
+      const data = $reactive({
+        users: Array.from({ length: 10 }, (_, i) => ({ id: i, name: `u${i}` })),
+        seen: (name: string) => { runs.push(name); return name },
+      })
+      container.appendChild(renderComponent(component, data))
+      runs.length = 0
+
+      data.users = [{ id: 99, name: "new" }, ...($toRaw(data.users) as any[])]
+
+      expect($$(container, "li").map(el => el.textContent)[0]).toBe("new")
+      expect($$(container, "li")).toHaveLength(11)
+      // only the row that arrived renders
+      expect(runs).toEqual(["new"])
+    })
+
+    it("updates a binding that reads a row by index when the splice moves it", () => {
+      // the other reader of a list: `users[6]` means "whoever sits at slot 6",
+      // so a removal ahead of it is a change to what it reads even though no
+      // row changed. It holds the slot as a dep of its own for exactly this
+      // (see indexable in src/reactive.ts)
+      const component = parseComponent(`<p>{{ users[6].name }}</p>`)
+      const data = $reactive({ users: Array.from({ length: 10 }, (_, i) => ({ id: i, name: `u${i}` })) })
+      container.appendChild(renderComponent(component, data))
+      expect($(container, "p")?.textContent).toBe("u6")
+
+      data.users = ($toRaw(data.users) as any[]).filter(user => user.id !== 1)
+
+      expect($(container, "p")?.textContent).toBe("u7")
+    })
+
     it("evaluates a :key without ever writing the loop name into the store", () => {
       // the key expression needs the item bound to a scope to read it from, and
       // one scratch scope now serves the whole pass - the loop variable written
