@@ -1753,6 +1753,129 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   return wrapper
 }
 
+// the first sibling from `from` that is not indentation. The branches of a
+// chain are written on their own lines, so whitespace-only text sits between
+// them in the AST and must not break the chain up. One copy of the rule, used
+// by the renderer that groups a chain and by the validator that checks its
+// grammar - the two can never disagree about what "adjacent" means
+const nextSiblingAt = (nodes: (TemplateNode | string)[], from: number): number => {
+  let at = from
+  while (at < nodes.length && typeof nodes[at] === "string" && !(nodes[at] as string).trim()) at++
+  return at
+}
+
+// The grammar of a conditional chain: `:if`, then any number of `:elseif`,
+// then an optional `:else`, on adjacent sibling elements. Both ways of getting
+// it wrong render *something*, which is why they need saying out loud:
+//
+// - two of the three on one element: the first in precedence order applies and
+//   the rest are control attrs, so they are silently dropped
+// - a branch no chain claimed - no `:if` before it, or one separated from it by
+//   an element (a `:each` row, a component tag, any sibling that isn't
+//   whitespace): it falls through to renderNode, where `:elseif`/`:else` are
+//   control attrs skipped by the attribute walk, and the element renders
+//   **unconditionally**. That one had no diagnostic at all
+//
+// Reported once per definition, from the parse-time walk below
+const warnChainAttrs = (node: TemplateNode) => {
+  const hasIf = ":if" in node.attrs
+  const hasElseif = ":elseif" in node.attrs
+  const hasElse = ":else" in node.attrs
+  if ((hasIf ? 1 : 0) + (hasElseif ? 1 : 0) + (hasElse ? 1 : 0) < 2) return
+  // allocated only on the way to a warning, never on the path that finds none
+  const present = [hasIf ? ":if" : null, hasElseif ? ":elseif" : null, hasElse ? ":else" : null].filter(Boolean)
+  console.warn(
+    `jq79: ${present.join(" and ")} on the same <${node.tag}> - only ${present[0]} applies; ` +
+    "the branches of a chain are sibling elements, one directive each"
+  )
+}
+
+// `afterClosedChain`: the branch chain immediately before this node ended with
+// an `:else`, so this is a *second* one rather than a stray - which is the
+// difference between a useful message and a puzzling one ("continues no :if"
+// reads as nonsense when there is an :if two lines up)
+const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
+  const attr = ":elseif" in node.attrs ? ":elseif" : ":else"
+  console.warn(
+    afterClosedChain
+      ? `jq79: a second ${attr} on <${node.tag}> - the chain before it already ended with :else, ` +
+        "which closes it. One :if, any number of :elseif, at most one :else"
+      : `jq79: ${attr} on <${node.tag}> continues no :if - it renders unconditionally. ` +
+        "A chain is :if, then :elseif, then :else, on adjacent siblings: anything but whitespace between them breaks it"
+  )
+}
+
+// Checks one node list's chains, and every list below it, against that grammar.
+// Run once per definition from componentPartsFrom, not per render: a template
+// says what it says before any data exists, so a stray :else is reported when
+// the component is defined - once, whatever the list it sits in later renders
+// a thousand rows of, and even if it sits in a branch that never becomes
+// active. Rendering is left alone entirely; nothing below costs an instance
+// anything.
+//
+// The dispatch mirrors renderNodes' loop, because that is what decides which
+// node ends up a branch of what: a :each node is claimed before the chain
+// grouping ever sees it, which is exactly why it breaks a chain
+const validateChains = (nodes: (TemplateNode | string)[]) => {
+  nodes.forEach(node => {
+    if (typeof node !== "string") validateChains(node.children)
+  })
+
+  // the chain that ended immediately before this point closed itself with an
+  // :else, so a further branch here is a second one rather than a stray
+  let afterClosedChain = false
+
+  for (let i = 0; i < nodes.length; ) {
+    const node = nodes[i]
+
+    if (typeof node === "string") {
+      if (node.trim()) afterClosedChain = false
+      i++
+      continue
+    }
+
+    // renderEach speaks for a :each element carrying a branch attribute of its
+    // own, and says something more useful than the grammar would
+    if (":each" in node.attrs) {
+      afterClosedChain = false
+      i++
+      continue
+    }
+
+    warnChainAttrs(node)
+
+    if (":if" in node.attrs) {
+      i++
+      // the same walk renderNodes does, so the nodes claimed here are the ones
+      // it will claim: any number of :elseif, then at most one :else
+      const claim = (attr: string): TemplateNode | undefined => {
+        const next = nextSiblingAt(nodes, i)
+        const candidate = nodes[next]
+        if (typeof candidate === "object" && attr in candidate.attrs) {
+          i = next + 1
+          return candidate
+        }
+        return undefined
+      }
+      // a claimed branch never reaches the check above - `:elseif :else` on one
+      // element is claimed as an :elseif and its :else dropped, in silence
+      for (let elseif = claim(":elseif"); elseif; elseif = claim(":elseif")) warnChainAttrs(elseif)
+      const elseNode = claim(":else")
+      if (elseNode) warnChainAttrs(elseNode)
+      // an :else closes the chain. A chain that ended without one cannot be
+      // followed by a stray at all - claim() would have taken it
+      afterClosedChain = elseNode !== undefined
+      continue
+    }
+
+    // no chain claimed this node, so a branch attribute on it is an orphan and
+    // the element renders unconditionally
+    if (":elseif" in node.attrs || ":else" in node.attrs) warnOrphanBranch(node, afterClosedChain)
+    afterClosedChain = false
+    i++
+  }
+}
+
 // renders a list of sibling template nodes (text + elements), grouping
 // consecutive :if/:elseif/:else nodes into a single conditional block
 // `into` renders straight into an element that is not in the document yet -
@@ -1805,13 +1928,11 @@ const renderNodes = <T extends ParentNode>(
       const branches: ConditionalBranch[] = [{ expr: node.attrs[":if"], node }]
       i++
 
-      // the branches of a chain are siblings in the AST, but the template writes
-      // them on their own lines - so the whitespace between them is indentation
-      // and nothing else, and it's dropped rather than rendered: only one branch
-      // is ever in the DOM, so there is nothing for it to be a space *between*
+      // the whitespace between the branches is indentation and nothing else, so
+      // it is skipped rather than rendered (nextSiblingAt): only one branch is
+      // ever in the DOM, so there is nothing for it to be a space *between*
       const nextBranch = (attr: string): TemplateNode | undefined => {
-        let next = i
-        while (next < nodes.length && typeof nodes[next] === "string" && !(nodes[next] as string).trim()) next++
+        const next = nextSiblingAt(nodes, i)
         const candidate = nodes[next]
         if (typeof candidate === "object" && attr in candidate.attrs) {
           i = next + 1
@@ -2193,6 +2314,10 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
       if (isScoped(style)) style.scoped = scopeCss(style.content, scope)
     })
   }
+
+  // the template says what it says before any data exists, so its conditional
+  // chains are checked here, once per definition
+  validateChains(template)
 
   return { template, scripts, styles }
 }
