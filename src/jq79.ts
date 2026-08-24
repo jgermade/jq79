@@ -1206,6 +1206,193 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // normally. :if/:elseif/:else/:each are handled by renderNodes, which decides
 // *whether*/*how many times* a node is rendered before calling this. Tags
 // matching a PascalCase scope variable render as nested components instead
+
+// ---------------------------------------------------------------------------
+// Cloning a fixed shape instead of deriving it per instance.
+//
+// renderNode asks the same questions of the same AST node for every instance of
+// it: is this a slot, a component, an unknown tag; which of these attributes is
+// a directive; split this text on `{{`. For a :each of 1,000 rows that is ~25
+// questions per element per row whose answers were fixed by the source text.
+// Where a subtree's *shape* is fixed - the elements, their static attributes and
+// their nesting never vary, only the values bound into them - the shape is built
+// once per definition into a detached skeleton, and each instance is one
+// cloneNode plus a walk to each binding point.
+//
+// Worth -20 to -49% of create1k depending on how much fixed structure a row
+// has, and nothing at all on a row that has none. Measured, with the method and
+// the caveats, in TODOS/2026-08-24.clone-skeletons-measured.md.
+//
+// Two rules keep this from becoming the bug it could be:
+//
+// 1. **The holes are an allowlist, never a denylist.** `plannableAttr` names
+//    the four things a skeleton knows how to fill; every other attribute makes
+//    the subtree unplannable. So a directive added to renderNode later is
+//    *slower* until somebody teaches it here - never silently mis-rendered,
+//    which is the failure a second render path invites.
+// 2. **The interpreted path stays the fallback for everything else**, including
+//    every tag that could still turn into a component. The upgrade watch and
+//    the unresolved-component throw are not reimplemented here; they are never
+//    reached from here.
+//
+// tests/skeleton.test.ts renders a corpus both ways and diffs the DOM, which is
+// what makes rule 1 enforceable rather than a promise.
+// ---------------------------------------------------------------------------
+
+// Internal, for that differential test: flipping this must never change what
+// renders, only how. Not part of the public API.
+let cloneSkeletons = false
+export const __setCloneSkeletons = (on: boolean): boolean => {
+  const was = cloneSkeletons
+  cloneSkeletons = on
+  return was
+}
+
+// The four things a hole can be, in the order renderNode registers them.
+// A `:` attribute with a dot in it is rejected wholesale except `:class.`:
+// `:model.`, `:props.`, `:slot.` and `:html.allowed` all live in that shape, and
+// so would the next directive family somebody invents
+const plannableAttr = (name: string): boolean => {
+  if (name.startsWith("@")) return true
+  if (name === ":class") return true
+  if (name.startsWith(":class.")) return true
+  if (!name.startsWith(":")) return name !== COMPONENT_TAG_ATTR // a static attribute
+  return !isControlAttr(name) && !name.includes(".")
+}
+
+const plannableNode = (node: TemplateNode): boolean => {
+  if (node.component || node.tag.includes("-")) return false
+  if (isSlotTag(node.tag) || node.tag === "template") return false
+  // an unknown tag may still become a component, and <svg> is one of them:
+  // createElement builds SVG names in the HTML namespace (see renderNode)
+  if (document.createElement(node.tag) instanceof HTMLUnknownElement) return false
+  for (const key in node.attrs) if (!plannableAttr(key)) return false
+  return node.children.every(child => typeof child === "string" || plannableNode(child))
+}
+
+// A hole, and the path from the skeleton root to the node it fills: child
+// indices rather than a query, resolved by walking childNodes. The AST keeps
+// whitespace text nodes on purpose, and the skeleton keeps them too, so the
+// indices line up on both sides by construction
+type SkeletonOp =
+  | { kind: "text"; path: number[]; parts: TextPart[] }
+  | { kind: "event"; path: number[]; attr: string; expr: string }
+  | { kind: "attr"; path: number[]; name: string; expr: string }
+  | { kind: "class"; path: number[]; classExpr?: string; toggles: [string, string][] | null; staticClasses: Set<string> }
+
+type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[]; tags: string[] }
+
+// mirrors renderNode's own order: the attribute walk (events and attribute
+// bindings as they appear), then :class, then the children. Effects run in
+// registration order, so this is not cosmetic
+const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], tags: Set<string>): Element => {
+  tags.add(node.tag)
+  const el = document.createElement(node.tag)
+
+  let classExpr: string | undefined
+  let toggles: [string, string][] | null = null
+  for (const key in node.attrs) {
+    const value = node.attrs[key]
+    if (key.startsWith("@")) ops.push({ kind: "event", path, attr: key, expr: value })
+    else if (key === ":class") classExpr = value
+    else if (key.startsWith(":class.")) (toggles ??= []).push([key.slice(":class.".length), value])
+    else if (key.startsWith(":")) {
+      const name = key.slice(1)
+      ops.push({ kind: "attr", path, name, expr: value || kebabToCamel(name) })
+    } else el.setAttribute(key, value)
+  }
+  if (classExpr !== undefined || toggles) {
+    ops.push({ kind: "class", path, classExpr, toggles, staticClasses: new Set(classNames(node.attrs.class ?? "")) })
+  }
+
+  node.children.forEach((child, index) => {
+    if (typeof child === "string") {
+      // an interpolated text node is a hole; the skeleton holds the empty node
+      // it will be written into, so the child indices match either way
+      if (child.includes("{{")) {
+        ops.push({ kind: "text", path: [...path, index], parts: splitText(child) })
+        el.appendChild(document.createTextNode(""))
+      } else el.appendChild(document.createTextNode(child))
+      return
+    }
+    el.appendChild(buildSkeleton(child, [...path, index], ops, tags))
+  })
+
+  return el
+}
+
+// how many elements a subtree is worth cloning for. Below this the fixed cost
+// of the plan - the lookup, the tag check, the path walks - is the whole
+// saving: planning fragments of one or two elements measured as a wash at best
+// and a regression on a row whose only fragments are that small
+const MIN_SKELETON_ELEMENTS = 3
+
+const countElements = (node: TemplateNode): number =>
+  1 + node.children.reduce((total, child) => total + (typeof child === "string" ? 0 : countElements(child)), 0)
+
+const skeletonPlans = new WeakMap<TemplateNode, SkeletonPlan | null>()
+
+const planOf = (node: TemplateNode): SkeletonPlan | null => {
+  const cached = skeletonPlans.get(node)
+  if (cached !== undefined) return cached
+
+  let plan: SkeletonPlan | null = null
+  if (plannableNode(node) && countElements(node) >= MIN_SKELETON_ELEMENTS) {
+    const ops: SkeletonOp[] = []
+    const tags = new Set<string>()
+    const skeleton = buildSkeleton(node, [], ops, tags)
+    plan = { skeleton, ops, tags: Array.from(tags) }
+  }
+  skeletonPlans.set(node, plan)
+  return plan
+}
+
+const atPath = (root: Node, path: number[]): Node => {
+  let at = root
+  for (let i = 0; i < path.length; i++) at = at.childNodes[path[i]]
+  return at
+}
+
+const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: EffectScope): Node => {
+  const root = plan.skeleton.cloneNode(true) as Element
+
+  for (const op of plan.ops) {
+    const target = op.path.length === 0 ? root : atPath(root, op.path)
+
+    if (op.kind === "text") {
+      const textNode = target as Text
+      const parts = op.parts
+      fx.effect(() => {
+        const text = renderText(parts, scope)
+        if (textNode.textContent !== text) textNode.textContent = text
+      })
+    } else if (op.kind === "event") {
+      bindEvent(target as Element, op.attr, op.expr, scope)
+    } else if (op.kind === "attr") {
+      const el = target as Element
+      const { name, expr } = op
+      fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
+    } else {
+      const el = target as Element
+      const { classExpr, toggles, staticClasses } = op
+      let bound: string[] = []
+      fx.effect(() => {
+        const next = classExpr !== undefined ? classNames(evalExpr(classExpr, scope)) : []
+        toggles?.forEach(([name, expr]) => {
+          if (evalExpr(expr, scope)) next.push(...classNames(name))
+        })
+        bound.forEach(name => {
+          if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
+        })
+        el.classList.add(...next)
+        bound = next
+      })
+    }
+  }
+
+  return root
+}
+
 const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   // :with applies to the element's own bindings (@events, :attrs) and its
   // whole subtree. On a :each element the item scope is already in place, so
@@ -1221,6 +1408,18 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
 
   const componentKey = findComponentKey(scope, node.tag)
   if (componentKey) return renderNestedComponent(componentKey, node, scope, fx, shadow)
+
+  // A planned subtree is cloned - unless a scope key captures one of its tags.
+  // findComponentKey strips dashes and lowercases, and every PascalCase scope
+  // key participates, so a variable named `Td` makes every <td> under it a
+  // component and `Map`, `Data`, `Table`, `Form` and `Label` are all HTML tags
+  // somebody might name a component after. "It is a known HTML tag" is not on
+  // its own an answer; this is. It costs what the interpreted path already
+  // pays - one findComponentKey per distinct tag, memoized per render pass
+  if (cloneSkeletons) {
+    const plan = planOf(node)
+    if (plan && !plan.tags.some(tag => findComponentKey(scope, tag))) return renderFromSkeleton(plan, scope, fx)
+  }
 
   const el = document.createElement(node.tag)
 
