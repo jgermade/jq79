@@ -130,6 +130,22 @@ buys, besides the collision: an undashed lowercase tag resolves to nothing, so
 the clone path no longer has to ask whether a scope key captured one of its tags.
 See [TODOS/2026-08-25.component-tag-prefix.md](../TODOS/2026-08-25.component-tag-prefix.md).
 
+**The component box carries the parent's stamp, and the CSS rename runs before
+the parser.** An instance renders inside `<c79-name>` (step 2 of the same plan),
+and that element belongs to the *parent's* template — `stampScope` walks the
+parent's AST and the component tag is a node of it. That is not a preference: a
+`<style scoped>` is rewritten to demand the stamp of whoever wrote it, so
+`Chip { … }` written by the parent only matches if the box carries the parent's
+hash. The rename of `Chip` to `c79-chip` happens on the CSS **source**, in
+`renameComponentSelectors`, never on `rule.selectorText`: a type selector is
+matched case-insensitively in HTML and an engine may hand it back lowercased, so
+a rewrite made after parsing would work in jsdom and do nothing in a browser.
+Two more things that look arbitrary and are not: the default
+`display: contents` rule is wrapped in `:where()` so any author rule outranks it,
+and a component inside `<svg>` or `<math>` gets **no** box, because SVG renders
+neither an unknown element nor its children. See
+[TODOS/2026-08-25.the-wrapper-and-the-css-rename.md](../TODOS/2026-08-25.the-wrapper-and-the-css-rename.md).
+
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same
 scope variable wakes itself on repeat — but only from the **second** pass, since an

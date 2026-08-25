@@ -319,6 +319,42 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - A tag can also resolve to a component the same file declares with `<template name="…">`, with no import at all — see [several components in one file](components.md#several-components-in-one-file).
 - A tag's children are **content for the child's slots** — see below.
 
+### A component renders in a box of its own
+
+Every instance renders inside an element named after the component — one root,
+several, or none:
+
+```html
+<div class="w">
+  <c79-user-card data-c79-box data-jq79="1a2b3c">…the instance's DOM…</c79-user-card>
+</div>
+```
+
+- **Always**, so the shape of the tree doesn't depend on what the child rendered
+  this pass. A component whose only root sits behind a false `:if` is an empty
+  box rather than nothing at all.
+- **Named after the component, not the tag you wrote**: `<UserCard />` and
+  `<user-card>` both render `<c79-user-card>`.
+- **`display: contents` by default**, so the box is not a box: children stay in
+  the parent's flex or grid layout. The rule is `:where([data-c79-box]) { display:
+  contents }`, which has no specificity — any rule of yours wins, with no
+  `!important` and whatever the stylesheet order:
+
+  ```css
+  c79-panel { display: flex; gap: 8px }   /* opts the box back into being a box */
+  ```
+
+- **It carries the parent's scope stamp**, so a parent's `<style scoped>` can
+  address it by name — see [styles](components.md#styles).
+- **Not inside `<svg>` or `<math>`.** SVG renders neither an unknown element nor
+  its children, so a component in a foreign namespace renders inline, as it
+  always did.
+
+What it costs: a child or sibling combinator in **global** CSS stops crossing the
+boundary (`.grid > .item` no longer matches an `.item` a component rendered), and
+a parent's `:empty` stops matching when a child renders nothing. Scoped rules lose
+nothing — they could never reach across that boundary anyway.
+
 ### A tag that names no component throws
 
 `<UserCrad />` renders no markup, no styles, no children and no script. Once

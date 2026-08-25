@@ -2337,3 +2337,159 @@ describe("the component tag rename", () => {
     expect(container.querySelector("table .row"), "but outside the table the author wrote it in").toBeNull()
   })
 })
+
+// Step 2 of the tag rename: a component instance renders in an element of its
+// own - <c79-name> - instead of a bare pair of comment anchors, and a
+// stylesheet can name the component to reach that box.
+// TODOS/2026-08-25.the-wrapper-and-the-css-rename.md
+describe("the component box", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => container.remove())
+
+  const mount = (src: string) => new Component79(src).render().mount(container)
+
+  it("wraps every instance, whatever it renders - one root, several, or none", () => {
+    // "sometimes" is not an alternative: the same component renders one root or
+    // two according to its data, so a box that appears only in the multi-root
+    // case would make the parent's CSS depend on what the child rendered this
+    // pass. And the empty case has nothing to hang a box off but a box
+    mount(`
+      <div class="w"><One /><Many /><None /></div>
+      <template name="One"><p class="a">uno</p></template>
+      <template name="Many"><h2>t</h2><p>c</p></template>
+      <template name="None"><p :if="false">no</p></template>
+    `)
+
+    expect(container.querySelector("c79-one > .a")).not.toBeNull()
+    expect(container.querySelectorAll("c79-many > *")).toHaveLength(2)
+    const none = container.querySelector("c79-none")!
+    expect(none, "a component that renders nothing is still a box").not.toBeNull()
+    expect(none.querySelector("*")).toBeNull()
+  })
+
+  it("names the box after the component, not after the usage site", () => {
+    mount(`
+      <div class="w"><UserCard /><user-card /></div>
+      <template name="UserCard"><b class="card">tarjeta</b></template>
+    `)
+
+    expect(container.querySelectorAll("c79-user-card")).toHaveLength(2)
+    expect(container.querySelectorAll(".card")).toHaveLength(2)
+  })
+
+  it("stamps the box with the parent's scope, and the child's root with neither", () => {
+    const jq79 = mount(`
+      <div class="p"><Chip /></div>
+      <style scoped>.p { color: red }</style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+    const scope = container.querySelector(".p")!.getAttribute("data-jq79")
+
+    expect(scope).not.toBeNull()
+    expect(container.querySelector("c79-chip")!.getAttribute("data-jq79")).toBe(scope)
+    expect(container.querySelector(".c")!.getAttribute("data-jq79"), "the parent gets the box, never what is inside it").toBeNull()
+
+    jq79.destroy()
+  })
+
+  it("rewrites a component's name in a selector to the tag its box has", () => {
+    const jq79 = new Component79(`
+      <div class="p"><Chip /></div>
+      <style scoped>Chip { color: red } .p > Chip { color: blue }</style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+    jq79.render().mount(container)
+    const scope = container.querySelector(".p")!.getAttribute("data-jq79")
+    const css = jq79.styles[0].scoped!
+
+    expect(css).toContain(`c79-chip[data-jq79="${scope}"]`)
+    expect(css).toContain(`.p > c79-chip[data-jq79="${scope}"]`)
+    expect(css).not.toContain("Chip")
+
+    jq79.destroy()
+  })
+
+  it("renames in an unscoped style too, and inside a media query", () => {
+    const jq79 = new Component79(`
+      <div><Chip /></div>
+      <style>Chip { color: red } @media (min-width: 1px) { Chip { color: blue } }</style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+
+    expect(jq79.styles[0].content).toContain("c79-chip { color: red }")
+    expect(jq79.styles[0].content).toContain("@media (min-width: 1px) { c79-chip { color: blue } }")
+  })
+
+  it("renames only in selector position - not declarations, at-rule preludes, strings or classes", () => {
+    const jq79 = new Component79(`
+      <div><Chip /></div>
+      <style>
+        @import url(Chip.css);
+        .Chip, #Chip { font-family: Georgia; content: "Chip" }
+        DIV { color: red }
+        p[title="Chip"] { color: blue }
+        p[title="a > Chip"] /* keep Chip */ { color: teal }
+      </style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+    const css = jq79.styles[0].content
+
+    expect(css).toContain("@import url(Chip.css);")
+    expect(css).toContain(".Chip, #Chip")
+    expect(css).toContain("font-family: Georgia")
+    expect(css).toContain(`content: "Chip"`)
+    expect(css).toContain(`p[title="Chip"]`)
+    // a string or a comment inside a selector is verbatim, not renamable text
+    expect(css).toContain(`p[title="a > Chip"] /* keep Chip */`)
+    // shouty type selectors are established CSS and match case-insensitively;
+    // only a name with a lowercase letter in it is read as a component
+    expect(css).toContain("DIV { color: red }")
+    expect(css).not.toContain("c79-")
+  })
+
+  it("gives the box display:contents through a rule any author rule outranks", () => {
+    mount(`<div><Chip /></div><template name="Chip"><b class="c">x</b></template>`)
+    const rules = [...document.head.querySelectorAll("style")].map(el => el.textContent)
+    const wrapper = rules.filter(css => css?.includes("display: contents"))
+
+    expect(wrapper).toHaveLength(1)
+    // :where() has no specificity, so `c79-chip { display: flex }` wins without
+    // !important and without depending on stylesheet order
+    expect(wrapper[0]).toBe(":where([data-c79-box]) { display: contents }")
+  })
+
+  it("renders no box inside an svg, where an unknown element would take its children with it", () => {
+    mount(`
+      <div><svg class="s"><Dot /></svg></div>
+      <template name="Dot"><circle r="4" /></template>
+    `)
+
+    expect(container.querySelector("svg circle"), "the component still renders").not.toBeNull()
+    expect(container.querySelector("c79-dot")).toBeNull()
+  })
+
+  it("moves component rows as one node when :each reorders them", () => {
+    // the box is a stable single-node range, where the anchors were a pair with
+    // dynamic content between them - boundsOf resolves an element as itself
+    const jq79 = new Component79(`
+      <ul><Row :each="row in rows" :key="row.id" :label="row.label" /></ul>
+      <template name="Row"><script :setup="{ label }"></script><li class="r">{{ label }}</li></template>
+    `).render({ rows: [{ id: 1, label: "a" }, { id: 2, label: "b" }] }).mount(container)
+
+    const [first] = [...container.querySelectorAll("c79-row")]
+    const rows = jq79.data!.rows
+    jq79.data!.rows = [rows[1], rows[0]] // the same items, reordered
+
+    const boxes = [...container.querySelectorAll("c79-row")]
+    expect(boxes).toHaveLength(2)
+    expect(boxes[1], "the same box moved, not a re-rendered one").toBe(first)
+    expect([...container.querySelectorAll(".r")].map(el => el.textContent)).toEqual(["b", "a"])
+
+    jq79.destroy()
+  })
+})

@@ -849,6 +849,44 @@ const renderSlot = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   return wrapper
 }
 
+// the element a component instance renders in - <c79-user-card> - and the
+// reason step 2 of the tag rename exists: a component stops being a pair of
+// comments around loose content and becomes a box that names itself in the
+// inspector and can be addressed by name in CSS.
+//
+// Named after the *component*, not the usage site, so `<UserCard />` and
+// `<user-card>` render the same box and a stylesheet has one name to target.
+//
+// It carries the PARENT's scope stamp, which is not an arbitrary pick: a
+// <style scoped> is rewritten to demand the stamp of whoever wrote it, and
+// `Circle { … }` is written by the parent. The stamp is already on the node -
+// stampScope walks the parent's template and the component tag is part of it -
+// and today it is dropped for want of an element to put it on. The child's own
+// root still carries no stamp from the parent, so a parent gets the box and
+// never what is inside it.
+//
+// EXCEPT inside <svg> or <math>: SVG's rendering model renders neither an
+// unknown element nor its children, and `display: contents` is not the escape
+// hatch there that it is in HTML, so a wrapper could turn a diagram into a
+// blank. A foreign-namespace usage site keeps the anchors alone, as it always
+// had. See TODOS/2026-08-25.the-wrapper-and-the-css-rename.md
+const COMPONENT_BOX_ATTR = "data-c79-box"
+
+const componentBox = (key: string, node: TemplateNode, shadow: boolean): DocumentFragment | HTMLElement => {
+  if (node.ns !== undefined) return document.createDocumentFragment()
+  const box = document.createElement(componentTagName(key))
+  // the marker the default stylesheet selects on. A tag name cannot be
+  // prefix-matched in CSS, and one attribute is one rule for every box on the
+  // page - see wrapperStyle()
+  box.setAttribute(COMPONENT_BOX_ATTR, "")
+  const stamp = node.attrs[SCOPE_ATTR]
+  if (stamp !== undefined) box.setAttribute(SCOPE_ATTR, stamp)
+  // a shadow-rendered tree leaves document.head alone - its copy of the rule
+  // rides with the instance's own styles instead (see renderWith)
+  if (!shadow) ensureWrapperStyle()
+  return box
+}
+
 // <MyComponent :user :title="'str'"></MyComponent> - renders a child
 // component instance at this position. Props: `:name="expr"` evaluates expr
 // in the parent scope (`:name` alone is shorthand for `:name="name"`), plain
@@ -869,7 +907,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // of it - it holds the anchors, which never move on their own (see boundsOf)
   const anchor = document.createComment(key)
   const endAnchor = document.createComment(`/${key}`)
-  const wrapper = document.createDocumentFragment()
+  const wrapper = componentBox(key, node, shadow)
   wrapper.append(anchor, endAnchor)
 
   // the tag's children, as content for the child's <slot>s. Built once per
@@ -2844,6 +2882,100 @@ const scopeRules = (rules: CSSRuleList, scope: string) => {
   })
 }
 
+// A component's name in a selector - `Circle { color: red }` - names the box
+// the component renders in (see renderNestedComponent), so it is rewritten to
+// the tag that box actually has. Same rename componentTagName does for markup,
+// so the author types the prefix in neither place.
+//
+// It runs on the SOURCE, before any CSS parser sees it, and that is not a
+// stylistic choice: in an HTML document a type selector matches
+// case-insensitively, and an engine is free to lowercase it when it serializes
+// `selectorText`. jsdom hands `Circle` back as written; an engine that hands
+// back `circle` would leave a rewrite made there matching nothing - green in
+// this repo's tests and inert in a browser. See
+// TODOS/2026-08-25.the-wrapper-and-the-css-rename.md
+//
+// Only a capitalized name with a lowercase letter in it is a component name
+// here: `DIV`, `A` and `SPAN` are shouty type selectors, which CSS has always
+// matched case-insensitively, and stay elements. That differs from the markup
+// rule on purpose - there, capitalization is the whole claim - and it leaves
+// one corner: a component named with no lowercase letter at all cannot be
+// styled by name
+const COMPONENT_SELECTOR_RE = /(^|[\s>+~,(])([A-Z][A-Za-z0-9]*)(?![\w-])/g
+const HAS_LOWER_RE = /[a-z]/
+
+const renameSelectorNames = (selectors: string): string =>
+  selectors.replace(COMPONENT_SELECTOR_RE, (whole, before: string, name: string) =>
+    HAS_LOWER_RE.test(name) ? `${before}${componentTagName(name)}` : whole
+  )
+
+// at-rules whose block holds rules rather than declarations, so what is inside
+// their braces is selector position again
+const NESTED_AT_RULE_RE = /^\s*@(media|supports|container|layer|scope|document)\b/i
+const AT_RULE_RE = /^\s*@/
+
+// the scan: strings, comments and nesting tracked so a rename only ever lands
+// in selector position. A declaration block is skipped whole (`content: "A"`,
+// `font-family: Georgia` are not selectors), and so is an at-rule's own prelude
+// (`@import url(Foo.css)` names a file, not a component).
+//
+// A string or a comment inside a selector is emitted verbatim and *ends* the
+// chunk being renamed, so `[title="a > Boo"]` keeps its Boo. The at-rule test
+// reads the whole prelude rather than the last chunk, or a `@supports
+// (font-family: "X")` would stop looking like one the moment its string was
+// split off
+const renameComponentSelectors = (css: string): string => {
+  let out = ""
+  let pending = "" // renamable text: selector source since the last verbatim run
+  let prelude = "" // everything since the last delimiter, for the at-rule test
+  const stack: boolean[] = [] // true = the block holds rules, not declarations
+  const inSelectorPosition = () => stack.length === 0 || stack[stack.length - 1]
+
+  const flush = () => {
+    out += inSelectorPosition() && !AT_RULE_RE.test(prelude) ? renameSelectorNames(pending) : pending
+    pending = ""
+  }
+  const verbatim = (text: string) => {
+    flush()
+    out += text
+    prelude += text
+  }
+  const delimiter = (char: string, holdsRules?: boolean) => {
+    flush()
+    out += char
+    prelude = ""
+    if (holdsRules !== undefined) stack.push(holdsRules)
+    else if (char === "}") stack.pop()
+  }
+
+  for (let i = 0; i < css.length; ) {
+    const char = css[i]
+    if (char === "/" && css[i + 1] === "*") {
+      const end = css.indexOf("*/", i + 2)
+      const stop = end === -1 ? css.length : end + 2
+      verbatim(css.slice(i, stop))
+      i = stop
+    } else if (char === '"' || char === "'") {
+      let j = i + 1
+      while (j < css.length && css[j] !== char) j += css[j] === "\\" ? 2 : 1
+      verbatim(css.slice(i, Math.min(j + 1, css.length)))
+      i = j + 1
+    } else if (char === "{") {
+      delimiter("{", NESTED_AT_RULE_RE.test(prelude))
+      i++
+    } else if (char === "}" || char === ";") {
+      delimiter(char)
+      i++
+    } else {
+      pending += char
+      prelude += char
+      i++
+    }
+  }
+  flush()
+  return out
+}
+
 // the CSS parser is the browser's own (no dependency, no hand-rolled parser).
 // Note browsers *silently drop* rules whose selector they can't parse, which
 // is what Vue's :deep()/::v-deep/>>> escape hatches are - unsupported here,
@@ -2974,6 +3106,15 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
     }
   })
 
+  // a component's name in a selector becomes the tag its box actually has,
+  // once per definition and in `content` itself, so every path downstream gets
+  // it: document.head, the scoped rewrite below, and a shadow root (which uses
+  // `content` directly). A `lang` block is skipped for the same reason scoping
+  // skips it - it is not CSS yet
+  styles.forEach(style => {
+    if (!("lang" in style.attrs)) style.content = renameComponentSelectors(style.content)
+  })
+
   // scoping is resolved once, here: the stamped template and the scoped CSS
   // are what every instance of this definition renders and injects. An
   // uncompiled `lang` block is left as it was written - rewriting selectors
@@ -3077,6 +3218,30 @@ const sourceUrlComment = (filename: string | undefined, index: number): string =
 // `:host` rules only shadow rendering can have (`:host[data-jq79=...]` matches
 // nothing: the host element is outside the template, so it carries no stamp)
 const headStyle = (style: TagBlock): string => style.scoped ?? style.content
+
+// the one rule every component box needs: an element where there was none is a
+// box where there was none, and a component inside a flex or grid parent would
+// otherwise become an inline wrapper holding the real child. `display: contents`
+// removes the box and leaves the children in the parent's layout.
+//
+// `:where()` is load-bearing: it has zero specificity, so any author rule wins
+// without !important and without depending on which stylesheet the browser saw
+// first. `c79-panel { display: flex }` opts a component's box back into being a
+// box, which is the point of naming it.
+//
+// Not refcounted like a component's own styles: it is one constant rule for the
+// whole document, so it is injected on the first box and stays. The
+// isConnected check is what makes it survive a head somebody emptied
+const WRAPPER_STYLE = `:where([${COMPONENT_BOX_ATTR}]) { display: contents }`
+
+let wrapperStyleEl: HTMLStyleElement | null = null
+
+const ensureWrapperStyle = () => {
+  if (wrapperStyleEl?.isConnected) return
+  wrapperStyleEl = document.createElement("style")
+  wrapperStyleEl.textContent = WRAPPER_STYLE
+  document.head.appendChild(wrapperStyleEl)
+}
 
 // document.head styles are shared by content and refcounted, so N instances
 // of the same component (e.g. one per :each item) inject a single <style> tag
@@ -4023,11 +4188,18 @@ export class Component79 {
     }
 
     if (shadow) {
-      this.styleEls = this.styles.map(style => {
+      // document.head cannot reach into a shadow root, so every component box
+      // rendered inside this one needs the wrapper rule here. It goes last, and
+      // the position carries nothing: :where() has no specificity, so an author
+      // rule wins wherever it sits. What it does buy is that "the shadow root's
+      // style" still means the component's own
+      const wrapperEl = document.createElement("style")
+      wrapperEl.textContent = WRAPPER_STYLE
+      this.styleEls = [...this.styles.map(style => {
         const el = document.createElement("style")
         el.textContent = style.content // the source: a shadow root scopes it already
         return el
-      })
+      }), wrapperEl]
     } else {
       this.styles.forEach(style => acquireStyle(headStyle(style)))
       this.ownsSharedStyles = true

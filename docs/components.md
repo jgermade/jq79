@@ -184,6 +184,14 @@ The hash comes from the component source, so all instances of a definition share
 Notes:
 
 - **Scoping stops at the component boundary.** A nested component's elements carry their own scope, not the parent's, so a parent's scoped rules can't style a child's internals. Vue's `:deep()` escape hatch is not supported (it isn't real CSS — the browser drops the rule — and jq79 warns if it sees one).
+- **A component's name is a selector**, and it targets the [box the instance renders in](template-syntax.md#a-component-renders-in-a-box-of-its-own) — the parent gets the box, never what is inside it:
+
+  ```css
+  Chip { margin: 4px }        /*  ->  c79-chip[data-jq79="1a2b3c"] { margin: 4px }  */
+  ```
+
+  It works in a `<style>` without `scoped` too (globally, as written there), and inside `@media`. Only in selector position: `content: "Chip"`, `.Chip`, `#Chip` and `@import url(Chip.css)` are left alone, and so is a shouty type selector — `DIV { }` still means `div`, since CSS matches those case-insensitively. Which leaves one corner: a component named with no lowercase letter in it (`ABC`) can't be styled by name.
+- **A component can't style its own box.** The box belongs to the parent's template, so it carries the parent's stamp and never the child's: `c79-panel { display: flex }` written *inside* Panel does nothing. Write it in Panel's parent, or in a global stylesheet.
 - **Slot content is stamped where it was written**, not where it lands: content the parent passed into a child keeps the parent's stamp, so the parent's rules style it and the child's don't — even though it renders inside the child. Which is the same rule, read from the other side: the stamp follows the file the markup is in.
 - `@keyframes` are left untouched, so animation names are still global: prefix them if two components might collide.
 - Pseudo-elements stay last (`.a::before` → `.a[data-jq79="…"]::before`), and `@media`/`@supports`/`@container` blocks are scoped inside.
