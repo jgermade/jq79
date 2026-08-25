@@ -38,29 +38,38 @@
 
 import { chromium, firefox, webkit } from "playwright"
 
-import { CAMEL_NAMES, DASHED_NAMES } from "./svg-attribute-corpus.mjs"
+import { CAMEL_NAMES, DASHED_NAMES, UNDASHED_NAMES } from "./svg-attribute-corpus.mjs"
 
 const ENGINES = { chromium, firefox, webkit }
 
-const probe = async (page, names, dashed) =>
-  page.evaluate(({ names, dashed }) => {
-    const WRAPPER = "svg"
-    const TAG = "feGaussianBlur"
+const WRAPPER = "svg"
+const TAG = "feGaussianBlur"
+const flatten = name => name.replace(/-/g, "").toLowerCase()
+
+// The ground truth, and it has to come from the engine's DOCUMENT parser -
+// setContent parses a whole document, where insertAdjacentHTML and innerHTML
+// both run the *fragment* algorithm. Using one of those here made the
+// innerHTML comparison below a test of a thing against itself: structurally
+// unable to fail, which is the exact vacuity TODOS/2026-08-24.clone-path-coverage-check.md
+// exists to catch. One document holds every probe, so this is one parse
+const inDocument = async (page, flats) => {
+  const markup = flats.map((flat, index) => `<${TAG} data-probe="${index}" ${flat}="x"/>`).join("")
+  await page.setContent(`<!doctype html><title>probe</title><${WRAPPER}>${markup}</${WRAPPER}>`)
+  return page.evaluate(({ flats }) => flats.map((flat, index) => {
+    const el = document.querySelector(`[data-probe="${index}"]`)
+    return el?.getAttributeNames().find(name => name.toLowerCase() === flat) ?? null
+  }), { flats })
+}
+
+const probe = async (page, names, dashed, undashed) => {
+  const all = [...names, ...dashed, ...undashed]
+  const flats = all.map(flatten)
+  const document_ = await inDocument(page, flats)
+
+  // and the two ways the oracle can ask, both inside the page it just parsed
+  const asked = await page.evaluate(({ flats, WRAPPER, TAG }) => {
     const nameIn = (root, lower) =>
       root?.querySelector(TAG)?.getAttributeNames().find(name => name.toLowerCase() === lower) ?? null
-
-    // The question the oracle asks is always about the FLAT, lowercase form -
-    // `stroke-width` is looked up as `strokewidth` - because both spellings
-    // converge before the resolution runs. So all three ways of asking get the
-    // same flat question, and the document parser is the ground truth
-    const inDocument = flat => {
-      const host = document.createElement("div")
-      document.body.appendChild(host)
-      host.insertAdjacentHTML("beforeend", `<${WRAPPER}><${TAG} ${flat}="x"/></${WRAPPER}>`)
-      const found = nameIn(host, flat)
-      host.remove()
-      return found
-    }
 
     const viaDomParser = flat =>
       nameIn(new DOMParser().parseFromString(`<${WRAPPER}><${TAG} ${flat}="x"/></${WRAPPER}>`, "text/html"), flat)
@@ -71,18 +80,22 @@ const probe = async (page, names, dashed) =>
       return nameIn(host, flat)
     }
 
-    const flatten = name => name.replace(/-/g, "").toLowerCase()
-    const ask = name => {
-      const flat = flatten(name)
-      return { name, flat, document: inDocument(flat), domParser: viaDomParser(flat), innerHtml: viaInnerHtml(flat) }
-    }
-
     return {
       engine: navigator.userAgent,
-      camel: names.map(ask),
-      dashed: dashed.map(ask),
+      rows: flats.map(flat => ({ domParser: viaDomParser(flat), innerHtml: viaInnerHtml(flat) })),
     }
-  }, { names, dashed })
+  }, { flats, WRAPPER, TAG })
+
+  const rows = all.map((name, index) => ({
+    name, flat: flats[index], document: document_[index], ...asked.rows[index],
+  }))
+  return {
+    engine: asked.engine,
+    camel: rows.slice(0, names.length),
+    dashed: rows.slice(names.length, names.length + dashed.length),
+    undashed: rows.slice(names.length + dashed.length),
+  }
+}
 
 const run = async () => {
   const only = process.argv.slice(2).filter(arg => !arg.startsWith("-"))
@@ -108,12 +121,12 @@ const run = async () => {
     try {
       const page = await browser.newPage()
       await page.setContent("<!doctype html><title>probe</title>")
-      results[engine] = await probe(page, CAMEL_NAMES, DASHED_NAMES)
+      results[engine] = await probe(page, CAMEL_NAMES, DASHED_NAMES, UNDASHED_NAMES)
     } finally {
       await browser.close()
     }
 
-    const { camel, dashed, engine: ua } = results[engine]
+    const { camel, dashed, undashed, engine: ua } = results[engine]
     const version = (ua.match(/(Firefox|Chrome|Version)\/[\d.]+/) ?? ["?"])[0]
 
     // LEVEL 1, and it gates.
@@ -124,18 +137,18 @@ const run = async () => {
     // the name rewrite doing its job. What has to hold is that the MECHANISM
     // reproduces the engine's document parser for the flat question the oracle
     // actually asks
-    const rows = [...camel, ...dashed]
+    const rows = [...camel, ...dashed, ...undashed]
     const disagree = rows.filter(row => row.domParser !== row.document)
     const innerHtmlDisagree = rows.filter(row => row.innerHtml !== row.document)
     // a dashed name whose de-dashed form the table claims would be silently
     // rewritten - `:stroke-width` would stop being stroke-width in this engine
-    const collisions = dashed.filter(row => row.document !== null && row.document !== row.flat)
+    const collisions = [...dashed, ...undashed].filter(row => row.document !== null && row.document !== row.flat)
 
     console.log(`\n## ${engine} (${version})`)
-    console.log(`   names checked                 ${camel.length} camelCase, ${dashed.length} dashed`)
+    console.log(`   names checked                 ${camel.length} camelCase, ${dashed.length} dashed, ${undashed.length} undashed`)
     console.log(`   DOMParser vs document parser  ${disagree.length === 0 ? "agree" : `${disagree.length} DISAGREE`}`)
     console.log(`   innerHTML vs document parser  ${innerHtmlDisagree.length === 0 ? "agree" : `${innerHtmlDisagree.length} DISAGREE`}`)
-    console.log(`   dashed names claimed          ${collisions.length === 0 ? "none" : `${collisions.length} COLLIDE`}`)
+    console.log(`   names the table claims        ${collisions.length === 0 ? "none" : `${collisions.length} COLLIDE`}`)
 
     disagree.forEach(row => failures.push(`${engine}: asking for ${row.flat} answers ${row.domParser}, the document parser says ${row.document}`))
     collisions.forEach(row => failures.push(`${engine}: ${row.name} would be rewritten to ${row.document}`))

@@ -32,3 +32,14 @@ stop-opacity stroke-dasharray stroke-dashoffset stroke-linecap stroke-linejoin s
 stroke-opacity stroke-width text-anchor text-decoration text-rendering transform-origin
 underline-position unicode-bidi vector-effect vertical-align word-spacing writing-mode
 data-foo data-user-id aria-label aria-hidden aria-describedby`.split(/\s+/)
+
+// Names with no dash that must also reach the DOM as written. The resolution
+// looks every foreign name up, not only the dashed ones - `:viewbox` is a
+// spelling somebody writes and the parser adjusts it - so these are the other
+// half of the collision question
+export const UNDASHED_NAMES = `fill stroke opacity cx cy r rx ry x y x1 y1 x2 y2 width height d points
+transform href id class style in in2 result mode operator values type dur begin end from to by fr offset
+rotate scale seed radius k1 k2 k3 k4 order divisor bias azimuth elevation exponent intercept slope
+amplitude media method spacing side restart accumulate additive orient overflow cursor display
+visibility filter mask color direction max min name target version clip cap decelerate descent local
+string unicode`.split(/\s+/)

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { $, $$, Component79, parseComponent, $reactive, renderComponent, $toRaw } from "../src/jq79"
-import { DASHED_NAMES } from "../scripts/svg-attribute-corpus.mjs"
+import { DASHED_NAMES, UNDASHED_NAMES } from "../scripts/svg-attribute-corpus.mjs"
 
 describe("renderComponent", () => {
   let container: HTMLDivElement
@@ -1999,6 +1999,29 @@ describe("svg", () => {
     })
 
     expect(written.filter(pair => pair.split(" -> ")[0] !== pair.split(" -> ")[1]), "a dashed name collided with the parser's table").toEqual([])
+  })
+
+  // the all-lowercase spelling: the parser adjusts `viewbox` written out, so a
+  // bound one has to reach the same attribute. It used to skip the lookup for
+  // want of a dash and write a dead `viewbox`
+  it("resolves a name written all in lowercase", () => {
+    render(`<div><svg :viewbox="box"></svg></div>`, { box: "0 0 10 10" })
+
+    expect(container.querySelector("svg")!.getAttributeNames()).toContain("viewBox")
+    expect(container.querySelector("svg")!.getAttributeNames()).not.toContain("viewbox")
+  })
+
+  it("leaves every undashed svg attribute exactly as written", () => {
+    const written = UNDASHED_NAMES.map(name => {
+      render(`<div><svg><circle :${name}="v" /></svg></div>`, { v: "x" })
+      const circle = container.querySelector("circle")!
+      const found = circle.getAttributeNames().find(candidate => candidate.toLowerCase() === name)
+      circle.closest("svg")!.remove()
+      return `${name} -> ${found}`
+    })
+
+    expect(written.filter(pair => pair.split(" -> ")[0] !== pair.split(" -> ")[1]),
+      "an undashed name was claimed by the parser's table").toEqual([])
   })
 
   it("leaves html elements alone, camelCase and all", () => {

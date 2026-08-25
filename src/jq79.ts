@@ -1274,7 +1274,11 @@ const adjustedName = (ns: string, flat: string): string => {
 // and aria-*): none collides
 const foreignAttrName = (el: Element, name: string): string => {
   const ns = el.namespaceURI
-  if (ns === null || ns === HTML_NS || !name.includes("-")) return name
+  if (ns === null || ns === HTML_NS) return name
+  // no shortcut for a name without a dash: `:viewbox` is a spelling somebody
+  // writes, the parser adjusts it written out, and skipping the lookup left the
+  // bound form dead where the static one worked. What it costs is a memoised
+  // Map hit per foreign binding - 83 undashed names measured, none claimed
   const flat = name.replace(/-/g, "").toLowerCase()
   const adjusted = adjustedName(ns, flat)
   // unchanged means the parser does not claim this name, so the author wrote a
