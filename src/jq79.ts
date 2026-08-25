@@ -1292,11 +1292,15 @@ export type DebugFlags = {
 // the control attributes a skeleton knows how to fill. The rest of
 // CONTROL_ATTRS stays rejected on purpose: :if/:elseif/:else/:each/:key change
 // the shape rather than filling a hole, :with changes the scope its subtree
-// evaluates in, :props belongs to a component tag, and :html carries a
-// sanitizer plus a second attribute (:html.allowed) whose "without :html"
-// warning fires once per render interpreted and would fire once per definition
-// here - see TODOS/2026-08-24.more-holes-in-the-cloner.md
-const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":attrs", ":value", ":checked", ":selected"])
+// evaluates in, and :props belongs to a component tag.
+//
+// `:html` is here and `:html.allowed` is not, which is the whole of why the
+// warning renderNode emits for an `:html.allowed` with no `:html` is not this
+// list's problem: `:html.allowed` is rejected by the two clauses below (a
+// control attr, and a dotted name), so an element carrying one is never planned
+// and renderNode stays the only place that warning can fire from - once per
+// render, as before. See TODOS/2026-08-25.html-in-the-cloner.md
+const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":attrs", ":value", ":checked", ":selected"])
 
 // What a hole can be, in the order renderNode registers them.
 // A `:` attribute with a dot in it is rejected wholesale except `:class.`:
@@ -1328,11 +1332,11 @@ const plannableNode = (node: TemplateNode): boolean => {
   // tag is uppercase-initial, so none is ever stamped as one)
   if (node.ns === undefined && document.createElement(node.tag) instanceof HTMLUnknownElement) return false
   for (const key in node.attrs) if (!plannableAttr(key)) return false
-  // an element with :text has no children on either path (see buildSkeleton), so
-  // what the source wrote inside it cannot make the subtree unplannable - a
-  // component tag under a :text is markup nobody renders, not markup the clone
-  // path would get wrong
-  if (node.attrs[":text"] !== undefined) return true
+  // an element with :text or :html has no children on either path (see
+  // buildSkeleton), so what the source wrote inside it cannot make the subtree
+  // unplannable - a component tag under a :text is markup nobody renders, not
+  // markup the clone path would get wrong
+  if (node.attrs[":text"] !== undefined || node.attrs[":html"] !== undefined) return true
   return node.children.every(child => typeof child === "string" || plannableNode(child))
 }
 
@@ -1347,6 +1351,7 @@ type SkeletonOp =
   | { kind: "attrs"; path: number[]; expr: string }
   | { kind: "class"; path: number[]; classExpr?: string; toggles: [string, string][] | null; staticClasses: Set<string> }
   | { kind: "textContent"; path: number[]; expr: string }
+  | { kind: "html"; path: number[]; expr: string }
   | { kind: "value"; path: number[]; expr: string }
   | { kind: "checked"; path: number[]; expr: string }
   | { kind: "selected"; path: number[]; expr: string }
@@ -1384,11 +1389,14 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
     ops.push({ kind: "class", path, classExpr, toggles, staticClasses: new Set(classNames(node.attrs.class ?? "")) })
   }
 
-  // :text replaces the element's content, and renderNode never renders the
-  // children of an element carrying one. So the skeleton gives it none either:
-  // a :text node is a leaf on both paths, whatever the source wrote inside it
+  // :text and :html replace the element's content, and renderNode never renders
+  // the children of an element carrying either. So the skeleton gives it none
+  // either: both are leaves on both paths, whatever the source wrote inside
+  // them. The else-if order is renderNode's - :text wins when both are written
   const textExpr = node.attrs[":text"]
+  const htmlExpr = node.attrs[":html"]
   if (textExpr !== undefined) ops.push({ kind: "textContent", path, expr: textExpr })
+  else if (htmlExpr !== undefined) ops.push({ kind: "html", path, expr: htmlExpr })
   else node.children.forEach((child, index) => {
     if (typeof child === "string") {
       // an interpolated text node is a hole; the skeleton holds the empty node
@@ -1423,11 +1431,11 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
 // and a regression on a row whose only fragments are that small
 const MIN_SKELETON_ELEMENTS = 3
 
-// children under a :text are not built by either path, so they are not elements
-// this threshold should be counting - a <p :text="v"> with two <span>s written
-// inside it is one element's worth of cloning, not three
+// children under a :text or an :html are not built by either path, so they are
+// not elements this threshold should be counting - a <p :text="v"> with two
+// <span>s written inside it is one element's worth of cloning, not three
 const countElements = (node: TemplateNode): number =>
-  node.attrs[":text"] !== undefined
+  node.attrs[":text"] !== undefined || node.attrs[":html"] !== undefined
     ? 1
     : 1 + node.children.reduce((total, child) => total + (typeof child === "string" ? 0 : countElements(child)), 0)
 
@@ -1531,6 +1539,14 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
       const el = target as Element
       const { expr } = op
       fx.effect(() => { el.textContent = String(evalExpr(expr, scope) ?? "") })
+    } else if (op.kind === "html") {
+      // renderNode's effect with its `allowUrl` arm removed, because an element
+      // carrying :html.allowed is never planned - the attribute is rejected by
+      // plannableAttr, which is what keeps that directive's warning in exactly
+      // one place. TODOS/2026-08-25.html-in-the-cloner.md
+      const el = target as Element
+      const { expr } = op
+      fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(expr, scope) ?? "")) })
     } else if (op.kind === "value") {
       // the property, not the attribute, and skipping a write that would not
       // change it - renderNode's reasons apply here unchanged
@@ -2251,6 +2267,38 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
   )
 }
 
+// A directive on a *nested* <template> says something it does not mean, in two
+// different ways, and neither is a rendering bug to fix.
+//
+// Bare, the element is native and inert: its children live in .content and
+// never reach the page, so `<template :if="show"><li>uno</li></template>`
+// decides whether an empty <template> is inserted and shows nothing in either
+// state. With a :slot attribute the directive is not merely invisible but
+// *dropped* - partitionSlots finds the node by slotAttrOf and takes its
+// children as the slot's content, and nothing on that path looks at :if, so a
+// :slot filler renders whatever its condition says.
+//
+// The directive is the discriminant, and nothing else is: a bare nested
+// <template> is the legitimate native use and must stay silent. A top-level one
+// never arrives here at all - parseComponentString lifts declarations out
+// before componentPartsFrom runs - so the position needs no exclusion.
+// See TODOS/2026-08-24.template-directive-warning.md
+const TEMPLATE_DIRECTIVES = [":if", ":elseif", ":else", ":each"]
+
+const warnTemplateDirective = (node: TemplateNode) => {
+  if (node.tag !== "template") return
+  const directive = TEMPLATE_DIRECTIVES.find(attr => attr in node.attrs)
+  if (directive === undefined) return
+  const slot = slotAttrOf(node)
+  console.warn(
+    slot !== undefined
+      ? `jq79: ${directive} on <template ${slot}> is ignored - a slot is filled with its children as written. ` +
+        `Put ${directive} on the elements inside it, or on the component's tag`
+      : `jq79: ${directive} on a nested <template> shows nothing - a <template>'s children live in its .content ` +
+        `and never reach the page. Put ${directive} on the elements themselves`
+  )
+}
+
 // Checks one node list's chains, and every list below it, against that grammar.
 // Run once per definition from componentPartsFrom, not per render: a template
 // says what it says before any data exists, so a stray :else is reported when
@@ -2264,7 +2312,11 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
 // grouping ever sees it, which is exactly why it breaks a chain
 const validateChains = (nodes: (TemplateNode | string)[]) => {
   nodes.forEach(node => {
-    if (typeof node !== "string") validateChains(node.children)
+    if (typeof node === "string") return
+    // before the loop below, which skips a :each node early - and a
+    // <template :each> is one of the two shapes this reports
+    warnTemplateDirective(node)
+    validateChains(node.children)
   })
 
   // the chain that ended immediately before this point closed itself with an

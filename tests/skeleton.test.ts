@@ -144,7 +144,7 @@ describe("the clone path renders what the interpreted path renders", () => {
     [":with", `<div class="a"><section :with="user"><b>{{ name }}</b><i>{{ email }}</i></section></div>`,
       () => ({ user: { name: "ada", email: "a@b" } }), d => { d.user = { name: "grace", email: "g@h" } }, "never"],
     [":text and :html", `<div class="a"><p :text="v"></p><div :html="markup"></div></div>`,
-      () => ({ v: "x", markup: "<b>y</b>" }), d => { d.v = "z"; d.markup = "<i>w</i>" }, "never"],
+      () => ({ v: "x", markup: "<b>y</b>" }), d => { d.v = "z"; d.markup = "<i>w</i>" }, "second"],
     [":attrs", `<div class="a"><button :attrs="{ title, disabled }">b</button></div>`,
       () => ({ title: "t", disabled: false }), d => { d.title = "t2"; d.disabled = true }, "never"],
     ["form state", `<form class="a"><input :value="name" /><input type="checkbox" :checked="ok" /><select :value="lang"><option value="en">en</option><option value="es">es</option></select></form>`,
@@ -164,6 +164,12 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ v: "x" }), d => { d.v = "y" }, "second"],
     [":text over children the interpreted path never renders", `<div class="w"><span class="p">uno</span><p class="q" :text="v"><b>{{ ignored }}</b><Chip :label="v" /></p><span class="r">dos</span></div>`,
       () => ({ v: "x", ignored: "no", Chip: parseComponent(`<span class="chip">{{ label }}</span>`) }), d => { d.v = "y"; d.ignored = "still no" }, "second"],
+    // :html sat in SHAPE_CORPUS proving its subtree fell through. It is a hole
+    // the skeleton fills now (TODOS/2026-08-25.html-in-the-cloner.md), so what
+    // it proves moved: both paths sanitize the same value into the same DOM,
+    // and the children written inside it are rendered by neither
+    [":html in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :html="markup"><b>{{ ignored }}</b></p><span class="r">dos</span></div>`,
+      () => ({ markup: "<b>x</b>", ignored: "no" }), d => { d.markup = "<i>y</i>"; d.ignored = "still no" }, "second"],
     [":attrs in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :attrs="{ title }">x</p><span class="r">dos</span></div>`,
       () => ({ title: "t" }), d => { d.title = "t2" }, "second"],
     [":attrs dropping a key it set", `<div class="w"><span class="p">uno</span><p class="q" :attrs="bag">x</p><span class="r">dos</span></div>`,
@@ -212,8 +218,13 @@ describe("the clone path renders what the interpreted path renders", () => {
   // deliberate sabotage - `:text` added to the allowlist - went unnoticed
   // because nothing in the corpus above put one inside a planned subtree.
   const SHAPE_CORPUS: Entry[] = [
-    [":html", `<div class="w"><span class="p">uno</span><p class="q" :html="markup"></p><span class="r">dos</span></div>`,
-      () => ({ markup: "<b>x</b>" }), d => { d.markup = "<i>y</i>" }, "never"],
+    // the surviving half of the pair. :html is a hole the skeleton fills;
+    // :html.allowed must go on making its subtree unplannable, because
+    // renderNode is the only place its "without :html" warning may fire from
+    // and an interpreted element is what keeps it there
+    [":html.allowed", `<div class="w"><span class="p">uno</span><p class="q" :html="markup" :html.allowed="policy"></p><span class="r">dos</span></div>`,
+      () => ({ markup: `<a href="https://x.test/a">x</a>`, policy: "x.test" }),
+      d => { d.markup = `<a href="https://y.test/b">y</a>` }, "never"],
     [":if", `<div class="w"><span class="p">uno</span><p class="q" :if="on">si</p><span class="r">dos</span></div>`,
       () => ({ on: true }), d => { d.on = false }, "never"],
     [":each", `<div class="w"><span class="p">uno</span><p class="q" :each="n in ns">{{ n }}</p><span class="r">dos</span></div>`,

@@ -1598,6 +1598,78 @@ describe(":each with a component in the loop variable", () => {
   })
 })
 
+// A nested <template> carrying a directive is two silent failures - the bare
+// one shows nothing in either state, the :slot one has its directive dropped
+// and renders anyway - and neither is a rendering bug to fix. Both are worth
+// the console line every other it-does-nothing case gets
+// TODOS/2026-08-24.template-directive-warning.md
+describe("a directive on a nested <template>", () => {
+  let container: HTMLDivElement
+  let warn: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    warn.mockRestore()
+    container.remove()
+  })
+
+  const messages = () => warn.mock.calls.map(call => String(call[0]))
+
+  it("warns that the children never reach the page, in either state", () => {
+    const data = $reactive({ show: true })
+    container.appendChild(renderComponent(
+      parseComponent(`<ul><template :if="show"><li class="in">uno</li></template></ul>`), data))
+
+    expect(messages()).toContainEqual(expect.stringContaining(":if on a nested <template> shows nothing"))
+    // the :if works exactly as written - it decides whether an inert
+    // <template> is inserted, and its children live in .content either way
+    expect(container.querySelector(".in"), "a <template>'s children are not in the document").toBeNull()
+
+    ;(data as any).show = false
+    expect(container.querySelector(".in")).toBeNull()
+  })
+
+  it("warns that a slot filler's directive is dropped, and it is", () => {
+    const Panel = parseComponent(`<section class="panel"><slot.header /><slot /></section>`)
+    container.appendChild(renderComponent(
+      parseComponent(`<div><Panel><template :slot.header :if="show"><h2 class="title">cabecera</h2></template></Panel></div>`),
+      $reactive({ Panel, show: false })))
+
+    expect(messages()).toContainEqual(expect.stringContaining(":if on <template :slot.header> is ignored"))
+    expect(container.querySelector(".title"), "the slot content renders whatever :if says").not.toBeNull()
+  })
+
+  it("warns for :each too, which is the same misconception", () => {
+    container.appendChild(renderComponent(
+      parseComponent(`<ul><template :each="n in ns"><li>{{ n }}</li></template></ul>`), $reactive({ ns: [1, 2] })))
+
+    expect(messages()).toContainEqual(expect.stringContaining(":each on a nested <template> shows nothing"))
+  })
+
+  it("says nothing about a bare nested <template>, which is the legitimate use", () => {
+    container.appendChild(renderComponent(
+      parseComponent(`<div><template class="tpl"><b>x</b></template></div>`), $reactive({})))
+
+    expect(messages()).toEqual([])
+    expect(container.querySelector("template")).not.toBeNull()
+  })
+
+  it("says nothing about a top-level <template> declaration", () => {
+    // a declaration is lifted out before the walk ever runs, so its position
+    // needs no exclusion - this is the test that says so
+    const component = new Component79(`<template name="Row"><li class="row">fila</li></template><ul><Row /></ul>`)
+    component.mount(container)
+
+    expect(messages()).toEqual([])
+    expect(container.querySelector(".row")).not.toBeNull()
+  })
+})
+
 // The chain grammar is :if, then :elseif, then :else, on adjacent siblings.
 // Both ways of breaking it render something, so both have to say so - the
 // orphan especially, which renders the branch unconditionally and used to do it
