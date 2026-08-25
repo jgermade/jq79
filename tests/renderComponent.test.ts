@@ -1904,6 +1904,93 @@ describe("svg", () => {
     expect(container.querySelector("svg")).not.toBeNull()
   })
 
+  // A bound camelCase attribute used to be rewritten to kebab and lost: the
+  // rewrite turns `:viewBox` into `:view-box` before the parse, and SVG has no
+  // such attribute. The name is resolved against the parser's own adjust table
+  // now - the one that makes a written-out viewBox survive
+  // TODOS/2026-08-25.svg-attribute-names.md
+  //
+  // Hardcoded rather than asked, so these pin a semantics instead of agreeing
+  // with the implementation. The last three are the ones that killed the IDL
+  // trick this replaces (TODOS/2026-08-24.svg-namespace.md)
+  const CAMEL_ATTRS: [tag: string, attribute: string][] = [
+    ["svg", "viewBox"],
+    ["svg", "preserveAspectRatio"],
+    ["linearGradient", "gradientUnits"],
+    ["marker", "markerWidth"],
+    ["marker", "refX"],
+    ["textPath", "startOffset"],
+    ["path", "pathLength"],
+    ["feTurbulence", "baseFrequency"],
+    ["feGaussianBlur", "stdDeviation"],
+    ["animate", "attributeName"],
+    ["animate", "repeatCount"],
+  ]
+
+  // camelCase and kebab converge before any of this runs, so both spellings
+  // have to arrive at the same attribute - which is the rule the docs promise
+  const kebab = (name: string) => name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)
+
+  // <svg> is its own wrapper; everything else needs one to be in the namespace
+  const inSvg = (tag: string, attrs: string) =>
+    tag === "svg" ? `<div><svg ${attrs}></svg></div>` : `<div><svg><${tag} ${attrs} /></svg></div>`
+
+  CAMEL_ATTRS.forEach(([tag, attribute]) => {
+    it(`binds :${attribute} on <${tag}> as ${attribute}`, () => {
+      const data = render(inSvg(tag, `:${attribute}="v"`), { v: "2" })
+      const el = container.querySelector(tag)!
+
+      expect(el.getAttributeNames()).toContain(attribute)
+      expect(el.getAttribute(attribute)).toBe("2")
+      expect(el.getAttributeNames(), "the kebab spelling reached the DOM").not.toContain(kebab(attribute))
+
+      data.v = "3"
+      expect(el.getAttribute(attribute), "the resolved name is not reactive").toBe("3")
+    })
+
+    it(`binds :${kebab(attribute)} on <${tag}> as ${attribute} too`, () => {
+      render(inSvg(tag, `:${kebab(attribute)}="v"`), { v: "2" })
+
+      expect(container.querySelector(tag)!.getAttributeNames()).toContain(attribute)
+    })
+  })
+
+  // The collision test, and the one to re-run if the name rewrite is ever
+  // touched. The resolution has to be a pure function of the kebab name,
+  // because both spellings converge before it runs - so a real kebab attribute
+  // whose de-dashed form the table claims would start being rewritten. Every
+  // presentation attribute, plus data-* and aria-*: none of them collides
+  const KEBAB_ATTRS = `alignment-baseline baseline-shift clip-path clip-rule color-interpolation
+    color-interpolation-filters color-rendering dominant-baseline fill-opacity fill-rule flood-color
+    flood-opacity font-family font-size font-size-adjust font-stretch font-style font-variant
+    font-weight image-rendering letter-spacing lighting-color marker-end marker-mid marker-start
+    mask-type paint-order pointer-events shape-rendering stop-color stop-opacity stroke-dasharray
+    stroke-dashoffset stroke-linecap stroke-linejoin stroke-miterlimit stroke-opacity stroke-width
+    text-anchor text-decoration text-rendering transform-origin unicode-bidi vector-effect
+    word-spacing writing-mode data-foo data-user-id aria-label aria-hidden`.split(/\s+/)
+
+  it("leaves every dashed svg attribute exactly as written", () => {
+    const written = KEBAB_ATTRS.map(name => {
+      render(`<div><svg><circle :${name}="v" /></svg></div>`, { v: "x" })
+      const circle = container.querySelector("circle")!
+      const found = circle.getAttributeNames().find(candidate => candidate.toLowerCase().replace(/-/g, "") === name.replace(/-/g, ""))
+      circle.closest("svg")!.remove()
+      return `${name} -> ${found}`
+    })
+
+    expect(written.filter(pair => pair.split(" -> ")[0] !== pair.split(" -> ")[1]), "a dashed name collided with the parser's table").toEqual([])
+  })
+
+  it("leaves html elements alone, camelCase and all", () => {
+    render(`<div><p :viewBox="v" :dataFoo="w"></p></div>`, { v: "x", w: "y" })
+    const p = container.querySelector("p")!
+
+    // nothing here consults the table: it is the parser's foreign-content
+    // table, and an HTML element is not foreign
+    expect(p.getAttributeNames()).toContain("view-box")
+    expect(p.getAttributeNames()).toContain("data-foo")
+  })
+
   it("stamps svg elements for a scoped style", () => {
     // <style scoped> requires the stamp on every element the component
     // rendered, and a foreign element has to be reachable by its rules too
@@ -2027,6 +2114,24 @@ describe("mathml", () => {
     expect(container.querySelector(".wrong")).toBeNull()
     expect(container.querySelector("annotation-xml")).not.toBeNull()
     expect(container.querySelector("math")).not.toBeNull()
+  })
+
+  // the same table, asked in MathML's namespace - one entry, and it is free
+  it("binds :definitionUrl as definitionURL", () => {
+    const data = render(`<div><math><mi :definitionUrl="url">x</mi></math></div>`, { url: "/a" })
+    const mi = container.querySelector("mi")!
+
+    expect(mi.getAttributeNames()).toContain("definitionURL")
+    expect(mi.getAttributeNames()).not.toContain("definition-url")
+
+    data.url = "/b"
+    expect(mi.getAttribute("definitionURL")).toBe("/b")
+  })
+
+  it("leaves a lowercase mathml attribute as written", () => {
+    render(`<div><math><mi :mathcolor="c" :math-color="c2">x</mi></math></div>`, { c: "red", c2: "blue" })
+
+    expect(container.querySelector("mi")!.getAttributeNames()).toContain("mathcolor")
   })
 
   it("stamps mathml elements for a scoped style", () => {

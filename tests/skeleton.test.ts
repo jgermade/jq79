@@ -197,6 +197,12 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ at: "0" }), d => { d.at = "1" }, "second"],
     ["a foreignObject hands the namespace back", `<div class="w"><span class="p">uno</span><svg class="q"><foreignObject><p>{{ v }}</p></foreignObject></svg><span class="r">dos</span></div>`,
       () => ({ v: "x" }), d => { d.v = "y" }, "second"],
+    // a bound camelCase name is resolved against the parser's adjust table
+    // (TODOS/2026-08-25.svg-attribute-names.md), and the resolution happens in
+    // two places - once per instance interpreted, once per definition in the
+    // plan. This is what says the two agree about which attribute they wrote
+    ["an svg with a bound camelCase attribute", `<div class="w"><span class="p">uno</span><svg class="q" :viewBox="box"><circle r="1" :stroke-width="sw" /></svg><span class="r">dos</span></div>`,
+      () => ({ box: "0 0 10 10", sw: 2 }), d => { d.box = "0 0 20 20"; d.sw = 4 }, "second"],
     // MathML rides on the same AST field <svg> does, so the cloner has to build
     // it in its own namespace for the same reason - TODOS/2026-08-24.mathml.md
     ["a math", `<div class="w"><span class="p">uno</span><math class="q" display="block"><mrow><mi :mathcolor="color">x</mi><mn>{{ n }}</mn></mrow></math><span class="r">dos</span></div>`,

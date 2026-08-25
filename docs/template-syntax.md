@@ -444,14 +444,24 @@ SVG works like any other markup — interpolation, `:attr` bindings, `:each`, `:
 
 Elements inside an `<svg>` are built in the SVG namespace, so they draw, their case-sensitive names survive (`viewBox`, `preserveAspectRatio`, `<linearGradient>`, `<clipPath>`), and `<style scoped>` reaches them. A `<foreignObject>` hands the namespace back, so HTML inside one is real HTML.
 
-One limit, and it comes from the [name-casing rewrite](#name-casing): **binding** a camelCase SVG attribute does not work, because the rewrite turns `:viewBox` into `:view-box` and SVG has no such attribute.
+SVG's camelCase attribute names work bound, and either spelling reaches the same one:
 
 ```html
-<svg viewBox="0 0 10 10">    <!-- fine: written out, not bound -->
-<svg :viewBox="box">         <!-- renders view-box="…", which SVG ignores -->
+<svg :viewBox="box">                        <!-- viewBox="0 0 10 10" -->
+<svg :view-box="box">                       <!-- the same attribute -->
+<feGaussianBlur :stdDeviation="blur" />     <!-- stdDeviation="3" -->
+<circle :stroke-width="w" :strokeWidth="w"> <!-- stroke-width, which is its real name -->
 ```
 
-Write those out, or set them from a setup script after `await $mounted()`. Bound attributes that are already kebab-case or lowercase (`:fill`, `:cx`, `:stroke-width`) are unaffected, which is most of them.
+You don't have to know which SVG attributes are camelCase and which are kebab — write the name however you like and jq79 resolves it against the parser's own table, the one that makes a written-out `viewBox` survive. Names outside that table (`fill`, `cx`, `stroke-width`, `clip-path`, and every `data-*` and `aria-*`) reach the DOM exactly as written.
+
+The one place the name is yours to get right is `:attrs`, which passes its keys through untouched — the key **is** the attribute name:
+
+```html
+<svg :attrs="{ viewBox: box }" />          <!-- viewBox — correct -->
+<circle :attrs="{ strokeWidth: w }" />     <!-- strokeWidth — not an SVG attribute, ignored -->
+<circle :attrs="{ 'stroke-width': w }" />  <!-- stroke-width — correct -->
+```
 
 ## MathML
 
@@ -466,7 +476,7 @@ MathML works the same way, and for the same reason — the namespace is read off
 </math>
 ```
 
-`<mtext>` and `<annotation-xml encoding="text/html">` hand the namespace back to HTML, the way `<foreignObject>` does in SVG. MathML's attribute names are lowercase (`mathcolor`, `linethickness`, `displaystyle`), so the camelCase limit above has nothing to bite on here.
+`<mtext>` and `<annotation-xml encoding="text/html">` hand the namespace back to HTML, the way `<foreignObject>` does in SVG. Attribute names are resolved the same way as in SVG, against MathML's own table — which has one entry, `definitionURL`; everything else (`mathcolor`, `linethickness`, `displaystyle`) is lowercase and arrives as written.
 
 One sharp edge, and it belongs to the HTML parser rather than to jq79: `<annotation-xml>` holds HTML only when its `encoding` is written out as `text/html` or `application/xhtml+xml`. Bind it and the parser never sees a value it recognizes, so HTML inside is parsed **outside** the `<math>` entirely:
 

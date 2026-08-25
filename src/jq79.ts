@@ -1217,6 +1217,71 @@ const BOOLEAN_ATTRS = new Set([
 const createFor = (node: TemplateNode): Element =>
   node.ns === undefined ? document.createElement(node.tag) : document.createElementNS(node.ns, node.tag)
 
+// A bound camelCase SVG attribute, resolved by asking the parser.
+//
+// expandNameCase rewrites `:viewBox` to `:view-box` before the parse, because
+// the HTML parser lowercases attribute names and `:firstName` has to survive
+// it. For SVG's camelCase attributes that is wrong: `view-box` is not an
+// attribute SVG has, and it was wrong in silence.
+//
+// The HTML parser carries its own table for adjusting foreign attribute names -
+// it is what makes a written-out `viewBox="0 0 10 10"` survive at all. So ask
+// that table rather than shipping a copy of it: write the name into markup in
+// the element's own namespace, and read back what the parser called it. The
+// answer comes from the engine that will render the page, so it cannot disagree
+// with what that same engine does with the attribute written out.
+//
+// This is not the IDL trick TODOS/2026-08-24.svg-namespace.md buried. That one
+// asked "which family does this name belong to", a question with no ground
+// truth, and Chromium answered wrong for stdDeviation, attributeName and
+// repeatCount. This asks the table that decides the static case, and it is
+// right for all three - see TODOS/2026-08-25.svg-attribute-names.md.
+const FOREIGN_PROBES: Record<string, [wrapper: string, tag: string]> = {
+  "http://www.w3.org/2000/svg": ["svg", "feGaussianBlur"],
+  "http://www.w3.org/1998/Math/MathML": ["math", "mi"],
+}
+
+// one parse per namespace per name, ever - measured at 0.027ms, against
+// 0.000019ms for a hit. Only SVG and MathML have an adjustment table, so every
+// other namespace (and every HTML element) skips this entirely
+const adjustedNames = new Map<string, string>()
+
+const adjustedName = (ns: string, flat: string): string => {
+  const key = `${ns} ${flat}`
+  const cached = adjustedNames.get(key)
+  if (cached !== undefined) return cached
+
+  const probe = FOREIGN_PROBES[ns]
+  let adjusted = flat
+  // the name goes into markup, so it is checked rather than trusted - and a
+  // name the table could adjust is plain letters by construction. No DOMParser
+  // (a non-browser host) falls back to the name as written, which is what
+  // shipped before this existed
+  if (probe !== undefined && typeof DOMParser !== "undefined" && /^[a-z][a-z0-9]*$/.test(flat)) {
+    const [wrapper, tag] = probe
+    const doc = new DOMParser().parseFromString(`<${wrapper}><${tag} ${flat}="x"/></${wrapper}>`, "text/html")
+    adjusted = doc.querySelector(tag)?.getAttributeNames().find(name => name.toLowerCase() === flat) ?? flat
+  }
+  adjustedNames.set(key, adjusted)
+  return adjusted
+}
+
+// `name` is what the rewrite left: kebab, whichever way the author spelled it.
+// Both spellings converge on purpose, so this has to be a pure function of the
+// kebab name and the namespace - which makes a collision the only thing that
+// could break it, a real kebab attribute whose de-dashed form the table claims.
+// Measured over 58 dashed SVG names (every presentation attribute, plus data-*
+// and aria-*): none collides
+const foreignAttrName = (el: Element, name: string): string => {
+  const ns = el.namespaceURI
+  if (ns === null || ns === HTML_NS || !name.includes("-")) return name
+  const flat = name.replace(/-/g, "").toLowerCase()
+  const adjusted = adjustedName(ns, flat)
+  // unchanged means the parser does not claim this name, so the author wrote a
+  // real kebab attribute (`stroke-width`) and it stays exactly as written
+  return adjusted === flat ? name : adjusted
+}
+
 const applyAttr = (el: Element, name: string, value: any) => {
   const boolean = BOOLEAN_ATTRS.has(name)
   if (boolean ? !value : value == null) el.removeAttribute(name)
@@ -1379,7 +1444,9 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
     else if (isControlAttr(key)) { /* handled after the walk */ }
     else if (key.startsWith(":")) {
       const name = key.slice(1)
-      ops.push({ kind: "attr", path, name, expr: value || kebabToCamel(name) })
+      // resolved here rather than per instance: the skeleton's element already
+      // exists, so its namespace is known once per definition
+      ops.push({ kind: "attr", path, name: foreignAttrName(el, name), expr: value || kebabToCamel(name) })
     } else el.setAttribute(key, value)
   }
   const attrsExpr = node.attrs[":attrs"]
@@ -1700,8 +1767,11 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // root for an attribute to land on anyway (TODOS/2026-07-15.class-directive.md)
       if (mayUpgrade) el.setAttribute(key, value)
       else {
-        const name = key.slice(1)
-        const expr = value || kebabToCamel(name)
+        const written = key.slice(1)
+        const expr = value || kebabToCamel(written)
+        // outside the effect: the name a binding writes is fixed by the source
+        // and the element, and neither moves between runs
+        const name = foreignAttrName(el, written)
         fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
       }
     } else el.setAttribute(key, value)
