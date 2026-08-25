@@ -453,6 +453,28 @@ One limit, and it comes from the [name-casing rewrite](#name-casing): **binding*
 
 Write those out, or set them from a setup script after `await $mounted()`. Bound attributes that are already kebab-case or lowercase (`:fill`, `:cx`, `:stroke-width`) are unaffected, which is most of them.
 
+## MathML
+
+MathML works the same way, and for the same reason — the namespace is read off the parsed tree, not guessed from a list of tag names:
+
+```html
+<math display="block">
+  <mrow>
+    <mi :mathcolor="color">{{ symbol }}</mi>
+    <mo :each="op in ops" :key="op.id">{{ op.sign }}</mo>
+  </mrow>
+</math>
+```
+
+`<mtext>` and `<annotation-xml encoding="text/html">` hand the namespace back to HTML, the way `<foreignObject>` does in SVG. MathML's attribute names are lowercase (`mathcolor`, `linethickness`, `displaystyle`), so the camelCase limit above has nothing to bite on here.
+
+One sharp edge, and it belongs to the HTML parser rather than to jq79: `<annotation-xml>` holds HTML only when its `encoding` is written out as `text/html` or `application/xhtml+xml`. Bind it and the parser never sees a value it recognizes, so HTML inside is parsed **outside** the `<math>` entirely:
+
+```html
+<annotation-xml encoding="text/html"><p>…</p></annotation-xml>   <!-- fine: the <p> is inside -->
+<annotation-xml :encoding="kind"><p>…</p></annotation-xml>       <!-- the <p> lands outside the <math> -->
+```
+
 ## Name casing
 
 The HTML parser lowercases attribute and tag names before jq79 ever sees them, so a name written camelCase would arrive flattened (`:firstName` → `:firstname`) and land under the wrong key. jq79 rewrites camelCase names to kebab-case in the raw source, before parsing, so **both spellings mean the same name**:

@@ -1624,8 +1624,17 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // placeholder element for the component exactly once
   // dashes included, because findComponentKey matches them case-insensitively
   // with dashes stripped: <drop-area> resolves DropArea, so a dashed tag is a
-  // possible component too, not only a custom element
-  const mayUpgrade = el instanceof HTMLUnknownElement || node.tag.includes("-")
+  // possible component too, not only a custom element.
+  //
+  // Never for a foreign element, and the dash clause is why that has to be said
+  // out loud: <annotation-xml> is the one MathML or SVG tag with a hyphen in it,
+  // and without this it is a real element treated as a custom one - its
+  // : bindings held verbatim as parameters for a component, and the element
+  // itself replaced the moment something named AnnotationXml enters scope. The
+  // namespace is the parser's answer to "where was this written", so ns !== undefined
+  // means inside a <math> or an <svg>, where no component can live - the same
+  // argument plannableNode makes. See TODOS/2026-08-24.mathml.md
+  const mayUpgrade = node.ns === undefined && (el instanceof HTMLUnknownElement || node.tag.includes("-"))
   if (mayUpgrade) {
     let upgraded = false
     fx.effect(() => {

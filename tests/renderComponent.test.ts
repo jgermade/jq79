@@ -1843,3 +1843,139 @@ describe("svg", () => {
     expect(circle.getAttribute(stamp!)).toBe(container.querySelector("div")!.getAttribute(stamp!))
   })
 })
+
+// MathML rides on the same AST field <svg> does - elementToAST records any
+// non-HTML namespace, not SVG's - so most of this was true and untested. What
+// was NOT true is <annotation-xml>: the one tag in either foreign namespace
+// with a hyphen in it, and a hyphen is how this library recognizes a custom
+// element - TODOS/2026-08-24.mathml.md
+const MATHML_NS = "http://www.w3.org/1998/Math/MathML"
+
+describe("mathml", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => container.remove())
+
+  const render = (template: string, data: Record<string, any> = {}) => {
+    const store = $reactive(data)
+    container.appendChild(renderComponent(parseComponent(template), store))
+    return store as any
+  }
+
+  it("builds mathml elements in the mathml namespace", () => {
+    render(`<div><math display="block"><mrow><mi>x</mi><mo>+</mo><mn>1</mn></mrow></math></div>`)
+    const math = container.querySelector("math")!
+
+    expect(math.namespaceURI).toBe(MATHML_NS)
+    // jsdom has no MathMLElement, so the claim that carries here is the one the
+    // bugs came from: it is not the unknown HTML element createElement builds
+    expect(math).not.toBeInstanceOf(HTMLUnknownElement)
+    expect(math.getAttribute("display")).toBe("block")
+    expect(container.querySelector("mi")!.namespaceURI).toBe(MATHML_NS)
+  })
+
+  it("binds attributes inside a math, reactively", () => {
+    const data = render(`<div><math><mrow><mi :mathcolor="color" :class.on="flag">x</mi></mrow></math></div>`, { color: "red", flag: false })
+    const mi = container.querySelector("mi")!
+
+    expect(mi.getAttribute("mathcolor")).toBe("red")
+    expect(mi.getAttribute(":mathcolor")).toBeNull()
+    expect(mi.classList.contains("on")).toBe(false)
+
+    data.color = "blue"
+    data.flag = true
+    expect(mi.getAttribute("mathcolor")).toBe("blue")
+    expect(mi.classList.contains("on")).toBe(true)
+  })
+
+  it("interpolates and repeats inside a math", () => {
+    const data = render(`<div><math><mrow><mtext>{{ label }}</mtext><mi :each="s in syms" :key="s.id">{{ s.t }}</mi></mrow></math></div>`,
+      { label: "suma", syms: [{ id: 1, t: "x" }, { id: 2, t: "y" }] })
+
+    expect(container.querySelector("mtext")!.textContent).toBe("suma")
+    expect(container.querySelectorAll("mi")).toHaveLength(2)
+
+    data.syms = [{ id: 2, t: "y2" }]
+    expect(container.querySelectorAll("mi")).toHaveLength(1)
+    expect(container.querySelector("mi")!.textContent).toBe("y2")
+    expect(container.querySelector("mi")!.namespaceURI).toBe(MATHML_NS)
+  })
+
+  // MathML's integration points, which are <foreignObject>'s counterparts and
+  // the reason the namespace is read off the parsed tree rather than guessed
+  it("hands the namespace back at an integration point", () => {
+    render(`<div><math><mtext><b>negrita</b></mtext><annotation-xml encoding="text/html"><p>de vuelta</p></annotation-xml></math></div>`)
+
+    expect(container.querySelector("mtext")!.namespaceURI).toBe(MATHML_NS)
+    expect(container.querySelector("annotation-xml")!.namespaceURI).toBe(MATHML_NS)
+    expect(container.querySelector("b")!.namespaceURI).toBe("http://www.w3.org/1999/xhtml")
+    expect(container.querySelector("p")).toBeInstanceOf(HTMLElement)
+  })
+
+  // the one the <svg> corpus could not have caught: a hyphen used to make this
+  // a custom element that might still become a component, so its bindings were
+  // held verbatim as parameters for a component that can never arrive
+  it("binds attributes on annotation-xml, hyphen and all", () => {
+    const data = render(`<div><math><annotation-xml encoding="text/html" :id="which"><p>x</p></annotation-xml></math></div>`, { which: "uno" })
+    const annotation = container.querySelector("annotation-xml")!
+
+    expect(annotation.getAttribute("id")).toBe("uno")
+    expect(annotation.getAttributeNames(), "the binding was left verbatim, as a parameter for a component").not.toContain(":id")
+
+    data.which = "dos"
+    expect(annotation.getAttribute("id")).toBe("dos")
+  })
+
+  it("warns for :model on a mathml element", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      render(`<div><math><annotation-xml :model="who"><mi>x</mi></annotation-xml></math></div>`, { who: "ada" })
+      // the warning is suppressed on a tag that may upgrade, because the
+      // upgrade re-renders through renderNestedComponent, models and all
+      expect(warn.mock.calls.map(call => String(call[0])))
+        .toContainEqual(expect.stringContaining(":model on <annotation-xml> does nothing"))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("does not treat a mathml tag as a component that has not arrived", () => {
+    const data = render(`<div><math><mrow><mi>x</mi></mrow><annotation-xml encoding="text/html"><p>y</p></annotation-xml></math></div>`)
+    // the upgrade watch swaps an unknown tag when a matching key appears.
+    // Every one of these is a real element and must sit still - AnnotationXml
+    // is the one that did not
+    data.Math = parseComponent(`<b class="wrong">tomado</b>`)
+    data.Mi = parseComponent(`<b class="wrong">tomado</b>`)
+    data.AnnotationXml = parseComponent(`<b class="wrong">tomado</b>`)
+
+    expect(container.querySelector(".wrong")).toBeNull()
+    expect(container.querySelector("annotation-xml")).not.toBeNull()
+    expect(container.querySelector("math")).not.toBeNull()
+  })
+
+  it("stamps mathml elements for a scoped style", () => {
+    new Component79(`<style scoped>mi { color: red }</style><div><math><mrow><mi>x</mi></mrow></math></div>`).mount(container)
+    const mi = container.querySelector("mi")!
+
+    const stamp = mi.getAttributeNames().find(name => name.startsWith("data-jq79"))
+    expect(stamp, "a mathml element carries no scope stamp, so scoped rules cannot reach it").toBeDefined()
+    expect(mi.getAttribute(stamp!)).toBe(container.querySelector("div")!.getAttribute(stamp!))
+  })
+
+  // not a jq79 rule - the HTML parser's. <annotation-xml> is an integration
+  // point only when its encoding is text/html or application/xhtml+xml, and a
+  // bound :encoding means the parser never sees a value it recognizes, so <p>
+  // hits the foreign-content breakout list and lands OUTSIDE the <math>. The
+  // author wrote nesting that silently is not there, which is the same shape as
+  // the :viewBox limitation and documented beside it
+  it("parses html out of an annotation-xml whose encoding is bound", () => {
+    render(`<div><math><annotation-xml :encoding="e"><p>x</p></annotation-xml></math></div>`, { e: "text/html" })
+
+    expect(container.querySelector("math")!.querySelector("p"), "the <p> is a sibling of the <math>, not a child").toBeNull()
+    expect(container.querySelector("p")!.namespaceURI).toBe("http://www.w3.org/1999/xhtml")
+  })
+})

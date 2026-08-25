@@ -191,6 +191,10 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ at: "0" }), d => { d.at = "1" }, "second"],
     ["a foreignObject hands the namespace back", `<div class="w"><span class="p">uno</span><svg class="q"><foreignObject><p>{{ v }}</p></foreignObject></svg><span class="r">dos</span></div>`,
       () => ({ v: "x" }), d => { d.v = "y" }, "second"],
+    // MathML rides on the same AST field <svg> does, so the cloner has to build
+    // it in its own namespace for the same reason - TODOS/2026-08-24.mathml.md
+    ["a math", `<div class="w"><span class="p">uno</span><math class="q" display="block"><mrow><mi :mathcolor="color">x</mi><mn>{{ n }}</mn></mrow></math><span class="r">dos</span></div>`,
+      () => ({ color: "red", n: 1 }), d => { d.color = "blue"; d.n = 2 }, "second"],
     ["a mixed row", `<table class="a"><tbody><tr :each="row in rows" :key="row.id" :class="{ danger: row.id === sel }">
         <td class="c1">{{ row.id }}</td>
         <td class="c2"><a @click="sel = row.id">{{ row.label }}</a></td>
@@ -244,6 +248,13 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({}), d => { d.MyChip = parseComponent(`<b class="chip">llegué</b>`) }, "never"],
     ["a slot", `<div class="w"><span class="p">uno</span><Panel><b class="in">dentro</b></Panel><span class="r">dos</span></div>`,
       () => ({ Panel: parseComponent(`<section class="panel"><slot /></section>`) }), () => {}, "never"],
+    // the one tag in either foreign namespace with a hyphen in it. plannableNode
+    // rejects a dashed tag as a possible custom element and does not make the
+    // foreign exception mayUpgrade now makes, so <annotation-xml> keeps its
+    // whole <math> ancestor interpreted: slower, correct, and a trip wire if
+    // anybody widens that rule - TODOS/2026-08-24.mathml.md
+    ["an annotation-xml", `<div class="w"><span class="p">uno</span><math class="q"><annotation-xml encoding="text/html" :id="which"><p>{{ v }}</p></annotation-xml></math><span class="r">dos</span></div>`,
+      () => ({ which: "uno", v: "x" }), d => { d.which = "dos"; d.v = "y" }, "never"],
   ]
 
   ;[...CORPUS, ...SHAPE_CORPUS].forEach(([name, template, makeData, mutate, reach]) => {
