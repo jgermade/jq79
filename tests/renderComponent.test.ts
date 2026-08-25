@@ -2463,6 +2463,68 @@ describe("the component box", () => {
     expect(wrapper[0]).toBe(":where([data-c79-box]) { display: contents }")
   })
 
+  // RECORD/2026-08-25.retire-the-anchors.md. The anchors existed to be a handle
+  // for a chunk whose content is dynamic, and the box is that handle - created
+  // once per usage site, never replaced, resolved by boundsOf as itself. So a
+  // boxed instance renders none: five nodes inside a box became three
+  it("renders no anchor comments inside the box - the box is the handle", () => {
+    mount(`
+      <div class="w"><One /></div>
+      <template name="One"><script :setup></script><p class="a">uno</p></template>
+    `)
+
+    const box = container.querySelector("[data-c79-box]")!
+    const comments = [...box.childNodes].filter(node => node.nodeType === Node.COMMENT_NODE).map(node => node.nodeValue)
+    // only the instance's OWN markers, which detach() walks and hotReplace()
+    // re-inserts against. The parent's <!--One-->…<!--/One--> pair is gone
+    expect(comments).toEqual(["jq79", "/jq79"])
+    expect(box.querySelector(".a"), "and its DOM is inside its own box").not.toBeNull()
+  })
+
+  it("keeps both anchors where there is no box, in a foreign namespace", () => {
+    mount(`
+      <div><svg class="s"><Dot /></svg></div>
+      <template name="Dot"><script :setup></script><svg class="d"><circle r="4" /></svg></template>
+    `)
+
+    const svg = container.querySelector(".s")!
+    const comments = [...svg.childNodes].filter(node => node.nodeType === Node.COMMENT_NODE).map(node => node.nodeValue)
+    expect(comments, "the anchors are the only bounds this chunk has").toEqual(["Dot", "jq79", "/jq79", "/Dot"])
+    expect(container.querySelector("[data-c79-box]")).toBeNull()
+  })
+
+  it("swaps a definition inside the same box, leaving none of the old DOM", () => {
+    const first = new Component79(`<span class="v1">uno</span>`)
+    const second = new Component79(`<b class="v2">dos</b>`)
+    const jq79 = new Component79(`<div class="w"><Field /></div>`).render({ Field: first }).mount(container)
+
+    const box = container.querySelector("[data-c79-box]")!
+    expect(box.querySelector(".v1")).not.toBeNull()
+
+    jq79.data!.Field = second
+
+    expect(container.querySelectorAll("[data-c79-box]")).toHaveLength(1)
+    expect(container.querySelector("[data-c79-box]"), "the same box, not a new one").toBe(box)
+    expect(box.querySelector(".v1"), "the old instance is gone").toBeNull()
+    expect(box.querySelector(".v2"), "and the new one is in its place").not.toBeNull()
+    jq79.destroy()
+  })
+
+  it("renders a late-resolving definition into the box that was already there", () => {
+    // the case the anchors were written for: nothing renders yet, and whatever
+    // arrives has to land in a known place. The box is that place, empty
+    const jq79 = new Component79(`<div class="w"><Later /></div>`).render({ Later: undefined }).mount(container)
+
+    const box = container.querySelector("[data-c79-box]")!
+    expect(box.childNodes, "an empty box while the definition is in flight").toHaveLength(0)
+
+    jq79.data!.Later = new Component79(`<i class="l">tarde</i>`)
+
+    expect(container.querySelector("[data-c79-box]")).toBe(box)
+    expect(box.querySelector(".l")).not.toBeNull()
+    jq79.destroy()
+  })
+
   it("renders no box inside an svg, where an unknown element would take its children with it", () => {
     mount(`
       <div><svg class="s"><Dot /></svg></div>

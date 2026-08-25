@@ -730,6 +730,26 @@ describe("hot reload", () => {
     expect(document.querySelector(".row")?.textContent).toBe("[uno]")
   })
 
+  // RECORD/2026-08-25.retire-the-anchors.md: hot reload re-inserts against the
+  // instance's OWN markers (parentNode and endMarker.nextSibling), never the
+  // parent's anchors - which is why retiring those could not reach it. Pinned
+  // here because "could not reach it" was read off the code, and this is the
+  // path that would prove it wrong
+  it("re-renders a nested component inside the box it already had", () => {
+    const url = file()
+    const Card = new Component79(`<p class="c">before</p>`, { filename: url })
+    new Component79(`<div class="w"><Card /></div>`).mount(host(), { Card })
+
+    const box = document.querySelector("[data-c79-box]")!
+    expect(box.querySelector(".c")?.textContent).toBe("before")
+
+    expect(hotUpdate(url, `<p class="c">after</p>`)).toBe(1)
+
+    expect(document.querySelectorAll("[data-c79-box]")).toHaveLength(1)
+    expect(document.querySelector("[data-c79-box]"), "the same box it had").toBe(box)
+    expect(box.querySelector(".c")?.textContent).toBe("after")
+  })
+
   it("swaps a component's styles, dropping the ones it replaced", () => {
     const url = file()
     new Component79(`<p class="s">hi</p><style>.s { color: red }</style>`, { filename: url }).mount(host(), {})
