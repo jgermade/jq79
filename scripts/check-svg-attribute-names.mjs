@@ -97,8 +97,48 @@ const probe = async (page, names, dashed, undashed) => {
   }
 }
 
+// The matrix runs each engine on its own runner, so no single job can see the
+// others - the cross-engine table below printed "only <engine> ran" in all
+// three, every time, which is a comparison that structurally never happens.
+// Each job writes its answers out instead, and a job that needs them all does
+// the comparing. See TODOS/2026-08-25.svg-attribute-names.md
+const compareReports = async (dir) => {
+  const { readdir, readFile } = await import("node:fs/promises")
+  const { join } = await import("node:path")
+  const files = (await readdir(dir, { recursive: true })).filter(name => name.endsWith(".json"))
+  const reports = await Promise.all(files.map(async name => JSON.parse(await readFile(join(dir, name), "utf8"))))
+  if (!reports.length) {
+    console.error(`no engine reports under ${dir} - the jobs that write them did not run, or their artifacts did not arrive`)
+    process.exit(2)
+  }
+  reports.sort((a, b) => a.engine.localeCompare(b.engine))
+  const engines = reports.map(report => report.engine)
+  console.log(`## the table, engine by engine\n`)
+  reports.forEach(report => console.log(`   ${report.engine.padEnd(10)} ${report.version}`))
+
+  const names = reports[0].names.map(row => row.name)
+  const split = names
+    .map(name => ({ name, answers: reports.map(report => report.names.find(row => row.name === name)?.document ?? null) }))
+    .filter(row => new Set(row.answers.map(String)).size !== 1)
+
+  console.log(`\n   ${names.length - split.length} of ${names.length} names identical across ${engines.join(", ")}`)
+  if (split.length) {
+    // a fact about the platform, not a defect here: an engine that does not
+    // adjust a name gives what it gives for the written-out attribute too
+    console.log(`   ${split.length} differ - the platform's answer, not this library's:`)
+    split.forEach(row => console.log(`     ${row.name.padEnd(28)} ${engines.map((engine, i) => `${engine}=${row.answers[i]}`).join("  ")}`))
+  }
+  const adjusted = reports[0].names.filter(row => row.document !== row.flat).length
+  console.log(`\n   ${adjusted} of ${names.length} adjusted by ${engines[0]}`)
+}
+
 const run = async () => {
-  const only = process.argv.slice(2).filter(arg => !arg.startsWith("-"))
+  const compareAt = process.argv.indexOf("--compare")
+  if (compareAt !== -1) return compareReports(process.argv[compareAt + 1])
+
+  const jsonAt = process.argv.indexOf("--json")
+  const jsonPath = jsonAt === -1 ? null : process.argv[jsonAt + 1]
+  const only = process.argv.slice(2).filter(arg => !arg.startsWith("-") && arg !== jsonPath && arg !== process.argv[compareAt + 1])
   const wanted = only.length ? only : Object.keys(ENGINES)
   const results = {}
   const failures = []
@@ -157,23 +197,38 @@ const run = async () => {
     }
   }
 
-  // LEVEL 2, and it only reports
+  // what this engine saw, for the job that compares them. Written even on a
+  // failure: an engine that disagrees is exactly the one worth comparing
+  if (jsonPath) {
+    const { writeFile } = await import("node:fs/promises")
+    const [engine] = Object.keys(results)
+    if (engine) {
+      const { camel, engine: ua } = results[engine]
+      await writeFile(jsonPath, JSON.stringify({
+        engine,
+        version: (ua.match(/(Firefox|Chrome|Version)\/[\d.]+/) ?? ["?"])[0],
+        names: camel.map(({ name, flat, document }) => ({ name, flat, document })),
+      }, null, 2))
+      console.log(`\n   answers written to ${jsonPath}`)
+    }
+  }
+
   const engines = Object.keys(results)
+  // only when several engines ran in ONE process, which is what a local
+  // `npm run check:svg-names` does. In CI the matrix separates them and the
+  // compare job does this off the artifacts instead
   if (engines.length > 1) {
+    console.log(`\n## the table, engine by engine`)
     const rows = CAMEL_NAMES.map(name => {
       const answers = engines.map(engine => results[engine].camel.find(row => row.name === name).document)
       return { name, answers, agree: new Set(answers).size === 1 }
     })
     const split = rows.filter(row => !row.agree)
-    console.log(`\n## the table, engine by engine`)
     console.log(`   ${rows.length - split.length} of ${rows.length} names identical across ${engines.join(", ")}`)
     if (split.length) {
       console.log(`   ${split.length} differ - a fact about the platform, not a defect here:`)
       split.forEach(row => console.log(`     ${row.name.padEnd(28)} ${engines.map((e, i) => `${e}=${row.answers[i]}`).join("  ")}`))
     }
-  } else if (engines.length === 1) {
-    console.log(`\n## the table, engine by engine`)
-    console.log(`   only ${engines[0]} ran, so there is nothing to compare`)
   }
 
   const adjusted = engines.length ? results[engines[0]].camel.filter(row => row.document !== row.flat).length : 0

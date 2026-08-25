@@ -80,7 +80,7 @@ jobs:
           # 2>&1 so the failure detail - which name, and what the document
           # parser said - reaches report.txt and the job summary. Without it the
           # summary carries the counts and not one word about why
-          node scripts/check-svg-attribute-names.mjs ${{ matrix.engine }} 2>&1 | tee report.txt
+          node scripts/check-svg-attribute-names.mjs ${{ matrix.engine }} --json answers.json 2>&1 | tee report.txt
 
       - name: Report
         if: always()
@@ -89,5 +89,58 @@ jobs:
             echo "## ${{ matrix.engine }}"
             echo '```'
             cat report.txt || echo "the check produced no report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # uploaded even when the check failed: an engine that disagrees is
+      # exactly the one the comparison below is worth reading for
+      - name: Keep this engine's answers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: svg-names-${{ matrix.engine }}
+          path: answers.json
+          if-no-files-found: warn
+
+  # The matrix puts every engine on its own runner, so no job in it can see the
+  # others - the cross-engine table used to print "only <engine> ran, so there
+  # is nothing to compare" in all three, every run, which is a comparison that
+  # never happens. This is the job that can see all three.
+  #
+  # It reports and never fails: which names an engine adjusts is a fact about
+  # the web platform, and an engine that does not adjust one gives the same
+  # answer for the attribute written out. What gates is level 1, inside each
+  # engine's own job.
+  compare:
+    needs: engines
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: svg-names-*
+          path: answers
+
+      - name: Compare the engines
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/check-svg-attribute-names.mjs --compare answers 2>&1 | tee compared.txt
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## the table, engine by engine"
+            echo '```'
+            cat compared.txt || echo "no comparison was produced"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
