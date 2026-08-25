@@ -77,7 +77,10 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          node scripts/check-svg-attribute-names.mjs ${{ matrix.engine }} | tee report.txt
+          # 2>&1 so the failure detail - which name, and what the document
+          # parser said - reaches report.txt and the job summary. Without it the
+          # summary carries the counts and not one word about why
+          node scripts/check-svg-attribute-names.mjs ${{ matrix.engine }} 2>&1 | tee report.txt
 
       - name: Report
         if: always()

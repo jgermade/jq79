@@ -649,6 +649,12 @@ describe("what a write wakes", () => {
     store.props = { a: 1, b: 2 }
     expect(seen.at(-1)).toEqual(["a", "b"])
 
+    // Object.keys answers in insertion order, so a rebuild that sorts the same
+    // names is a different answer - and neither the count nor a membership test
+    // sees it
+    store.props = { b: 2, a: 1 }
+    expect(seen.at(-1), "the same names in a new order is a new answer").toEqual(["b", "a"])
+
     // and the other direction: a replacement that changes a value and no names
     // must NOT wake it, because the effect read the key set and nothing else.
     // One key of four differs, so whatChanged does not give up and sweep -

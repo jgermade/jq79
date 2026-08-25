@@ -2356,7 +2356,10 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
 const TEMPLATE_DIRECTIVES = [":if", ":elseif", ":else", ":each"]
 
 const warnTemplateDirective = (node: TemplateNode) => {
-  if (node.tag !== "template") return
+  // an HTML <template> only: inside an <svg> the tag is a plain namespaced
+  // element with ordinary children, so they render and the message below - that
+  // they live in a .content nobody reads - would be false
+  if (node.tag !== "template" || node.ns !== undefined) return
   const directive = TEMPLATE_DIRECTIVES.find(attr => attr in node.attrs)
   if (directive === undefined) return
   const slot = slotAttrOf(node)
@@ -3613,7 +3616,9 @@ export class Component79 {
         // for `cloneSkeletons` - used to pass this guard, land in the flags and
         // come back in the return value, so a caller read "cloning is off" while
         // it was still on. TODOS/2026-08-25.two-defects-a-review-found.md
-        if (!(key in debugFlags)) {
+        // hasOwnProperty, not `in`: `in` walks the prototype chain, so
+        // `debug({ toString: false })` passed this guard and landed on the flags
+        if (!Object.prototype.hasOwnProperty.call(debugFlags, key)) {
           console.warn(`jq79: Component79.debug does not know "${key}" - the flags it has are: ${Object.keys(debugFlags).join(", ")}`)
         } else if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
         else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)

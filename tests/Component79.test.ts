@@ -2712,6 +2712,21 @@ describe("Component79.debug", () => {
     }
   })
 
+  it("refuses a name off the prototype chain", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      // `key in debugFlags` was true for every name Object.prototype carries,
+      // so this passed the guard the test above is about and landed on the flags
+      const flags = Component79.debug({ toString: false } as any)
+
+      expect(flags).not.toHaveProperty("toString", false)
+      expect(warn.mock.calls.map(call => String(call[0])))
+        .toContainEqual(expect.stringContaining('does not know "toString"'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it("still refuses a known flag carrying the wrong type", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     try {

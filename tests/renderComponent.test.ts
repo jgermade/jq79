@@ -1659,6 +1659,21 @@ describe("a directive on a nested <template>", () => {
     expect(container.querySelector("template")).not.toBeNull()
   })
 
+  it("says nothing about a <template> inside an svg, whose children do render", () => {
+    // in the SVG namespace `template` is a plain element with ordinary
+    // children, not the inert HTML one - so they reach the page and the
+    // message about `.content` would be false
+    const data = $reactive({ on: true }) as any
+    container.appendChild(renderComponent(
+      parseComponent(`<div><svg><template :if="on"><circle r="1" class="inside" /></template></svg></div>`), data))
+
+    expect(container.querySelector(".inside"), "an svg <template> renders its children").not.toBeNull()
+    expect(messages()).toEqual([])
+
+    data.on = false
+    expect(container.querySelector(".inside")).toBeNull()
+  })
+
   it("says nothing about a top-level <template> declaration", () => {
     // a declaration is lifted out before the walk ever runs, so its position
     // needs no exclusion - this is the test that says so
@@ -1891,6 +1906,18 @@ describe("svg", () => {
     expect(container.querySelector("foreignObject")!.namespaceURI).toBe("http://www.w3.org/2000/svg")
     expect(container.querySelector("p")!.namespaceURI).toBe("http://www.w3.org/1999/xhtml")
     expect(container.querySelector("p")).toBeInstanceOf(HTMLElement)
+  })
+
+  // The other half of the same rule, pinned so the choice is explicit rather
+  // than accidental: a PascalCase key ALREADY in scope captures a foreign tag,
+  // exactly as `Td` captures `<td>`. Every SVG tag whose name someone might
+  // give a component - Text, Path, Filter, Marker, Circle - is reachable this
+  // way. Recorded as open in TODOS/2026-08-25.open-after-the-oracle.md §5
+  it("is captured by a scope key that was already there, like any other tag", () => {
+    render(`<div><svg><circle r="4" /></svg></div>`, { Circle: parseComponent(`<b class="taken">tomado</b>`) })
+
+    expect(container.querySelector(".taken")).not.toBeNull()
+    expect(container.querySelector("circle")).toBeNull()
   })
 
   it("does not treat an svg tag as a component that has not arrived", () => {

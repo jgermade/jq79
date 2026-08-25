@@ -577,10 +577,13 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     if (!keys.size) return GIVE_UP
     const changed: string[] = []
     keys.forEach(key => { if (!Object.is($toRaw(previous[key]), $toRaw(next[key]))) changed.push(key) })
-    // two comparisons off arrays this already had to build: a union larger than
-    // either side's own count means that side is missing a name the other has.
-    // Counting them again here would allocate both key arrays a second time
-    const keysChanged = keys.size !== previousKeys.length || keys.size !== nextKeys.length
+    // Object.keys answers in insertion order, so the ORDER is part of the answer
+    // and a rebuild that sorts the same names - Object.fromEntries(entries.sort())
+    // - changes what an effect reading it sees. A union larger than either side
+    // would catch a swapped name; walking the two arrays catches that and the
+    // reorder both, off arrays this already had to build
+    const keysChanged =
+      previousKeys.length !== nextKeys.length || previousKeys.some((key, index) => key !== nextKeys[index])
     return changed.length * 2 >= keys.size ? GIVE_UP : { keys: changed, exact: false, keysChanged }
   }
 
