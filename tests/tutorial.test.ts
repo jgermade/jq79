@@ -83,6 +83,31 @@ const mountHead = (files: Record<string, string>, host: HTMLElement): Component7
 // microtask, so the DOM settles a tick after mount
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
 
+// Neither a mount nor the app is a matter of waiting a fixed slice of time: the
+// app's panes are imported (which crosses a macrotask) and then mounted, and on
+// a loaded machine that costs more than the debounce a settle() allows for -
+// which is what used to fail this suite on CI and never here. Wait for the
+// thing itself
+const until = async (ready: () => boolean, what: string, timeout = 5000) => {
+  const deadline = Date.now() + timeout
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
+// An exercise whose setup script awaits leaves its shadow root holding the
+// <style> elements and nothing else until it resolves, so "has content that is
+// not a style" is the thing to wait for. Measured across the tutorial: 31 of 42
+// mounts have content on the first pass and 11 on the second, and the fixed
+// tick this replaces was one scheduling change away from reading the empty one
+// - see §8 of TODOS/2026-08-24.open-after-pr-12.md and the flake it names
+const rendered = (host: HTMLElement) =>
+  until(
+    () => [...(host.shadowRoot ?? host).children].some(el => el.tagName !== "STYLE"),
+    "the exercise to render its content"
+  )
+
 // The no-bundle exercises import a component the editor doesn't hold - it sits
 // on the host that serves the tutorial, at /tutorial/examples/. A specifier
 // that isn't in the pre-resolved `modules` map above falls through to the
@@ -130,6 +155,10 @@ describe("tutorial", () => {
       else expect(Object.keys(solution).length).toBeGreaterThan(0)
     })
 
+    // a tick rather than rendered(): what is under test is that nothing throws,
+    // and an exercise is allowed to render nothing at all - the starting file
+    // of 04-scripts/03 has no DOM until its request resolves. The wait is only
+    // to give a rejecting setup script somewhere to land
     it("mounts its starting files without throwing", async () => {
       expect(() => mount(files, host)).not.toThrow()
       await tick()
@@ -183,7 +212,7 @@ describe("tutorial", () => {
 
   it("03-components/01: renders one child component per user, with its props", async () => {
     mount(solutionOf("03-components/01-nested-components"), host)
-    await tick()
+    await rendered(host)
 
     const cards = host.shadowRoot!.querySelectorAll("article")
 
@@ -195,7 +224,7 @@ describe("tutorial", () => {
 
   it("03-components/06: spreads the whole profile object into the card as props", async () => {
     mount(solutionOf("03-components/06-spreading-props"), host)
-    await tick()
+    await rendered(host)
 
     const card = host.shadowRoot!.querySelector("article")!
 
@@ -208,7 +237,7 @@ describe("tutorial", () => {
 
   it("03-components/07: renders the tree with a component the same file declares, recursively", async () => {
     mount(solutionOf("03-components/07-one-file"), host)
-    await tick()
+    await rendered(host)
 
     const entries = [...host.shadowRoot!.querySelectorAll(".entry > span")].map(el => el.textContent)
 
@@ -219,7 +248,7 @@ describe("tutorial", () => {
 
   it("03-components/08: fills the list's slot with the parent's own markup and helper", async () => {
     mount(solutionOf("03-components/08-slots"), host)
-    await tick()
+    await rendered(host)
 
     const rows = [...host.shadowRoot!.querySelectorAll("li")].map(el => el.textContent?.replace(/\s+/g, " ").trim())
 
@@ -282,7 +311,10 @@ describe("tutorial", () => {
     expect(host.shadowRoot?.querySelector(".loading")?.textContent).toBe("loading…")
     expect(host.shadowRoot?.querySelector(".users")).toBeFalsy()
 
-    await new Promise(resolve => setTimeout(resolve, 700))
+    // the exercise's own delay, waited out by its result rather than by a
+    // number: 700ms left ~100ms of margin over it, which is nothing on a
+    // loaded runner
+    await until(() => !host.shadowRoot?.querySelector(".loading"), "the request to resolve")
 
     expect(host.shadowRoot?.querySelector(".loading")).toBeFalsy()
     expect([...host.shadowRoot!.querySelectorAll(".users li")].map(li => li.textContent)).toEqual([
@@ -303,6 +335,9 @@ describe("tutorial", () => {
       input.dispatchEvent(new Event("input"))
     }
 
+    // this one stays a fixed wait, and it has to: the claim is that the burst
+    // collapsed into ONE run, and a broken debounce passes through "1 searches
+    // run" on its way to three. Waiting for that state would assert the bug
     await new Promise(resolve => setTimeout(resolve, 400))
 
     expect(host.shadowRoot?.querySelector(".count")?.textContent).toBe("1 searches run")
@@ -314,7 +349,7 @@ describe("tutorial", () => {
 
   it("03-components/02: bubbles each child's $emit payload up to the parent", async () => {
     mount(solutionOf("03-components/02-component-events"), host)
-    await tick()
+    await rendered(host)
 
     const steppers = host.shadowRoot!.querySelectorAll("button")
     const readout = () => host.shadowRoot!.querySelector("p")?.textContent
@@ -352,7 +387,7 @@ describe("tutorial", () => {
 
   it("02-no-bundle/02: fetches the chart on the first click, and not before", async () => {
     mount(solutionOf("02-no-bundle/02-loading-on-demand"), host)
-    await tick()
+    await rendered(host)
 
     // nothing asked for it, so it isn't there
     expect(host.shadowRoot?.querySelector(".chart")).toBeFalsy()
@@ -371,7 +406,7 @@ describe("tutorial", () => {
 
   it("04-scripts/01: focuses its own search box once mounted", async () => {
     mount(solutionOf("04-scripts/01-reaching-the-dom"), host)
-    await tick()
+    await rendered(host)
 
     expect(host.shadowRoot!.activeElement).toBe(host.shadowRoot!.querySelector(".search"))
   })
@@ -475,7 +510,7 @@ describe("tutorial", () => {
 
   it("03-components/05: a prop copied once at setup hears neither direction afterward", async () => {
     mount(startOf("03-components/05-two-way-binding"), host)
-    await tick()
+    await rendered(host)
     const root = host.shadowRoot!
     const input = root.querySelector("input") as HTMLInputElement
 
@@ -496,7 +531,7 @@ describe("tutorial", () => {
 
   it("03-components/05: :model drives the field both ways - typing and reset alike", async () => {
     mount(solutionOf("03-components/05-two-way-binding"), host)
-    await tick()
+    await rendered(host)
     const root = host.shadowRoot!
     const input = root.querySelector("input") as HTMLInputElement
 
@@ -513,7 +548,7 @@ describe("tutorial", () => {
 
   it("03-components/03: a plain object passed to both children falls out of sync", async () => {
     mount(startOf("03-components/03-shared-state"), host)
-    await tick()
+    await rendered(host)
     const root = host.shadowRoot!
 
     ;(root.querySelector(".lines button") as HTMLButtonElement).click()
@@ -561,7 +596,7 @@ describe("tutorial", () => {
 
   it("03-components/03: every holder of the store sees a child's write", async () => {
     mount(solutionOf("03-components/03-shared-state"), host)
-    await tick()
+    await rendered(host)
     const root = host.shadowRoot!
     const [pear, melon] = [...root.querySelectorAll(".lines button")] as HTMLButtonElement[]
 
@@ -614,18 +649,6 @@ describe("the tutorial app", () => {
 
   // long enough to clear the editor's 250ms recompile debounce
   const settle = () => new Promise(resolve => setTimeout(resolve, 320))
-
-  // mounting the app is not a matter of waiting a fixed slice of time: the panes
-  // are imported (which crosses a macrotask) and then mounted, and on a loaded
-  // machine that costs more than the debounce a settle() allows for - which is
-  // what used to fail this suite on CI and never here. Wait for the app instead
-  const until = async (ready: () => boolean, what: string, timeout = 5000) => {
-    const deadline = Date.now() + timeout
-    while (!ready()) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
-  }
 
   const type = (host: HTMLElement, source: string) => {
     const editor = host.querySelector("textarea") as HTMLTextAreaElement

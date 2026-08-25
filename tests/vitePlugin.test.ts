@@ -9,6 +9,13 @@ import { Component79 } from "../src/jq79"
 
 // vitest runs from the repo root
 const fixture = (name: string) => resolve("tests/fixtures", name)
+
+// These tests write a built bundle to disk and import it back, so the path has
+// to be one per process: two vitest processes on one checkout - a watch run
+// beside a one-off, or a suite run under stress - would overwrite each other's
+// file while the other was importing it, and a truncated read surfaces as
+// `Cannot read properties of undefined` on whatever the bundle should export
+const BUNDLE_DIR = resolve("node_modules/.cache/jq79-tests", String(process.pid))
 const runtimePath = resolve("src/jq79.ts")
 
 // calls a hook with a minimal rollup context that resolves to the given id
@@ -99,7 +106,7 @@ describe("jq79 vite plugin", () => {
       })
       const { code } = (Array.isArray(result) ? result[0] : result).output[0]
 
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const bundlePath = join(dir, "named-app.mjs")
       await writeFile(bundlePath, code)
@@ -128,7 +135,7 @@ describe("jq79 vite plugin", () => {
     })
 
     it("hoists non-html imports as namespaces, skips URLs and dynamic specifiers", async () => {
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const file = join(dir, "imports.html")
       await writeFile(file, `
@@ -151,7 +158,7 @@ describe("jq79 vite plugin", () => {
     })
 
     it("does not hoist specifiers sitting in comments or strings", async () => {
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const file = join(dir, "commented.html")
       await writeFile(file, `
@@ -176,7 +183,7 @@ describe("jq79 vite plugin", () => {
 
     it("leaves html imports the include does not claim to runtime fetch", async () => {
       const custom: any = jq79({ include: /\.c79\.html$/ })
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const file = join(dir, "unclaimed.html")
       await writeFile(file, `
@@ -275,7 +282,7 @@ describe("jq79 vite plugin", () => {
       })
       const { code } = (Array.isArray(result) ? result[0] : result).output[0]
 
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const bundlePath = join(dir, "list-app.mjs")
       await writeFile(bundlePath, code)
@@ -315,7 +322,7 @@ describe("jq79 vite plugin", () => {
       expect(code).toContain("Hello, ${name}!")
 
       // somewhere vitest can import from (inside the root, ignored by watch)
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const bundlePath = join(dir, "app.mjs")
       await writeFile(bundlePath, code)
@@ -357,7 +364,7 @@ describe("jq79 vite plugin", () => {
       // the child travels inside the bundle
       expect(code).toContain("Hello, ${name}!")
 
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const bundlePath = join(dir, "parent-app.mjs")
       await writeFile(bundlePath, code)
@@ -398,7 +405,7 @@ describe("jq79 vite plugin", () => {
       expect(code).toContain("rebeccapurple")
       expect(code).not.toContain('lang=\\"scss\\"') // the tag the runtime parses is plain CSS
 
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const bundlePath = join(dir, "sass-app.mjs")
       await writeFile(bundlePath, code)
@@ -437,7 +444,7 @@ describe("jq79 vite plugin", () => {
 
       expect(code).toContain("Hello, ${name}!") // the child travels inside the bundle
 
-      const dir = resolve("node_modules/.cache/jq79-tests")
+      const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
       const bundlePath = join(dir, "factory-app.mjs")
       await writeFile(bundlePath, code)

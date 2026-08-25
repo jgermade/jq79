@@ -2692,3 +2692,59 @@ describe("Component79", () => {
     })
   })
 })
+
+// Component79.debug exists so a bug report can say "it goes away with cloning
+// off", which is worth something only if the call did what the caller thinks
+describe("Component79.debug", () => {
+  it("refuses a flag it does not have, instead of storing the typo", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const flags = Component79.debug({ cloneSkeleton: false } as any)
+
+      // the typo used to pass the boolean guard, land in the flags object and
+      // come back here - so the caller read "cloning is off" while it was on
+      expect(flags).not.toHaveProperty("cloneSkeleton")
+      expect(flags.cloneSkeletons, "a typo changed the real flag").toBe(true)
+      expect(warn.mock.calls.map(call => String(call[0])))
+        .toContainEqual(expect.stringContaining('does not know "cloneSkeleton"'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("refuses a name off the prototype chain", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      // `key in debugFlags` was true for every name Object.prototype carries,
+      // so this passed the guard the test above is about and landed on the flags
+      const flags = Component79.debug({ toString: false } as any)
+
+      expect(flags).not.toHaveProperty("toString", false)
+      expect(warn.mock.calls.map(call => String(call[0])))
+        .toContainEqual(expect.stringContaining('does not know "toString"'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("still refuses a known flag carrying the wrong type", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      expect(Component79.debug({ cloneSkeletons: "no" } as any).cloneSkeletons).toBe(true)
+      expect(warn.mock.calls.map(call => String(call[0])))
+        .toContainEqual(expect.stringContaining("the flags are booleans"))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("sets the flag it does have, and puts it back", () => {
+    const { cloneSkeletons: was } = Component79.debug()
+    try {
+      expect(Component79.debug({ cloneSkeletons: false }).cloneSkeletons).toBe(false)
+      expect(Component79.debug().cloneSkeletons).toBe(false)
+    } finally {
+      Component79.debug({ cloneSkeletons: was })
+    }
+  })
+})

@@ -1,6 +1,6 @@
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { $, $$, Component79, parseComponent, $reactive, renderComponent, $toRaw } from "../src/jq79"
+import { DASHED_NAMES, UNDASHED_NAMES } from "../scripts/svg-attribute-corpus.mjs"
 
 describe("renderComponent", () => {
   let container: HTMLDivElement
@@ -1598,6 +1598,113 @@ describe(":each with a component in the loop variable", () => {
   })
 })
 
+// A nested <template> carrying a directive is two silent failures - the bare
+// one shows nothing in either state, the :slot one has its directive dropped
+// and renders anyway - and neither is a rendering bug to fix. Both are worth
+// the console line every other it-does-nothing case gets
+// TODOS/2026-08-24.template-directive-warning.md
+describe("a directive on a nested <template>", () => {
+  let container: HTMLDivElement
+  let warn: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    warn.mockRestore()
+    container.remove()
+  })
+
+  const messages = () => warn.mock.calls.map(call => String(call[0]))
+
+  it("warns that the children never reach the page, in either state", () => {
+    const data = $reactive({ show: true })
+    container.appendChild(renderComponent(
+      parseComponent(`<ul><template :if="show"><li class="in">uno</li></template></ul>`), data))
+
+    expect(messages()).toContainEqual(expect.stringContaining(":if on a nested <template> shows nothing"))
+    // the :if works exactly as written - it decides whether an inert
+    // <template> is inserted, and its children live in .content either way
+    expect(container.querySelector(".in"), "a <template>'s children are not in the document").toBeNull()
+
+    ;(data as any).show = false
+    expect(container.querySelector(".in")).toBeNull()
+  })
+
+  it("warns that a slot filler's directive is dropped, and it is", () => {
+    const Panel = parseComponent(`<section class="panel"><slot.header /><slot /></section>`)
+    container.appendChild(renderComponent(
+      parseComponent(`<div><Panel><template :slot.header :if="show"><h2 class="title">cabecera</h2></template></Panel></div>`),
+      $reactive({ Panel, show: false })))
+
+    expect(messages()).toContainEqual(expect.stringContaining(":if on <template :slot.header> is ignored"))
+    expect(container.querySelector(".title"), "the slot content renders whatever :if says").not.toBeNull()
+  })
+
+  // the third position, and neither message fits it: a <template :slot> that is
+  // not a direct child of a component tag is MISPLACED, and there the directive
+  // is not dropped at all - renderNodes groups the :if into a chain like any
+  // other element's. Saying "the directive is ignored, a slot is filled" would
+  // be wrong twice, and misplacedSlotContent already speaks for the position
+  it("says nothing about a misplaced <template :slot>, whose directive does work", () => {
+    const data = $reactive({ x: false }) as any
+    container.appendChild(renderComponent(
+      parseComponent(`<div><template :slot.header :if="x"><h2 class="t">c</h2></template></div>`), data))
+
+    expect(messages(), "the :if was honoured, and no slot is filled here").toEqual([])
+    expect(container.querySelector(".t")).toBeNull()
+
+    // and when the branch does render, the warning that speaks is the one about
+    // the position - not this one
+    data.x = true
+    expect(messages()).toContainEqual(expect.stringContaining("fills a slot only as a direct child"))
+    expect(messages()).not.toContainEqual(expect.stringContaining("is ignored - a slot is filled"))
+  })
+
+  it("warns for :each too, which is the same misconception", () => {
+    container.appendChild(renderComponent(
+      parseComponent(`<ul><template :each="n in ns"><li>{{ n }}</li></template></ul>`), $reactive({ ns: [1, 2] })))
+
+    expect(messages()).toContainEqual(expect.stringContaining(":each on a nested <template> shows nothing"))
+  })
+
+  it("says nothing about a bare nested <template>, which is the legitimate use", () => {
+    container.appendChild(renderComponent(
+      parseComponent(`<div><template class="tpl"><b>x</b></template></div>`), $reactive({})))
+
+    expect(messages()).toEqual([])
+    expect(container.querySelector("template")).not.toBeNull()
+  })
+
+  it("says nothing about a <template> inside an svg, whose children do render", () => {
+    // in the SVG namespace `template` is a plain element with ordinary
+    // children, not the inert HTML one - so they reach the page and the
+    // message about `.content` would be false
+    const data = $reactive({ on: true }) as any
+    container.appendChild(renderComponent(
+      parseComponent(`<div><svg><template :if="on"><circle r="1" class="inside" /></template></svg></div>`), data))
+
+    expect(container.querySelector(".inside"), "an svg <template> renders its children").not.toBeNull()
+    expect(messages()).toEqual([])
+
+    data.on = false
+    expect(container.querySelector(".inside")).toBeNull()
+  })
+
+  it("says nothing about a top-level <template> declaration", () => {
+    // a declaration is lifted out before the walk ever runs, so its position
+    // needs no exclusion - this is the test that says so
+    const component = new Component79(`<template name="Row"><li class="row">fila</li></template><ul><Row /></ul>`)
+    component.mount(container)
+
+    expect(messages()).toEqual([])
+    expect(container.querySelector(".row")).not.toBeNull()
+  })
+})
+
 // The chain grammar is :if, then :elseif, then :else, on adjacent siblings.
 // Both ways of breaking it render something, so both have to say so - the
 // orphan especially, which renders the branch unconditionally and used to do it
@@ -1821,6 +1928,18 @@ describe("svg", () => {
     expect(container.querySelector("p")).toBeInstanceOf(HTMLElement)
   })
 
+  // The other half of the same rule, pinned so the choice is explicit rather
+  // than accidental: a PascalCase key ALREADY in scope captures a foreign tag,
+  // exactly as `Td` captures `<td>`. Every SVG tag whose name someone might
+  // give a component - Text, Path, Filter, Marker, Circle - is reachable this
+  // way. Recorded as open in TODOS/2026-08-25.open-after-the-oracle.md §5
+  it("is captured by a scope key that was already there, like any other tag", () => {
+    render(`<div><svg><circle r="4" /></svg></div>`, { Circle: parseComponent(`<b class="taken">tomado</b>`) })
+
+    expect(container.querySelector(".taken")).not.toBeNull()
+    expect(container.querySelector("circle")).toBeNull()
+  })
+
   it("does not treat an svg tag as a component that has not arrived", () => {
     const data = render(`<div><svg><circle r="1" /></svg></div>`)
     // the upgrade watch swaps an unknown tag when a matching key appears. An
@@ -1832,6 +1951,109 @@ describe("svg", () => {
     expect(container.querySelector("svg")).not.toBeNull()
   })
 
+  // A bound camelCase attribute used to be rewritten to kebab and lost: the
+  // rewrite turns `:viewBox` into `:view-box` before the parse, and SVG has no
+  // such attribute. The name is resolved against the parser's own adjust table
+  // now - the one that makes a written-out viewBox survive
+  // TODOS/2026-08-25.svg-attribute-names.md
+  //
+  // Hardcoded rather than asked, so these pin a semantics instead of agreeing
+  // with the implementation. The last three are the ones that killed the IDL
+  // trick this replaces (TODOS/2026-08-24.svg-namespace.md)
+  const CAMEL_ATTRS: [tag: string, attribute: string][] = [
+    ["svg", "viewBox"],
+    ["svg", "preserveAspectRatio"],
+    ["linearGradient", "gradientUnits"],
+    ["marker", "markerWidth"],
+    ["marker", "refX"],
+    ["textPath", "startOffset"],
+    ["path", "pathLength"],
+    ["feTurbulence", "baseFrequency"],
+    ["feGaussianBlur", "stdDeviation"],
+    ["animate", "attributeName"],
+    ["animate", "repeatCount"],
+  ]
+
+  // camelCase and kebab converge before any of this runs, so both spellings
+  // have to arrive at the same attribute - which is the rule the docs promise
+  const kebab = (name: string) => name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)
+
+  // <svg> is its own wrapper; everything else needs one to be in the namespace
+  const inSvg = (tag: string, attrs: string) =>
+    tag === "svg" ? `<div><svg ${attrs}></svg></div>` : `<div><svg><${tag} ${attrs} /></svg></div>`
+
+  CAMEL_ATTRS.forEach(([tag, attribute]) => {
+    it(`binds :${attribute} on <${tag}> as ${attribute}`, () => {
+      const data = render(inSvg(tag, `:${attribute}="v"`), { v: "2" })
+      const el = container.querySelector(tag)!
+
+      expect(el.getAttributeNames()).toContain(attribute)
+      expect(el.getAttribute(attribute)).toBe("2")
+      expect(el.getAttributeNames(), "the kebab spelling reached the DOM").not.toContain(kebab(attribute))
+
+      data.v = "3"
+      expect(el.getAttribute(attribute), "the resolved name is not reactive").toBe("3")
+    })
+
+    it(`binds :${kebab(attribute)} on <${tag}> as ${attribute} too`, () => {
+      render(inSvg(tag, `:${kebab(attribute)}="v"`), { v: "2" })
+
+      expect(container.querySelector(tag)!.getAttributeNames()).toContain(attribute)
+    })
+  })
+
+  // The collision test, and the one to re-run if the name rewrite is ever
+  // touched. The resolution has to be a pure function of the kebab name,
+  // because both spellings converge before it runs - so a real kebab attribute
+  // whose de-dashed form the table claims would start being rewritten. Every
+  // presentation attribute, plus data-* and aria-*: none of them collides
+  // shared with scripts/check-svg-attribute-names.mjs, which asks the same
+  // names of chromium, firefox and webkit - one corpus, two questions
+  it("leaves every dashed svg attribute exactly as written", () => {
+    const written = DASHED_NAMES.map(name => {
+      render(`<div><svg><circle :${name}="v" /></svg></div>`, { v: "x" })
+      const circle = container.querySelector("circle")!
+      const found = circle.getAttributeNames().find(candidate => candidate.toLowerCase().replace(/-/g, "") === name.replace(/-/g, ""))
+      circle.closest("svg")!.remove()
+      return `${name} -> ${found}`
+    })
+
+    expect(written.filter(pair => pair.split(" -> ")[0] !== pair.split(" -> ")[1]), "a dashed name collided with the parser's table").toEqual([])
+  })
+
+  // the all-lowercase spelling: the parser adjusts `viewbox` written out, so a
+  // bound one has to reach the same attribute. It used to skip the lookup for
+  // want of a dash and write a dead `viewbox`
+  it("resolves a name written all in lowercase", () => {
+    render(`<div><svg :viewbox="box"></svg></div>`, { box: "0 0 10 10" })
+
+    expect(container.querySelector("svg")!.getAttributeNames()).toContain("viewBox")
+    expect(container.querySelector("svg")!.getAttributeNames()).not.toContain("viewbox")
+  })
+
+  it("leaves every undashed svg attribute exactly as written", () => {
+    const written = UNDASHED_NAMES.map(name => {
+      render(`<div><svg><circle :${name}="v" /></svg></div>`, { v: "x" })
+      const circle = container.querySelector("circle")!
+      const found = circle.getAttributeNames().find(candidate => candidate.toLowerCase() === name)
+      circle.closest("svg")!.remove()
+      return `${name} -> ${found}`
+    })
+
+    expect(written.filter(pair => pair.split(" -> ")[0] !== pair.split(" -> ")[1]),
+      "an undashed name was claimed by the parser's table").toEqual([])
+  })
+
+  it("leaves html elements alone, camelCase and all", () => {
+    render(`<div><p :viewBox="v" :dataFoo="w"></p></div>`, { v: "x", w: "y" })
+    const p = container.querySelector("p")!
+
+    // nothing here consults the table: it is the parser's foreign-content
+    // table, and an HTML element is not foreign
+    expect(p.getAttributeNames()).toContain("view-box")
+    expect(p.getAttributeNames()).toContain("data-foo")
+  })
+
   it("stamps svg elements for a scoped style", () => {
     // <style scoped> requires the stamp on every element the component
     // rendered, and a foreign element has to be reachable by its rules too
@@ -1841,5 +2063,159 @@ describe("svg", () => {
     const stamp = circle.getAttributeNames().find(name => name.startsWith("data-jq79"))
     expect(stamp, "an svg element carries no scope stamp, so scoped rules cannot reach it").toBeDefined()
     expect(circle.getAttribute(stamp!)).toBe(container.querySelector("div")!.getAttribute(stamp!))
+  })
+})
+
+// MathML rides on the same AST field <svg> does - elementToAST records any
+// non-HTML namespace, not SVG's - so most of this was true and untested. What
+// was NOT true is <annotation-xml>: the one tag in either foreign namespace
+// with a hyphen in it, and a hyphen is how this library recognizes a custom
+// element - TODOS/2026-08-24.mathml.md
+const MATHML_NS = "http://www.w3.org/1998/Math/MathML"
+
+describe("mathml", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => container.remove())
+
+  const render = (template: string, data: Record<string, any> = {}) => {
+    const store = $reactive(data)
+    container.appendChild(renderComponent(parseComponent(template), store))
+    return store as any
+  }
+
+  it("builds mathml elements in the mathml namespace", () => {
+    render(`<div><math display="block"><mrow><mi>x</mi><mo>+</mo><mn>1</mn></mrow></math></div>`)
+    const math = container.querySelector("math")!
+
+    expect(math.namespaceURI).toBe(MATHML_NS)
+    // jsdom has no MathMLElement, so the claim that carries here is the one the
+    // bugs came from: it is not the unknown HTML element createElement builds
+    expect(math).not.toBeInstanceOf(HTMLUnknownElement)
+    expect(math.getAttribute("display")).toBe("block")
+    expect(container.querySelector("mi")!.namespaceURI).toBe(MATHML_NS)
+  })
+
+  it("binds attributes inside a math, reactively", () => {
+    const data = render(`<div><math><mrow><mi :mathcolor="color" :class.on="flag">x</mi></mrow></math></div>`, { color: "red", flag: false })
+    const mi = container.querySelector("mi")!
+
+    expect(mi.getAttribute("mathcolor")).toBe("red")
+    expect(mi.getAttribute(":mathcolor")).toBeNull()
+    expect(mi.classList.contains("on")).toBe(false)
+
+    data.color = "blue"
+    data.flag = true
+    expect(mi.getAttribute("mathcolor")).toBe("blue")
+    expect(mi.classList.contains("on")).toBe(true)
+  })
+
+  it("interpolates and repeats inside a math", () => {
+    const data = render(`<div><math><mrow><mtext>{{ label }}</mtext><mi :each="s in syms" :key="s.id">{{ s.t }}</mi></mrow></math></div>`,
+      { label: "suma", syms: [{ id: 1, t: "x" }, { id: 2, t: "y" }] })
+
+    expect(container.querySelector("mtext")!.textContent).toBe("suma")
+    expect(container.querySelectorAll("mi")).toHaveLength(2)
+
+    data.syms = [{ id: 2, t: "y2" }]
+    expect(container.querySelectorAll("mi")).toHaveLength(1)
+    expect(container.querySelector("mi")!.textContent).toBe("y2")
+    expect(container.querySelector("mi")!.namespaceURI).toBe(MATHML_NS)
+  })
+
+  // MathML's integration points, which are <foreignObject>'s counterparts and
+  // the reason the namespace is read off the parsed tree rather than guessed
+  it("hands the namespace back at an integration point", () => {
+    render(`<div><math><mtext><b>negrita</b></mtext><annotation-xml encoding="text/html"><p>de vuelta</p></annotation-xml></math></div>`)
+
+    expect(container.querySelector("mtext")!.namespaceURI).toBe(MATHML_NS)
+    expect(container.querySelector("annotation-xml")!.namespaceURI).toBe(MATHML_NS)
+    expect(container.querySelector("b")!.namespaceURI).toBe("http://www.w3.org/1999/xhtml")
+    expect(container.querySelector("p")).toBeInstanceOf(HTMLElement)
+  })
+
+  // the one the <svg> corpus could not have caught: a hyphen used to make this
+  // a custom element that might still become a component, so its bindings were
+  // held verbatim as parameters for a component that can never arrive
+  it("binds attributes on annotation-xml, hyphen and all", () => {
+    const data = render(`<div><math><annotation-xml encoding="text/html" :id="which"><p>x</p></annotation-xml></math></div>`, { which: "uno" })
+    const annotation = container.querySelector("annotation-xml")!
+
+    expect(annotation.getAttribute("id")).toBe("uno")
+    expect(annotation.getAttributeNames(), "the binding was left verbatim, as a parameter for a component").not.toContain(":id")
+
+    data.which = "dos"
+    expect(annotation.getAttribute("id")).toBe("dos")
+  })
+
+  it("warns for :model on a mathml element", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      render(`<div><math><annotation-xml :model="who"><mi>x</mi></annotation-xml></math></div>`, { who: "ada" })
+      // the warning is suppressed on a tag that may upgrade, because the
+      // upgrade re-renders through renderNestedComponent, models and all
+      expect(warn.mock.calls.map(call => String(call[0])))
+        .toContainEqual(expect.stringContaining(":model on <annotation-xml> does nothing"))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("does not treat a mathml tag as a component that has not arrived", () => {
+    const data = render(`<div><math><mrow><mi>x</mi></mrow><annotation-xml encoding="text/html"><p>y</p></annotation-xml></math></div>`)
+    // the upgrade watch swaps an unknown tag when a matching key appears.
+    // Every one of these is a real element and must sit still - AnnotationXml
+    // is the one that did not
+    data.Math = parseComponent(`<b class="wrong">tomado</b>`)
+    data.Mi = parseComponent(`<b class="wrong">tomado</b>`)
+    data.AnnotationXml = parseComponent(`<b class="wrong">tomado</b>`)
+
+    expect(container.querySelector(".wrong")).toBeNull()
+    expect(container.querySelector("annotation-xml")).not.toBeNull()
+    expect(container.querySelector("math")).not.toBeNull()
+  })
+
+  // the same table, asked in MathML's namespace - one entry, and it is free
+  it("binds :definitionUrl as definitionURL", () => {
+    const data = render(`<div><math><mi :definitionUrl="url">x</mi></math></div>`, { url: "/a" })
+    const mi = container.querySelector("mi")!
+
+    expect(mi.getAttributeNames()).toContain("definitionURL")
+    expect(mi.getAttributeNames()).not.toContain("definition-url")
+
+    data.url = "/b"
+    expect(mi.getAttribute("definitionURL")).toBe("/b")
+  })
+
+  it("leaves a lowercase mathml attribute as written", () => {
+    render(`<div><math><mi :mathcolor="c" :math-color="c2">x</mi></math></div>`, { c: "red", c2: "blue" })
+
+    expect(container.querySelector("mi")!.getAttributeNames()).toContain("mathcolor")
+  })
+
+  it("stamps mathml elements for a scoped style", () => {
+    new Component79(`<style scoped>mi { color: red }</style><div><math><mrow><mi>x</mi></mrow></math></div>`).mount(container)
+    const mi = container.querySelector("mi")!
+
+    const stamp = mi.getAttributeNames().find(name => name.startsWith("data-jq79"))
+    expect(stamp, "a mathml element carries no scope stamp, so scoped rules cannot reach it").toBeDefined()
+    expect(mi.getAttribute(stamp!)).toBe(container.querySelector("div")!.getAttribute(stamp!))
+  })
+
+  // not a jq79 rule - the HTML parser's. <annotation-xml> is an integration
+  // point only when its encoding is text/html or application/xhtml+xml, and a
+  // bound :encoding means the parser never sees a value it recognizes, so <p>
+  // hits the foreign-content breakout list and lands OUTSIDE the <math>. The
+  // author wrote nesting that silently is not there, which is the same shape as
+  // the :viewBox limitation and documented beside it
+  it("parses html out of an annotation-xml whose encoding is bound", () => {
+    render(`<div><math><annotation-xml :encoding="e"><p>x</p></annotation-xml></math></div>`, { e: "text/html" })
+
+    expect(container.querySelector("math")!.querySelector("p"), "the <p> is a sibling of the <math>, not a child").toBeNull()
+    expect(container.querySelector("p")!.namespaceURI).toBe("http://www.w3.org/1999/xhtml")
   })
 })

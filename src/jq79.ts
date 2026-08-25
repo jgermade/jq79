@@ -1217,6 +1217,75 @@ const BOOLEAN_ATTRS = new Set([
 const createFor = (node: TemplateNode): Element =>
   node.ns === undefined ? document.createElement(node.tag) : document.createElementNS(node.ns, node.tag)
 
+// A bound camelCase SVG attribute, resolved by asking the parser.
+//
+// expandNameCase rewrites `:viewBox` to `:view-box` before the parse, because
+// the HTML parser lowercases attribute names and `:firstName` has to survive
+// it. For SVG's camelCase attributes that is wrong: `view-box` is not an
+// attribute SVG has, and it was wrong in silence.
+//
+// The HTML parser carries its own table for adjusting foreign attribute names -
+// it is what makes a written-out `viewBox="0 0 10 10"` survive at all. So ask
+// that table rather than shipping a copy of it: write the name into markup in
+// the element's own namespace, and read back what the parser called it. The
+// answer comes from the engine that will render the page, so it cannot disagree
+// with what that same engine does with the attribute written out.
+//
+// This is not the IDL trick TODOS/2026-08-24.svg-namespace.md buried. That one
+// asked "which family does this name belong to", a question with no ground
+// truth, and Chromium answered wrong for stdDeviation, attributeName and
+// repeatCount. This asks the table that decides the static case, and it is
+// right for all three - see TODOS/2026-08-25.svg-attribute-names.md.
+const FOREIGN_PROBES: Record<string, [wrapper: string, tag: string]> = {
+  "http://www.w3.org/2000/svg": ["svg", "feGaussianBlur"],
+  "http://www.w3.org/1998/Math/MathML": ["math", "mi"],
+}
+
+// one parse per namespace per name, ever - measured at 0.027ms, against
+// 0.000019ms for a hit. Only SVG and MathML have an adjustment table, so every
+// other namespace (and every HTML element) skips this entirely
+const adjustedNames = new Map<string, string>()
+
+const adjustedName = (ns: string, flat: string): string => {
+  const key = `${ns} ${flat}`
+  const cached = adjustedNames.get(key)
+  if (cached !== undefined) return cached
+
+  const probe = FOREIGN_PROBES[ns]
+  let adjusted = flat
+  // the name goes into markup, so it is checked rather than trusted - and a
+  // name the table could adjust is plain letters by construction. No DOMParser
+  // (a non-browser host) falls back to the name as written, which is what
+  // shipped before this existed
+  if (probe !== undefined && typeof DOMParser !== "undefined" && /^[a-z][a-z0-9]*$/.test(flat)) {
+    const [wrapper, tag] = probe
+    const doc = new DOMParser().parseFromString(`<${wrapper}><${tag} ${flat}="x"/></${wrapper}>`, "text/html")
+    adjusted = doc.querySelector(tag)?.getAttributeNames().find(name => name.toLowerCase() === flat) ?? flat
+  }
+  adjustedNames.set(key, adjusted)
+  return adjusted
+}
+
+// `name` is what the rewrite left: kebab, whichever way the author spelled it.
+// Both spellings converge on purpose, so this has to be a pure function of the
+// kebab name and the namespace - which makes a collision the only thing that
+// could break it, a real kebab attribute whose de-dashed form the table claims.
+// Measured over 58 dashed SVG names (every presentation attribute, plus data-*
+// and aria-*): none collides
+const foreignAttrName = (el: Element, name: string): string => {
+  const ns = el.namespaceURI
+  if (ns === null || ns === HTML_NS) return name
+  // no shortcut for a name without a dash: `:viewbox` is a spelling somebody
+  // writes, the parser adjusts it written out, and skipping the lookup left the
+  // bound form dead where the static one worked. What it costs is a memoised
+  // Map hit per foreign binding - 83 undashed names measured, none claimed
+  const flat = name.replace(/-/g, "").toLowerCase()
+  const adjusted = adjustedName(ns, flat)
+  // unchanged means the parser does not claim this name, so the author wrote a
+  // real kebab attribute (`stroke-width`) and it stays exactly as written
+  return adjusted === flat ? name : adjusted
+}
+
 const applyAttr = (el: Element, name: string, value: any) => {
   const boolean = BOOLEAN_ATTRS.has(name)
   if (boolean ? !value : value == null) el.removeAttribute(name)
@@ -1292,11 +1361,15 @@ export type DebugFlags = {
 // the control attributes a skeleton knows how to fill. The rest of
 // CONTROL_ATTRS stays rejected on purpose: :if/:elseif/:else/:each/:key change
 // the shape rather than filling a hole, :with changes the scope its subtree
-// evaluates in, :props belongs to a component tag, and :html carries a
-// sanitizer plus a second attribute (:html.allowed) whose "without :html"
-// warning fires once per render interpreted and would fire once per definition
-// here - see TODOS/2026-08-24.more-holes-in-the-cloner.md
-const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":attrs", ":value", ":checked", ":selected"])
+// evaluates in, and :props belongs to a component tag.
+//
+// `:html` is here and `:html.allowed` is not, which is the whole of why the
+// warning renderNode emits for an `:html.allowed` with no `:html` is not this
+// list's problem: `:html.allowed` is rejected by the two clauses below (a
+// control attr, and a dotted name), so an element carrying one is never planned
+// and renderNode stays the only place that warning can fire from - once per
+// render, as before. See TODOS/2026-08-25.html-in-the-cloner.md
+const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":attrs", ":value", ":checked", ":selected"])
 
 // What a hole can be, in the order renderNode registers them.
 // A `:` attribute with a dot in it is rejected wholesale except `:class.`:
@@ -1328,11 +1401,11 @@ const plannableNode = (node: TemplateNode): boolean => {
   // tag is uppercase-initial, so none is ever stamped as one)
   if (node.ns === undefined && document.createElement(node.tag) instanceof HTMLUnknownElement) return false
   for (const key in node.attrs) if (!plannableAttr(key)) return false
-  // an element with :text has no children on either path (see buildSkeleton), so
-  // what the source wrote inside it cannot make the subtree unplannable - a
-  // component tag under a :text is markup nobody renders, not markup the clone
-  // path would get wrong
-  if (node.attrs[":text"] !== undefined) return true
+  // an element with :text or :html has no children on either path (see
+  // buildSkeleton), so what the source wrote inside it cannot make the subtree
+  // unplannable - a component tag under a :text is markup nobody renders, not
+  // markup the clone path would get wrong
+  if (node.attrs[":text"] !== undefined || node.attrs[":html"] !== undefined) return true
   return node.children.every(child => typeof child === "string" || plannableNode(child))
 }
 
@@ -1347,6 +1420,7 @@ type SkeletonOp =
   | { kind: "attrs"; path: number[]; expr: string }
   | { kind: "class"; path: number[]; classExpr?: string; toggles: [string, string][] | null; staticClasses: Set<string> }
   | { kind: "textContent"; path: number[]; expr: string }
+  | { kind: "html"; path: number[]; expr: string }
   | { kind: "value"; path: number[]; expr: string }
   | { kind: "checked"; path: number[]; expr: string }
   | { kind: "selected"; path: number[]; expr: string }
@@ -1374,7 +1448,9 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
     else if (isControlAttr(key)) { /* handled after the walk */ }
     else if (key.startsWith(":")) {
       const name = key.slice(1)
-      ops.push({ kind: "attr", path, name, expr: value || kebabToCamel(name) })
+      // resolved here rather than per instance: the skeleton's element already
+      // exists, so its namespace is known once per definition
+      ops.push({ kind: "attr", path, name: foreignAttrName(el, name), expr: value || kebabToCamel(name) })
     } else el.setAttribute(key, value)
   }
   const attrsExpr = node.attrs[":attrs"]
@@ -1384,11 +1460,14 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
     ops.push({ kind: "class", path, classExpr, toggles, staticClasses: new Set(classNames(node.attrs.class ?? "")) })
   }
 
-  // :text replaces the element's content, and renderNode never renders the
-  // children of an element carrying one. So the skeleton gives it none either:
-  // a :text node is a leaf on both paths, whatever the source wrote inside it
+  // :text and :html replace the element's content, and renderNode never renders
+  // the children of an element carrying either. So the skeleton gives it none
+  // either: both are leaves on both paths, whatever the source wrote inside
+  // them. The else-if order is renderNode's - :text wins when both are written
   const textExpr = node.attrs[":text"]
+  const htmlExpr = node.attrs[":html"]
   if (textExpr !== undefined) ops.push({ kind: "textContent", path, expr: textExpr })
+  else if (htmlExpr !== undefined) ops.push({ kind: "html", path, expr: htmlExpr })
   else node.children.forEach((child, index) => {
     if (typeof child === "string") {
       // an interpolated text node is a hole; the skeleton holds the empty node
@@ -1423,11 +1502,11 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
 // and a regression on a row whose only fragments are that small
 const MIN_SKELETON_ELEMENTS = 3
 
-// children under a :text are not built by either path, so they are not elements
-// this threshold should be counting - a <p :text="v"> with two <span>s written
-// inside it is one element's worth of cloning, not three
+// children under a :text or an :html are not built by either path, so they are
+// not elements this threshold should be counting - a <p :text="v"> with two
+// <span>s written inside it is one element's worth of cloning, not three
 const countElements = (node: TemplateNode): number =>
-  node.attrs[":text"] !== undefined
+  node.attrs[":text"] !== undefined || node.attrs[":html"] !== undefined
     ? 1
     : 1 + node.children.reduce((total, child) => total + (typeof child === "string" ? 0 : countElements(child)), 0)
 
@@ -1531,6 +1610,14 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
       const el = target as Element
       const { expr } = op
       fx.effect(() => { el.textContent = String(evalExpr(expr, scope) ?? "") })
+    } else if (op.kind === "html") {
+      // renderNode's effect with its `allowUrl` arm removed, because an element
+      // carrying :html.allowed is never planned - the attribute is rejected by
+      // plannableAttr, which is what keeps that directive's warning in exactly
+      // one place. TODOS/2026-08-25.html-in-the-cloner.md
+      const el = target as Element
+      const { expr } = op
+      fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(expr, scope) ?? "")) })
     } else if (op.kind === "value") {
       // the property, not the attribute, and skipping a write that would not
       // change it - renderNode's reasons apply here unchanged
@@ -1624,8 +1711,17 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // placeholder element for the component exactly once
   // dashes included, because findComponentKey matches them case-insensitively
   // with dashes stripped: <drop-area> resolves DropArea, so a dashed tag is a
-  // possible component too, not only a custom element
-  const mayUpgrade = el instanceof HTMLUnknownElement || node.tag.includes("-")
+  // possible component too, not only a custom element.
+  //
+  // Never for a foreign element, and the dash clause is why that has to be said
+  // out loud: <annotation-xml> is the one MathML or SVG tag with a hyphen in it,
+  // and without this it is a real element treated as a custom one - its
+  // : bindings held verbatim as parameters for a component, and the element
+  // itself replaced the moment something named AnnotationXml enters scope. The
+  // namespace is the parser's answer to "where was this written", so ns !== undefined
+  // means inside a <math> or an <svg>, where no component can live - the same
+  // argument plannableNode makes. See TODOS/2026-08-24.mathml.md
+  const mayUpgrade = node.ns === undefined && (el instanceof HTMLUnknownElement || node.tag.includes("-"))
   if (mayUpgrade) {
     let upgraded = false
     fx.effect(() => {
@@ -1675,8 +1771,11 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // root for an attribute to land on anyway (TODOS/2026-07-15.class-directive.md)
       if (mayUpgrade) el.setAttribute(key, value)
       else {
-        const name = key.slice(1)
-        const expr = value || kebabToCamel(name)
+        const written = key.slice(1)
+        const expr = value || kebabToCamel(written)
+        // outside the effect: the name a binding writes is fixed by the source
+        // and the element, and neither moves between runs
+        const name = foreignAttrName(el, written)
         fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
       }
     } else el.setAttribute(key, value)
@@ -2242,6 +2341,52 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
   )
 }
 
+// A directive on a *nested* <template> says something it does not mean, in two
+// different ways, and neither is a rendering bug to fix.
+//
+// Bare, the element is native and inert: its children live in .content and
+// never reach the page, so `<template :if="show"><li>uno</li></template>`
+// decides whether an empty <template> is inserted and shows nothing in either
+// state. With a :slot attribute the directive is not merely invisible but
+// *dropped* - partitionSlots finds the node by slotAttrOf and takes its
+// children as the slot's content, and nothing on that path looks at :if, so a
+// :slot filler renders whatever its condition says.
+//
+// The directive is the discriminant, and nothing else is: a bare nested
+// <template> is the legitimate native use and must stay silent. A top-level one
+// never arrives here at all - parseComponentString lifts declarations out
+// before componentPartsFrom runs - so the position needs no exclusion.
+// See TODOS/2026-08-24.template-directive-warning.md
+const TEMPLATE_DIRECTIVES = [":if", ":elseif", ":else", ":each"]
+
+const warnTemplateDirective = (node: TemplateNode, parent: TemplateNode | undefined) => {
+  // an HTML <template> only: inside an <svg> the tag is a plain namespaced
+  // element with ordinary children, so they render and the message below - that
+  // they live in a .content nobody reads - would be false
+  if (node.tag !== "template" || node.ns !== undefined) return
+  const directive = TEMPLATE_DIRECTIVES.find(attr => attr in node.attrs)
+  if (directive === undefined) return
+
+  if (slotAttrOf(node) !== undefined) {
+    // A <template :slot> fills a slot only as a direct child of a component
+    // tag - anywhere else it is misplaced, and misplacedSlotContent says so in
+    // its own words. There the directive is NOT dropped: renderNodes groups the
+    // :if into a chain like any other element's, so a false branch renders
+    // nothing and the message below would be wrong twice over. Say nothing and
+    // leave the position to the diagnostic that is about the position
+    if (parent?.component === undefined) return
+    console.warn(
+      `jq79: ${directive} on <template ${slotAttrOf(node)}> is ignored - a slot is filled with its children as written. ` +
+      `Put ${directive} on the elements inside it, or on the component's tag`
+    )
+    return
+  }
+  console.warn(
+    `jq79: ${directive} on a nested <template> shows nothing - a <template>'s children live in its .content ` +
+    `and never reach the page. Put ${directive} on the elements themselves`
+  )
+}
+
 // Checks one node list's chains, and every list below it, against that grammar.
 // Run once per definition from componentPartsFrom, not per render: a template
 // says what it says before any data exists, so a stray :else is reported when
@@ -2253,9 +2398,15 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
 // The dispatch mirrors renderNodes' loop, because that is what decides which
 // node ends up a branch of what: a :each node is claimed before the chain
 // grouping ever sees it, which is exactly why it breaks a chain
-const validateChains = (nodes: (TemplateNode | string)[]) => {
+const validateChains = (nodes: (TemplateNode | string)[], parent?: TemplateNode) => {
   nodes.forEach(node => {
-    if (typeof node !== "string") validateChains(node.children)
+    if (typeof node === "string") return
+    // before the loop below, which skips a :each node early - and a
+    // <template :each> is one of the two shapes this reports. The parent comes
+    // with it because a <template :slot> means one thing under a component tag
+    // and something else anywhere else
+    warnTemplateDirective(node, parent)
+    validateChains(node.children, node)
   })
 
   // the chain that ended immediately before this point closed itself with an
@@ -3478,7 +3629,15 @@ export class Component79 {
     if (options) {
       for (const key in options) {
         const value = options[key as keyof DebugFlags]
-        if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
+        // the key before the value: a typo carrying a boolean - `cloneSkeleton`
+        // for `cloneSkeletons` - used to pass this guard, land in the flags and
+        // come back in the return value, so a caller read "cloning is off" while
+        // it was still on. TODOS/2026-08-25.two-defects-a-review-found.md
+        // hasOwnProperty, not `in`: `in` walks the prototype chain, so
+        // `debug({ toString: false })` passed this guard and landed on the flags
+        if (!Object.prototype.hasOwnProperty.call(debugFlags, key)) {
+          console.warn(`jq79: Component79.debug does not know "${key}" - the flags it has are: ${Object.keys(debugFlags).join(", ")}`)
+        } else if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
         else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)
       }
     }
