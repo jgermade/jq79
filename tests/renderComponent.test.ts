@@ -1,6 +1,6 @@
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { $, $$, Component79, parseComponent, $reactive, renderComponent, $toRaw } from "../src/jq79"
+import { DASHED_NAMES } from "../scripts/svg-attribute-corpus.mjs"
 
 describe("renderComponent", () => {
   let container: HTMLDivElement
@@ -1960,17 +1960,10 @@ describe("svg", () => {
   // because both spellings converge before it runs - so a real kebab attribute
   // whose de-dashed form the table claims would start being rewritten. Every
   // presentation attribute, plus data-* and aria-*: none of them collides
-  const KEBAB_ATTRS = `alignment-baseline baseline-shift clip-path clip-rule color-interpolation
-    color-interpolation-filters color-rendering dominant-baseline fill-opacity fill-rule flood-color
-    flood-opacity font-family font-size font-size-adjust font-stretch font-style font-variant
-    font-weight image-rendering letter-spacing lighting-color marker-end marker-mid marker-start
-    mask-type paint-order pointer-events shape-rendering stop-color stop-opacity stroke-dasharray
-    stroke-dashoffset stroke-linecap stroke-linejoin stroke-miterlimit stroke-opacity stroke-width
-    text-anchor text-decoration text-rendering transform-origin unicode-bidi vector-effect
-    word-spacing writing-mode data-foo data-user-id aria-label aria-hidden`.split(/\s+/)
-
+  // shared with scripts/check-svg-attribute-names.mjs, which asks the same
+  // names of chromium, firefox and webkit - one corpus, two questions
   it("leaves every dashed svg attribute exactly as written", () => {
-    const written = KEBAB_ATTRS.map(name => {
+    const written = DASHED_NAMES.map(name => {
       render(`<div><svg><circle :${name}="v" /></svg></div>`, { v: "x" })
       const circle = container.querySelector("circle")!
       const found = circle.getAttributeNames().find(candidate => candidate.toLowerCase().replace(/-/g, "") === name.replace(/-/g, ""))

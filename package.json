@@ -68,6 +68,7 @@
     "benchmark:ab": "node scripts/run-ab.mjs",
     "benchmark:comparison": "node scripts/run-comparison.mjs",
     "benchmark:once": "node scripts/run-once-render.mjs",
+    "check:svg-names": "node scripts/check-svg-attribute-names.mjs",
     "prepublishOnly": "npm test && npm run build"
   },
   "peerDependencies": {

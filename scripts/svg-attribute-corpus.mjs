@@ -1,0 +1,34 @@
+// The corpus both the cross-engine check and tests/renderComponent.test.ts use.
+//
+// These are test corpora, not a shipped table - src/jq79.ts ships no list of
+// names at all, which is the whole point of TODOS/2026-08-25.svg-attribute-names.md.
+// Nothing depends on them being complete: a name missing here is a name nobody
+// checked, not a name that renders wrong.
+
+// SVG's camelCase attribute names. This list is a test corpus, not a shipped
+// table - nothing depends on it being complete, and an entry that no engine
+// adjusts is reported rather than assumed wrong
+export const CAMEL_NAMES = `viewBox preserveAspectRatio baseProfile contentScriptType contentStyleType
+zoomAndPan externalResourcesRequired requiredFeatures requiredExtensions systemLanguage
+gradientUnits gradientTransform spreadMethod patternUnits patternContentUnits patternTransform
+clipPathUnits maskUnits maskContentUnits filterUnits primitiveUnits filterRes
+stdDeviation baseFrequency numOctaves stitchTiles surfaceScale specularConstant specularExponent
+diffuseConstant kernelMatrix kernelUnitLength edgeMode targetX targetY preserveAlpha
+xChannelSelector yChannelSelector tableValues limitingConeAngle pointsAtX pointsAtY pointsAtZ
+markerUnits markerWidth markerHeight refX refY textLength lengthAdjust startOffset
+pathLength attributeName attributeType calcMode keyTimes keySplines keyPoints repeatCount repeatDur
+viewTarget glyphRef`.split(/\s+/)
+
+// Every dashed name that must reach the DOM exactly as written. The collision
+// check asks the table for their DE-DASHED form, because that is the question
+// the resolution actually asks - `stroke-width` is looked up as `strokewidth`
+export const DASHED_NAMES = `alignment-baseline baseline-shift clip-path clip-rule color-interpolation
+color-interpolation-filters color-profile color-rendering dominant-baseline enable-background
+fill-opacity fill-rule flood-color flood-opacity font-family font-size font-size-adjust
+font-stretch font-style font-variant font-weight glyph-orientation-horizontal
+glyph-orientation-vertical image-rendering letter-spacing lighting-color marker-end marker-mid
+marker-start mask-type overline-position paint-order pointer-events shape-rendering stop-color
+stop-opacity stroke-dasharray stroke-dashoffset stroke-linecap stroke-linejoin stroke-miterlimit
+stroke-opacity stroke-width text-anchor text-decoration text-rendering transform-origin
+underline-position unicode-bidi vector-effect vertical-align word-spacing writing-mode
+data-foo data-user-id aria-label aria-hidden aria-describedby`.split(/\s+/)

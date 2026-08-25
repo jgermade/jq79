@@ -1,0 +1,90 @@
+# Does the parser-table oracle hold in every engine?
+#
+# src/jq79.ts resolves a bound camelCase SVG or MathML attribute name by asking
+# the HTML parser's own foreign-attribute adjustment table, rather than shipping
+# a copy of it (TODOS/2026-08-25.svg-attribute-names.md). That design was
+# measured in Chromium and jsdom, and this is what says it holds in Firefox and
+# WebKit - which could not be installed where it was written.
+#
+# WebKit here is Playwright's build, not Safari. For a question about the HTML
+# parser's foreign-content table that is the engine that matters; Safari proper
+# would need a macOS runner and safaridriver, which Playwright does not drive,
+# and it would answer nothing this does not.
+#
+# It fails the build on one thing only: the MECHANISM disagreeing with that
+# engine's own document parser, or a dashed name its table would claim. Which
+# names an engine adjusts is a fact about the platform - it is reported, not
+# gated. The script says why, at length.
+#
+# The weekly run is the one that matters. What can change here is a browser, not
+# this repository, and a browser change has no pull request to hang off.
+
+name: SVG attribute names
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/check-svg-attribute-names.mjs'
+      - 'scripts/svg-attribute-corpus.mjs'
+      - '.github/workflows/svg-attribute-names.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/check-svg-attribute-names.mjs'
+      - 'scripts/svg-attribute-corpus.mjs'
+      - '.github/workflows/svg-attribute-names.yml'
+  schedule:
+    # Mondays, 05:17 UTC. Off the hour on purpose: a scheduled job at :00
+    # queues behind everyone else's
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+jobs:
+  engines:
+    runs-on: ubuntu-latest
+    strategy:
+      # every engine reports, even when one of them fails - a single red engine is
+      # the interesting case and the other two are its control
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm install
+
+      - name: Cache browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ matrix.engine }}-${{ hashFiles('package-lock.json') }}
+
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+
+      # `shell: bash` is what turns pipefail on (Actions runs it as
+      # `bash -eo pipefail`), and the pipe into tee would otherwise report the
+      # exit code of tee - a failing check that never fails the build
+      - name: Check the oracle
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/check-svg-attribute-names.mjs ${{ matrix.engine }} | tee report.txt
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## ${{ matrix.engine }}"
+            echo '```'
+            cat report.txt || echo "the check produced no report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
