@@ -506,9 +506,6 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     isPlainData(previous) && isPlainData(next) &&
     Array.isArray(previous) === Array.isArray(next)
 
-  const keyCount = (container: any): number =>
-    Array.isArray(container) ? container.length : Object.keys(container).length
-
   // which keys hold a different value than they did, or null when so many do
   // that notifying them one at a time would cost more than sweeping the
   // container. Arrays - the case this exists for - are walked by index, so a
@@ -520,7 +517,12 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // `exact` marks the keys as slots whose occupant *moved* rather than values
   // that changed: nothing under them is different, so the subtree each one
   // would otherwise sweep must be left alone (see splicedAt)
-  type Difference = { keys: string[]; exact: boolean }
+  // `keysChanged` answers the `@keys` dep - what an effect records when it reads
+  // Object.keys(container). It is not `keys.length > 0`: a replacement can
+  // change every value and no key name at all, and it used to be decided by
+  // comparing key COUNTS, which misses swapping one name for another
+  // (TODOS/2026-08-25.two-defects-a-review-found.md)
+  type Difference = { keys: string[]; exact: boolean; keysChanged: boolean }
 
   const NOT_SPLICED = -1
 
@@ -547,6 +549,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     if (Array.isArray(next)) {
       const before = previous.length
       const after = next.length
+      // an array's keys are 0..length-1, so its length IS its key set - and
+      // nothing here walks the 10,000 elements a second time to learn that
+      const keysChanged = before !== after
       // nothing on one side means nothing to reuse on the other
       if (!before || !after) return GIVE_UP
       const span = Math.max(before, after)
@@ -555,7 +560,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         if (start !== NOT_SPLICED) {
           const slots: string[] = []
           for (let index = start; index < span; index++) slots.push(String(index))
-          return { keys: slots, exact: true }
+          return { keys: slots, exact: true, keysChanged }
         }
       }
       const changed: string[] = []
@@ -564,13 +569,19 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         changed.push(String(index))
         if (changed.length * 2 >= span) return GIVE_UP
       }
-      return { keys: changed, exact: false }
+      return { keys: changed, exact: false, keysChanged }
     }
-    const keys = new Set([...Object.keys(previous), ...Object.keys(next)])
+    const previousKeys = Object.keys(previous)
+    const nextKeys = Object.keys(next)
+    const keys = new Set([...previousKeys, ...nextKeys])
     if (!keys.size) return GIVE_UP
     const changed: string[] = []
     keys.forEach(key => { if (!Object.is($toRaw(previous[key]), $toRaw(next[key]))) changed.push(key) })
-    return changed.length * 2 >= keys.size ? GIVE_UP : { keys: changed, exact: false }
+    // two comparisons off arrays this already had to build: a union larger than
+    // either side's own count means that side is missing a name the other has.
+    // Counting them again here would allocate both key arrays a second time
+    const keysChanged = keys.size !== previousKeys.length || keys.size !== nextKeys.length
+    return changed.length * 2 >= keys.size ? GIVE_UP : { keys: changed, exact: false, keysChanged }
   }
 
   // A container replaced by another container: notify the elements that
@@ -631,7 +642,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       if (difference.exact) collectExact(child)
       else effectsFor(child).forEach(effect => matched.add(effect))
     })
-    if (keyCount(previous) !== keyCount(next)) collectExact(keysPath(dotKey))
+    // the key SET, not the count: replacing { a, b, c, d } with { a, b, c, e }
+    // leaves both at four and changes what Object.keys answers
+    if (difference.keysChanged) collectExact(keysPath(dotKey))
     // an array's length is a real dep (a `:each` reads it on its way through
     // list.map) and is not one of the keys walked above. Collected exactly:
     // the sweep a length write normally carries is for a truncation, and the

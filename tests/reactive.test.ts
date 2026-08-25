@@ -631,6 +631,34 @@ describe("what a write wakes", () => {
     expect(seen).toEqual([["a"], ["a", "b"], ["b"]])
   })
 
+  // the case the count comparison missed: notifyReplaced woke the key-set dep
+  // only when the NUMBER of keys changed, so swapping one name for another left
+  // Object.keys stale - shipped since notifyReplaced arrived, before 0.6.0
+  // (TODOS/2026-08-25.two-defects-a-review-found.md)
+  it("wakes it when a replacement changes which keys there are, not how many", () => {
+    const store = $reactive({ props: { a: 1, b: 2, c: 3, d: 4 } as Record<string, number> })
+
+    const seen: string[][] = []
+    store.$effect(() => { seen.push(Object.keys(store.props)) })
+
+    // same count, one name different
+    store.props = { a: 1, b: 2, c: 3, e: 9 }
+    expect(seen.at(-1)).toEqual(["a", "b", "c", "e"])
+
+    // and the control the count comparison did catch, which must keep working
+    store.props = { a: 1, b: 2 }
+    expect(seen.at(-1)).toEqual(["a", "b"])
+
+    // and the other direction: a replacement that changes a value and no names
+    // must NOT wake it, because the effect read the key set and nothing else.
+    // One key of four differs, so whatChanged does not give up and sweep -
+    // which is what a wholesale replacement gets, and why this is a small edit
+    store.props = { a: 1, b: 2, c: 3, e: 9 }
+    const before = seen.length
+    store.props = { a: 1, b: 2, c: 3, e: 10 }
+    expect(seen.length, "the key set did not change and nothing read a value").toBe(before)
+  })
+
   it("wakes a spread of the store's own keys the same way", () => {
     const store = $reactive({ a: 1 } as Record<string, number>)
 

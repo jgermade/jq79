@@ -3609,7 +3609,13 @@ export class Component79 {
     if (options) {
       for (const key in options) {
         const value = options[key as keyof DebugFlags]
-        if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
+        // the key before the value: a typo carrying a boolean - `cloneSkeleton`
+        // for `cloneSkeletons` - used to pass this guard, land in the flags and
+        // come back in the return value, so a caller read "cloning is off" while
+        // it was still on. TODOS/2026-08-25.two-defects-a-review-found.md
+        if (!(key in debugFlags)) {
+          console.warn(`jq79: Component79.debug does not know "${key}" - the flags it has are: ${Object.keys(debugFlags).join(", ")}`)
+        } else if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
         else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)
       }
     }
