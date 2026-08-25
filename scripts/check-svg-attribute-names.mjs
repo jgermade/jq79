@@ -21,7 +21,9 @@
 //      an engine whose table claimed `strokewidth` would silently rewrite
 //      `:stroke-width`. That would be a real break for that engine's users.
 //
-//   2. THE TABLE ITSELF, and it only reports. Which names each engine adjusts
+//   2. THE TABLE ITSELF, which never fails on what it finds - though it does
+//      fail when it cannot read the reports at all, which is a different thing
+//      from two engines disagreeing. Which names each engine adjusts
 //      is a fact about the web platform, not a bug in this library: an engine
 //      that does not adjust `stdDeviation` gives `stddeviation`, which is what
 //      that same engine does with `stdDeviation="2"` written out. The page stays
@@ -36,11 +38,14 @@
 // Run it locally with `npm run check:svg-names` (chromium only unless the other
 // browsers are installed), or let the workflow run all three.
 
-import { chromium, firefox, webkit } from "playwright"
+// playwright is imported lazily, inside the path that launches a browser:
+// --compare only reads JSON, and the job that runs it has no node_modules -
+// a top-level import made it fail before it read a line
+const ENGINE_NAMES = ["chromium", "firefox", "webkit"]
 
 import { CAMEL_NAMES, DASHED_NAMES, UNDASHED_NAMES } from "./svg-attribute-corpus.mjs"
 
-const ENGINES = { chromium, firefox, webkit }
+
 
 const WRAPPER = "svg"
 const TAG = "feGaussianBlur"
@@ -139,13 +144,14 @@ const run = async () => {
   const jsonAt = process.argv.indexOf("--json")
   const jsonPath = jsonAt === -1 ? null : process.argv[jsonAt + 1]
   const only = process.argv.slice(2).filter(arg => !arg.startsWith("-") && arg !== jsonPath && arg !== process.argv[compareAt + 1])
-  const wanted = only.length ? only : Object.keys(ENGINES)
+  const ENGINES = await import("playwright")
+  const wanted = only.length ? only : ENGINE_NAMES
   const results = {}
   const failures = []
 
   for (const engine of wanted) {
-    if (!ENGINES[engine]) {
-      console.error(`unknown engine "${engine}" - one of ${Object.keys(ENGINES).join(", ")}`)
+    if (!ENGINE_NAMES.includes(engine)) {
+      console.error(`unknown engine "${engine}" - one of ${ENGINE_NAMES.join(", ")}`)
       process.exit(2)
     }
     let browser
