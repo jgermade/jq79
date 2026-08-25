@@ -400,7 +400,23 @@ describe("the clone path renders every tutorial exercise identically", () => {
         return new Component79(files[ENTRY], { modules })
       }
 
-      const mount = async (component: Component79) => {
+      // A tick is not a settle. This used to read the DOM after three ticks and
+      // then stop at the first pair of equal reads, which is exactly enough on
+      // an idle box and not enough on a loaded one: two consecutive macrotasks
+      // can both land while a component's async work is still pending, and the
+      // read returns an intermediate state. Seen failing as the NULL CONTROL -
+      // two interpreted mounts of 03-components/03-shared-state disagreeing -
+      // reproduced by running this file with every core busy.
+      //
+      // So: poll on a real delay until the DOM has been unchanged for a quiet
+      // period, with a deadline. The same instrument tests/tutorial.test.ts
+      // uses, and the same reason (§8 of TODOS/2026-08-24.open-after-pr-12.md)
+      const QUIET_POLLS = 3
+      const POLL_MS = 5
+      const DEADLINE_MS = 2000
+      const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+      const attach = (component: Component79) => {
         const host = document.createElement("div")
         document.body.appendChild(host)
         // the `{}` is load-bearing. mountShadow only renders when it has no
@@ -409,22 +425,36 @@ describe("the clone path renders every tutorial exercise identically", () => {
         // no plan, and compare a moved tree against itself. Passing data forces
         // renderWith, with exactly the arguments the no-data call makes
         component.mountShadow(host, {})
-        // a setup script that awaits renders on a later tick, and one exercise
-        // (03-components/08-slots) settles a tick after the first: read when the
-        // DOM stops moving rather than at a fixed tick, or the comparison races
-        // the component and reports it as a clone-path difference
-        const read = () => (host.shadowRoot ?? host).innerHTML
-        const tick = () => new Promise(resolve => setTimeout(resolve, 0))
-        // a few ticks before believing anything: an await'd setup script leaves
-        // the DOM empty *and stable* until it resolves, so stopping at the first
-        // pair of equal reads returns the empty one
-        for (let i = 0; i < 3; i++) await tick()
+        return { host, read: () => (host.shadowRoot ?? host).innerHTML }
+      }
+
+      // the first mount, whose HTML nothing is known about yet
+      const mount = async (component: Component79) => {
+        const { host, read } = attach(component)
+        const deadline = Date.now() + DEADLINE_MS
         let html = read()
-        for (let i = 0; i < 12; i++) {
-          await tick()
+        let quiet = 0
+        while (quiet < QUIET_POLLS && Date.now() < deadline) {
+          await wait(POLL_MS)
           const next = read()
-          if (next === html) break
+          quiet = next === html ? quiet + 1 : 0
           html = next
+        }
+        host.remove()
+        return html
+      }
+
+      // every mount after it. Waiting for a known answer is both faster and
+      // stricter than settling again: it returns the moment the DOM matches,
+      // and only spends the deadline when the answer is genuinely different -
+      // which is a failing test either way
+      const mountUntil = async (component: Component79, expected: string) => {
+        const { host, read } = attach(component)
+        const deadline = Date.now() + DEADLINE_MS
+        let html = read()
+        while (html !== expected && Date.now() < deadline) {
+          await wait(POLL_MS)
+          html = read()
         }
         host.remove()
         return html
@@ -440,7 +470,7 @@ describe("the clone path renders every tutorial exercise identically", () => {
         const plain = build()
         const offClones = cloneCounter()
         const interpreted = await mount(plain)
-        const again = await mount(plain)
+        const again = await mountUntil(plain, interpreted)
         const clonedWithCloningOff = offClones() > 0
         expect(again, "this exercise does not render the same twice").toBe(interpreted)
         expect(clonedWithCloningOff, "cloning is off on this arm and something cloned anyway").toBe(false)
@@ -449,9 +479,9 @@ describe("the clone path renders every tutorial exercise identically", () => {
         // the first mount is the definition's first sighting and is interpreted
         // whatever the flag says; the second is the one built by cloning
         const cloning = build()
-        await mount(cloning)
+        await mountUntil(cloning, interpreted)
         const onClones = cloneCounter()
-        const cloned = await mount(cloning)
+        const cloned = await mountUntil(cloning, interpreted)
         const reachedTheCloner = onClones() > 0
         expect(cloned).toBe(interpreted)
         // and whether the mount just compared went anywhere near the cloner
