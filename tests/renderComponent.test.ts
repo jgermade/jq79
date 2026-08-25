@@ -1644,6 +1644,26 @@ describe("a directive on a nested <template>", () => {
     expect(container.querySelector(".title"), "the slot content renders whatever :if says").not.toBeNull()
   })
 
+  // the third position, and neither message fits it: a <template :slot> that is
+  // not a direct child of a component tag is MISPLACED, and there the directive
+  // is not dropped at all - renderNodes groups the :if into a chain like any
+  // other element's. Saying "the directive is ignored, a slot is filled" would
+  // be wrong twice, and misplacedSlotContent already speaks for the position
+  it("says nothing about a misplaced <template :slot>, whose directive does work", () => {
+    const data = $reactive({ x: false }) as any
+    container.appendChild(renderComponent(
+      parseComponent(`<div><template :slot.header :if="x"><h2 class="t">c</h2></template></div>`), data))
+
+    expect(messages(), "the :if was honoured, and no slot is filled here").toEqual([])
+    expect(container.querySelector(".t")).toBeNull()
+
+    // and when the branch does render, the warning that speaks is the one about
+    // the position - not this one
+    data.x = true
+    expect(messages()).toContainEqual(expect.stringContaining("fills a slot only as a direct child"))
+    expect(messages()).not.toContainEqual(expect.stringContaining("is ignored - a slot is filled"))
+  })
+
   it("warns for :each too, which is the same misconception", () => {
     container.appendChild(renderComponent(
       parseComponent(`<ul><template :each="n in ns"><li>{{ n }}</li></template></ul>`), $reactive({ ns: [1, 2] })))

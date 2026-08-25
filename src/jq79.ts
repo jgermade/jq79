@@ -2359,20 +2359,31 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
 // See TODOS/2026-08-24.template-directive-warning.md
 const TEMPLATE_DIRECTIVES = [":if", ":elseif", ":else", ":each"]
 
-const warnTemplateDirective = (node: TemplateNode) => {
+const warnTemplateDirective = (node: TemplateNode, parent: TemplateNode | undefined) => {
   // an HTML <template> only: inside an <svg> the tag is a plain namespaced
   // element with ordinary children, so they render and the message below - that
   // they live in a .content nobody reads - would be false
   if (node.tag !== "template" || node.ns !== undefined) return
   const directive = TEMPLATE_DIRECTIVES.find(attr => attr in node.attrs)
   if (directive === undefined) return
-  const slot = slotAttrOf(node)
+
+  if (slotAttrOf(node) !== undefined) {
+    // A <template :slot> fills a slot only as a direct child of a component
+    // tag - anywhere else it is misplaced, and misplacedSlotContent says so in
+    // its own words. There the directive is NOT dropped: renderNodes groups the
+    // :if into a chain like any other element's, so a false branch renders
+    // nothing and the message below would be wrong twice over. Say nothing and
+    // leave the position to the diagnostic that is about the position
+    if (parent?.component === undefined) return
+    console.warn(
+      `jq79: ${directive} on <template ${slotAttrOf(node)}> is ignored - a slot is filled with its children as written. ` +
+      `Put ${directive} on the elements inside it, or on the component's tag`
+    )
+    return
+  }
   console.warn(
-    slot !== undefined
-      ? `jq79: ${directive} on <template ${slot}> is ignored - a slot is filled with its children as written. ` +
-        `Put ${directive} on the elements inside it, or on the component's tag`
-      : `jq79: ${directive} on a nested <template> shows nothing - a <template>'s children live in its .content ` +
-        `and never reach the page. Put ${directive} on the elements themselves`
+    `jq79: ${directive} on a nested <template> shows nothing - a <template>'s children live in its .content ` +
+    `and never reach the page. Put ${directive} on the elements themselves`
   )
 }
 
@@ -2387,13 +2398,15 @@ const warnTemplateDirective = (node: TemplateNode) => {
 // The dispatch mirrors renderNodes' loop, because that is what decides which
 // node ends up a branch of what: a :each node is claimed before the chain
 // grouping ever sees it, which is exactly why it breaks a chain
-const validateChains = (nodes: (TemplateNode | string)[]) => {
+const validateChains = (nodes: (TemplateNode | string)[], parent?: TemplateNode) => {
   nodes.forEach(node => {
     if (typeof node === "string") return
     // before the loop below, which skips a :each node early - and a
-    // <template :each> is one of the two shapes this reports
-    warnTemplateDirective(node)
-    validateChains(node.children)
+    // <template :each> is one of the two shapes this reports. The parent comes
+    // with it because a <template :slot> means one thing under a component tag
+    // and something else anywhere else
+    warnTemplateDirective(node, parent)
+    validateChains(node.children, node)
   })
 
   // the chain that ended immediately before this point closed itself with an
