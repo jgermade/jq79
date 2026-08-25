@@ -316,7 +316,7 @@ describe("Component79", () => {
     it("a top-level destructuring declaration is reactive, like any other declaration", () => {
       // the pattern is rewritten to an assignment pattern inside `with`, so
       // both bindings land on the store - renamed ones under their *bound*
-      // name (see TODOS/2026-07-15.setup-destructuring.md)
+      // name (see RECORD/2026-07-15.setup-destructuring.md)
       const jq79 = new Component79(
         `<script :setup>let { a, b: renamed } = { a: 1, b: 2 }</script>` +
         `<div class="out">{{ a }}-{{ renamed }}</div>`

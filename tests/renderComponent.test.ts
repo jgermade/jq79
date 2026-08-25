@@ -705,7 +705,7 @@ describe("renderComponent", () => {
   })
 
   // the flaky seams found in the 2026-07-15 review, closed by the effect
-  // runner hardening (TODOS/2026-07-15.effect-runner-hardening.md): a
+  // runner hardening (RECORD/2026-07-15.effect-runner-hardening.md): a
   // reentrancy guard with a trailing re-run, no-op writes not notifying, and
   // repositioned entries refreshing their dep-less bindings
   describe(":each flaky seams", () => {
@@ -725,7 +725,7 @@ describe("renderComponent", () => {
     it("still refreshes a moved entry when a nested tag is handed $index as a prop", () => {
       // the positional-name walk has to reach attributes of nodes *inside* the
       // item, not just the item's own - a prop is how $index escapes into a
-      // child (TODOS/2026-08-23.positional-refresh.md)
+      // child (RECORD/2026-08-23.positional-refresh.md)
       const component = parseComponent(`<li :each="u in users" :key="u.id"><b :data-at="$index"></b></li>`)
       const data = $reactive({ users: [{ id: 1 }, { id: 2 }] })
       container.appendChild(renderComponent(component, data))
@@ -842,7 +842,7 @@ describe("renderComponent", () => {
       // `data.filter(...)` shifts every row behind the cut, which read as a
       // wholesale replacement and swept the container: 1,000 rows meant ~3,000
       // bindings re-rendering identical output. The rows did not change - they
-      // moved - and the diff now says so (TODOS/2026-08-23.notify-a-splice.md)
+      // moved - and the diff now says so (RECORD/2026-08-23.notify-a-splice.md)
       const runs: string[] = []
       const component = parseComponent(`<li :each="u in users" :key="u.id">{{ seen(u.name) }}</li>`)
       const data = $reactive({
@@ -1561,7 +1561,7 @@ describe("nested component recursion", () => {
     // The inner <A> finds no "A" in the child scope, and it no longer falls
     // back to a plain <a> anchor: a capitalized tag is a component claim, the
     // rewrite renamed it to <c79-a>, and a claim that resolves to nothing after
-    // every script has settled throws (TODOS/2026-08-25.component-tag-prefix.md)
+    // every script has settled throws (RECORD/2026-08-25.component-tag-prefix.md)
     const container = document.createElement("div")
     document.body.appendChild(container)
     const A = parseComponent(`<div class="a"><A></A></div>`)
@@ -1608,7 +1608,7 @@ describe(":each with a component in the loop variable", () => {
 // one shows nothing in either state, the :slot one has its directive dropped
 // and renders anyway - and neither is a rendering bug to fix. Both are worth
 // the console line every other it-does-nothing case gets
-// TODOS/2026-08-24.template-directive-warning.md
+// RECORD/2026-08-24.template-directive-warning.md
 describe("a directive on a nested <template>", () => {
   let container: HTMLDivElement
   let warn: ReturnType<typeof vi.spyOn>
@@ -1856,7 +1856,7 @@ describe(":if/:elseif/:else chain validation", () => {
 // left in the DOM verbatim (an unknown element is a component that might still
 // arrive, so renderNode keeps its `:` attributes as parameters), and any
 // camelCase tag lowercased. The namespace now rides on the AST node, read off
-// the tree DOMParser already built - TODOS/2026-08-24.svg-namespace.md
+// the tree DOMParser already built - RECORD/2026-08-24.svg-namespace.md
 describe("svg", () => {
   let container: HTMLDivElement
 
@@ -1939,7 +1939,7 @@ describe("svg", () => {
   // trade `Td` had with `<td>`), so every SVG tag somebody might name a
   // component after - Text, Path, Filter, Marker, Circle - was reachable that
   // way. A lowercase tag resolves to no component now, whatever is in scope:
-  // TODOS/2026-08-25.component-tag-prefix.md
+  // RECORD/2026-08-25.component-tag-prefix.md
   it("is not captured by a scope key of the same name", () => {
     render(`<div><svg><circle r="4" /></svg></div>`, { Circle: parseComponent(`<b class="taken">tomado</b>`) })
 
@@ -1972,11 +1972,11 @@ describe("svg", () => {
   // rewrite turns `:viewBox` into `:view-box` before the parse, and SVG has no
   // such attribute. The name is resolved against the parser's own adjust table
   // now - the one that makes a written-out viewBox survive
-  // TODOS/2026-08-25.svg-attribute-names.md
+  // RECORD/2026-08-25.svg-attribute-names.md
   //
   // Hardcoded rather than asked, so these pin a semantics instead of agreeing
   // with the implementation. The last three are the ones that killed the IDL
-  // trick this replaces (TODOS/2026-08-24.svg-namespace.md)
+  // trick this replaces (RECORD/2026-08-24.svg-namespace.md)
   const CAMEL_ATTRS: [tag: string, attribute: string][] = [
     ["svg", "viewBox"],
     ["svg", "preserveAspectRatio"],
@@ -2087,7 +2087,7 @@ describe("svg", () => {
 // non-HTML namespace, not SVG's - so most of this was true and untested. What
 // was NOT true is <annotation-xml>: the one tag in either foreign namespace
 // with a hyphen in it, and a hyphen is how this library recognizes a custom
-// element - TODOS/2026-08-24.mathml.md
+// element - RECORD/2026-08-24.mathml.md
 const MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 
 describe("mathml", () => {
@@ -2239,7 +2239,7 @@ describe("mathml", () => {
 
 // The pre-parse rename: <Circle /> reaches the HTML parser as <c79-circle>, so
 // no component tag is ever the native element it was named after.
-// TODOS/2026-08-25.component-tag-prefix.md
+// RECORD/2026-08-25.component-tag-prefix.md
 describe("the component tag rename", () => {
   let container: HTMLDivElement
 
@@ -2341,7 +2341,7 @@ describe("the component tag rename", () => {
 // Step 2 of the tag rename: a component instance renders in an element of its
 // own - <c79-name> - instead of a bare pair of comment anchors, and a
 // stylesheet can name the component to reach that box.
-// TODOS/2026-08-25.the-wrapper-and-the-css-rename.md
+// RECORD/2026-08-25.the-wrapper-and-the-css-rename.md
 describe("the component box", () => {
   let container: HTMLDivElement
 

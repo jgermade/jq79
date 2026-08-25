@@ -5,7 +5,7 @@
 // This exists because a stopwatch around a click, taken once per build on a
 // shared machine, cannot tell a 10% improvement from the weather: measuring
 // one build against *itself* on a busy box produced deltas from -23% to +50%
-// (see TODOS/2026-08-23.where-the-create-time-goes.md). A CI runner is a
+// (see RECORD/2026-08-23.where-the-create-time-goes.md). A CI runner is a
 // shared machine too. So the only number worth reading is a paired one, and
 // the only paired number worth believing is one whose sign holds across every
 // round.

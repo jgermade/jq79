@@ -3,7 +3,7 @@
 // src/jq79.ts resolves a bound camelCase SVG or MathML attribute name by asking
 // the HTML parser's own foreign-attribute adjustment table - the one that makes
 // a written-out viewBox survive - rather than shipping a copy of it
-// (TODOS/2026-08-25.svg-attribute-names.md). That design was measured in
+// (RECORD/2026-08-25.svg-attribute-names.md). That design was measured in
 // Chromium and jsdom. This is what says it holds in Firefox and WebKit too.
 //
 // Two levels, and only one of them is allowed to fail a build:
@@ -55,7 +55,7 @@ const flatten = name => name.replace(/-/g, "").toLowerCase()
 // setContent parses a whole document, where insertAdjacentHTML and innerHTML
 // both run the *fragment* algorithm. Using one of those here made the
 // innerHTML comparison below a test of a thing against itself: structurally
-// unable to fail, which is the exact vacuity TODOS/2026-08-24.clone-path-coverage-check.md
+// unable to fail, which is the exact vacuity RECORD/2026-08-24.clone-path-coverage-check.md
 // exists to catch. One document holds every probe, so this is one parse
 const inDocument = async (page, flats) => {
   const markup = flats.map((flat, index) => `<${TAG} data-probe="${index}" ${flat}="x"/>`).join("")
@@ -106,7 +106,7 @@ const probe = async (page, names, dashed, undashed) => {
 // others - the cross-engine table below printed "only <engine> ran" in all
 // three, every time, which is a comparison that structurally never happens.
 // Each job writes its answers out instead, and a job that needs them all does
-// the comparing. See TODOS/2026-08-25.svg-attribute-names.md
+// the comparing. See RECORD/2026-08-25.svg-attribute-names.md
 const compareReports = async (dir) => {
   const { readdir, readFile } = await import("node:fs/promises")
   const { join } = await import("node:path")

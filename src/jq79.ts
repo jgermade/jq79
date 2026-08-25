@@ -432,7 +432,7 @@ const removeRange = ({ first, last }: NodeRange) => {
 // removes several ranges that sit next to each other, in one DOM call each run
 // rather than one per node. A list dropping all its rows hands them over as a
 // single span: unlinking 10,000 rows one at a time is 40% of that operation,
-// profiled - see TODOS/2026-08-23.batch-range-removal.md. Runs are built by the
+// profiled - see RECORD/2026-08-23.batch-range-removal.md. Runs are built by the
 // caller, which is the only place that knows what else is going
 const removeRuns = (runs: NodeRange[]) => {
   runs.forEach(run => {
@@ -506,7 +506,7 @@ const scanComponentKey = (scope: Record<string, any>, tag: string): string | nul
 // a template renders before its setup script settles, so `const Row = await
 // $import(...)` arrives as a new store key *after* elements are on the page -
 // and a cached "no component called Row" that outlived the pass would never be
-// revisited. See TODOS/2026-08-23.component-key-scan.md
+// revisited. See RECORD/2026-08-23.component-key-scan.md
 // The memo answers for one *base* scope - the one the pass was opened with -
 // and nothing below it. A lookup walks from wherever it starts up to that base,
 // checking own keys as it goes (an :each item scope has two or three, a :with
@@ -562,7 +562,7 @@ const closeRenderPass = (outer: RenderPass) => {
 // An undashed lowercase tag resolves to nothing, whatever is in scope. That is
 // the other half of the capture this closes: a `Td` in scope no longer turns
 // every <td> under it into a component, and <mychip> no longer becomes MyChip
-// when the key arrives. See TODOS/2026-08-25.component-tag-prefix.md
+// when the key arrives. See RECORD/2026-08-25.component-tag-prefix.md
 const componentKeyOf = (node: TemplateNode, scope: Record<string, any>): string | null =>
   node.component !== undefined
     ? findComponentKey(scope, node.component)
@@ -869,7 +869,7 @@ const renderSlot = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 // unknown element nor its children, and `display: contents` is not the escape
 // hatch there that it is in HTML, so a wrapper could turn a diagram into a
 // blank. A foreign-namespace usage site keeps the anchors alone, as it always
-// had. See TODOS/2026-08-25.the-wrapper-and-the-css-rename.md
+// had. See RECORD/2026-08-25.the-wrapper-and-the-css-rename.md
 const COMPONENT_BOX_ATTR = "data-c79-box"
 
 const componentBox = (key: string, node: TemplateNode, shadow: boolean): DocumentFragment | HTMLElement => {
@@ -1294,11 +1294,11 @@ const createFor = (node: TemplateNode): Element =>
 // answer comes from the engine that will render the page, so it cannot disagree
 // with what that same engine does with the attribute written out.
 //
-// This is not the IDL trick TODOS/2026-08-24.svg-namespace.md buried. That one
+// This is not the IDL trick RECORD/2026-08-24.svg-namespace.md buried. That one
 // asked "which family does this name belong to", a question with no ground
 // truth, and Chromium answered wrong for stdDeviation, attributeName and
 // repeatCount. This asks the table that decides the static case, and it is
-// right for all three - see TODOS/2026-08-25.svg-attribute-names.md.
+// right for all three - see RECORD/2026-08-25.svg-attribute-names.md.
 const FOREIGN_PROBES: Record<string, [wrapper: string, tag: string]> = {
   "http://www.w3.org/2000/svg": ["svg", "feGaussianBlur"],
   "http://www.w3.org/1998/Math/MathML": ["math", "mi"],
@@ -1376,7 +1376,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 //
 // Worth -20 to -49% of create1k depending on how much fixed structure a row
 // has, and nothing at all on a row that has none. Measured, with the method and
-// the caveats, in TODOS/2026-08-24.clone-skeletons-measured.md.
+// the caveats, in RECORD/2026-08-24.clone-skeletons-measured.md.
 //
 // Two rules keep this from becoming the bug it could be:
 //
@@ -1391,7 +1391,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 //    single directive renderNode treats specially that CONTROL_ATTRS does not
 //    name, so it slipped through the generic `:<name>` clause. Adding to this
 //    list is the dangerous edit in this file - see
-//    TODOS/2026-08-24.more-holes-in-the-cloner.md.
+//    RECORD/2026-08-24.more-holes-in-the-cloner.md.
 // 2. **The interpreted path stays the fallback for everything else**, including
 //    every tag that could still turn into a component. The upgrade watch and
 //    the unresolved-component throw are not reimplemented here; they are never
@@ -1431,7 +1431,7 @@ export type DebugFlags = {
 // list's problem: `:html.allowed` is rejected by the two clauses below (a
 // control attr, and a dotted name), so an element carrying one is never planned
 // and renderNode stays the only place that warning can fire from - once per
-// render, as before. See TODOS/2026-08-25.html-in-the-cloner.md
+// render, as before. See RECORD/2026-08-25.html-in-the-cloner.md
 const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":attrs", ":value", ":checked", ":selected"])
 
 // What a hole can be, in the order renderNode registers them.
@@ -1578,7 +1578,7 @@ const skeletonPlans = new WeakMap<TemplateNode, SkeletonPlan | null>()
 
 // A definition rendered ONCE pays for a plan it never reuses: +23% at
 // MIN_SKELETON_ELEMENTS, +11.5% at six elements, measured in
-// TODOS/2026-08-24.one-shot-render-measured.md. So the plan is built on the
+// RECORD/2026-08-24.one-shot-render-measured.md. So the plan is built on the
 // SECOND render, not the first - a one-shot definition never builds one at all,
 // and a :each of 1,000 rows interprets row 1 and clones the other 999.
 //
@@ -1677,7 +1677,7 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
       // renderNode's effect with its `allowUrl` arm removed, because an element
       // carrying :html.allowed is never planned - the attribute is rejected by
       // plannableAttr, which is what keeps that directive's warning in exactly
-      // one place. TODOS/2026-08-25.html-in-the-cloner.md
+      // one place. RECORD/2026-08-25.html-in-the-cloner.md
       const el = target as Element
       const { expr } = op
       fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(expr, scope) ?? "")) })
@@ -1733,7 +1733,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // to walk plan.tags calling findComponentKey for each, because a variable
   // named `Td` made every <td> under it a component and `Map`, `Data`, `Table`,
   // `Form` and `Label` are all HTML tags somebody might name a component after.
-  // The rename is what retires that check - see TODOS/2026-08-25.component-tag-prefix.md
+  // The rename is what retires that check - see RECORD/2026-08-25.component-tag-prefix.md
   if (debugFlags.cloneSkeletons) {
     const plan = planOf(node)
     if (plan) return renderFromSkeleton(plan, scope, fx)
@@ -1789,7 +1789,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // itself replaced the moment something named AnnotationXml enters scope. The
   // namespace is the parser's answer to "where was this written", so ns !== undefined
   // means inside a <math> or an <svg>, where no component can live - the same
-  // argument plannableNode makes. See TODOS/2026-08-24.mathml.md
+  // argument plannableNode makes. See RECORD/2026-08-24.mathml.md
   const mayUpgrade = node.ns === undefined && (node.component !== undefined || node.tag.includes("-"))
   if (mayUpgrade) {
     let upgraded = false
@@ -1812,12 +1812,12 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // entries form allocates one array of pairs plus one two-element array per
   // attribute *per instance*. Nothing here reads the pairs as pairs, so the
   // allocation buys nothing and the garbage it makes is measurable - see
-  // TODOS/2026-08-23.where-the-create-time-goes.md
+  // RECORD/2026-08-23.where-the-create-time-goes.md
   for (const key in node.attrs) {
     const value = node.attrs[key]
     if (key.startsWith("@")) bindEvent(el, key, value, scope)
     else if (key === ":model" || key.startsWith(":model.")) {
-      // :model binds component tags only (see TODOS/2026-07-15.model-directive.md;
+      // :model binds component tags only (see RECORD/2026-07-15.model-directive.md;
       // the native-element form is parked there). Warn on a real element, but
       // not on a tag that may still upgrade into a component - the upgrade
       // re-renders through renderNestedComponent, models and all
@@ -1837,7 +1837,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // On a tag that may still upgrade this is a *parameter*, not an
       // attribute: leave it written verbatim, as before, so the upgrade's
       // renderNestedComponent still finds it. A component tag has no single
-      // root for an attribute to land on anyway (TODOS/2026-07-15.class-directive.md)
+      // root for an attribute to land on anyway (RECORD/2026-07-15.class-directive.md)
       if (mayUpgrade) el.setAttribute(key, value)
       else {
         const written = key.slice(1)
@@ -1946,7 +1946,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // written out rather than looped over a literal array: the loop allocated the
   // array *and* its closure for every element rendered - 8,000 of each per
   // create1k, almost all of them to find nothing. Same reason the attribute
-  // walk above is a `for...in` (TODOS/2026-08-23.where-the-create-time-goes.md)
+  // walk above is a `for...in` (RECORD/2026-08-23.where-the-create-time-goes.md)
   const checkedExpr = node.attrs[":checked"]
   if (checkedExpr !== undefined) {
     fx.effect(() => { (el as HTMLInputElement).checked = !!evalExpr(checkedExpr, scope) })
@@ -2150,7 +2150,7 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
   // one key per row, so a 1,000-row list paid 1,000 `with`-scoped calls through
   // the store proxy to discover that nothing had changed: most of the 37% of a
   // pass that goes on evaluating expressions
-  // (TODOS/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
+  // (RECORD/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
   // an index, a deeper path, a name from the outer scope - still goes through
   // evalExpr, and so does a non-object item, which keeps every diagnostic a
   // property read of a null row would have raised
@@ -2169,7 +2169,7 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
   // it was 9ms of removeRow's 25ms. Decided once, from the template, rather
   // than per row per render. The item name is deliberately not in this list:
   // nearly every binding reads it, and it is not what goes stale.
-  // See TODOS/2026-08-23.positional-refresh.md
+  // See RECORD/2026-08-23.positional-refresh.md
   const positionalNames = ["$index", ...(atName ? [atName] : [])]
   const readsPosition = mentionsAny(itemNode, positionalNames)
 
@@ -2191,7 +2191,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   // one key per row, so a 1,000-row list paid 1,000 `with`-scoped calls through
   // the store proxy to discover that nothing had changed: most of the 37% of a
   // pass that goes on evaluating expressions
-  // (TODOS/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
+  // (RECORD/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
   // an index, a deeper path, a name from the outer scope - still goes through
   // evalExpr, and so does a non-object item, which keeps every diagnostic a
   // property read of a null row would have raised
@@ -2425,7 +2425,7 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
 // <template> is the legitimate native use and must stay silent. A top-level one
 // never arrives here at all - parseComponentString lifts declarations out
 // before componentPartsFrom runs - so the position needs no exclusion.
-// See TODOS/2026-08-24.template-directive-warning.md
+// See RECORD/2026-08-24.template-directive-warning.md
 const TEMPLATE_DIRECTIVES = [":if", ":elseif", ":else", ":each"]
 
 const warnTemplateDirective = (node: TemplateNode, parent: TemplateNode | undefined) => {
@@ -2787,7 +2787,7 @@ const COMPONENT_TAG_RE = /^[A-Z]/
 // nothing leaves <c79-circle> rather than a plausible-looking <circle>.
 //
 // Every capitalized tag, not only the colliding ones: today's safe name is
-// tomorrow's element. See TODOS/2026-08-25.component-tag-prefix.md
+// tomorrow's element. See RECORD/2026-08-25.component-tag-prefix.md
 const COMPONENT_TAG_PREFIX = "c79-"
 
 const componentTagName = (tag: string): string =>
@@ -2893,7 +2893,7 @@ const scopeRules = (rules: CSSRuleList, scope: string) => {
 // `selectorText`. jsdom hands `Circle` back as written; an engine that hands
 // back `circle` would leave a rewrite made there matching nothing - green in
 // this repo's tests and inert in a browser. See
-// TODOS/2026-08-25.the-wrapper-and-the-css-rename.md
+// RECORD/2026-08-25.the-wrapper-and-the-css-rename.md
 //
 // Only a capitalized name with a lowercase letter in it is a component name
 // here: `DIV`, `A` and `SPAN` are shouty type selectors, which CSS has always
@@ -3862,7 +3862,7 @@ export class Component79 {
         // the key before the value: a typo carrying a boolean - `cloneSkeleton`
         // for `cloneSkeletons` - used to pass this guard, land in the flags and
         // come back in the return value, so a caller read "cloning is off" while
-        // it was still on. TODOS/2026-08-25.two-defects-a-review-found.md
+        // it was still on. RECORD/2026-08-25.two-defects-a-review-found.md
         // hasOwnProperty, not `in`: `in` walks the prototype chain, so
         // `debug({ toString: false })` passed this guard and landed on the flags
         if (!Object.prototype.hasOwnProperty.call(debugFlags, key)) {

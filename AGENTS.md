@@ -53,7 +53,7 @@ Every delta comes with that noise beside it, and one smaller than the noise is
 not a result. Neither is a single build measured against yesterday's numbers:
 one build against itself has swung -23% to +50% on `create1k`, on the same
 box, in the same hour - see
-[TODOS/2026-08-23.where-the-create-time-goes.md](TODOS/2026-08-23.where-the-create-time-goes.md).
+[RECORD/2026-08-23.where-the-create-time-goes.md](RECORD/2026-08-23.where-the-create-time-goes.md).
 
 ## Before you change the core
 
@@ -105,14 +105,14 @@ deliberate, so fix the cause rather than the exercise.
 
 ## Plans
 
-Design work that isn't code yet lives in [`TODOS/`](TODOS/), one file per
+Design work that isn't code yet lives in [`RECORD/`](RECORD/), one file per
 proposal, named `YYYY-MM-DD.<slug>.md` after the day it was written. Write the
 plan there *before* touching `src/` — the reasoning is the point, and it's what a
 future reader (or the next agent) needs in order to argue with the decision rather
 than rediscover it. A plan states the problem, the proposal, what it costs, what
 was rejected and why, and what's still open.
 
-**`TODOS/` files are append-only.** Never edit or delete what's already in one,
+**`RECORD/` files are append-only.** Never edit or delete what's already in one,
 even to fix something the file gets wrong. A plan is a record of what was believed
 on a given day, and rewriting it erases the only evidence of how the thinking
 moved. A superseded decision gets a new dated section appended to the bottom (or a

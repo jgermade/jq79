@@ -295,7 +295,7 @@ describe("multi-template files", () => {
       // came out lowercased, and the throw was suppressed because the element
       // existed. The rename removes the element - <DIV> is <c79-d-i-v> now - so
       // the capitalization is the whole claim, and a claim that resolves to
-      // nothing says so. TODOS/2026-08-25.component-tag-prefix.md
+      // nothing says so. RECORD/2026-08-25.component-tag-prefix.md
       expect(() => {
         new Component79(`<DIV class="shouty">x</DIV>`).render().mount(host)
       }).toThrow(/<DIV> is not defined/)

@@ -128,7 +128,7 @@ to everything downstream (`plannableNode`, `createFor`, `foreignAttrName`,
 `</circle>` closes `<c79-circle>` and swallows everything after it. What this
 buys, besides the collision: an undashed lowercase tag resolves to nothing, so
 the clone path no longer has to ask whether a scope key captured one of its tags.
-See [TODOS/2026-08-25.component-tag-prefix.md](../TODOS/2026-08-25.component-tag-prefix.md).
+See [RECORD/2026-08-25.component-tag-prefix.md](../RECORD/2026-08-25.component-tag-prefix.md).
 
 **The component box carries the parent's stamp, and the CSS rename runs before
 the parser.** An instance renders inside `<c79-name>` (step 2 of the same plan),
@@ -144,7 +144,7 @@ Two more things that look arbitrary and are not: the default
 `display: contents` rule is wrapped in `:where()` so any author rule outranks it,
 and a component inside `<svg>` or `<math>` gets **no** box, because SVG renders
 neither an unknown element nor its children. See
-[TODOS/2026-08-25.the-wrapper-and-the-css-rename.md](../TODOS/2026-08-25.the-wrapper-and-the-css-rename.md).
+[RECORD/2026-08-25.the-wrapper-and-the-css-rename.md](../RECORD/2026-08-25.the-wrapper-and-the-css-rename.md).
 
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same

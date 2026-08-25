@@ -247,7 +247,7 @@ describe("sanitizeHTML against evasion and mutation payloads", () => {
 
 // the destination policy: host patterns compiled by allowedHosts, consulted
 // by sanitizeHTML through the allowUrl option - always on top of the
-// protocol check, never instead of it. See TODOS/2026-07-15.html-allowed.md
+// protocol check, never instead of it. See RECORD/2026-07-15.html-allowed.md
 describe("allowedHosts", () => {
   const url = (u: string) => new URL(u)
 

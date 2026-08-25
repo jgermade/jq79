@@ -1,7 +1,7 @@
 // The corpus both the cross-engine check and tests/renderComponent.test.ts use.
 //
 // These are test corpora, not a shipped table - src/jq79.ts ships no list of
-// names at all, which is the whole point of TODOS/2026-08-25.svg-attribute-names.md.
+// names at all, which is the whole point of RECORD/2026-08-25.svg-attribute-names.md.
 // Nothing depends on them being complete: a name missing here is a name nobody
 // checked, not a name that renders wrong.
 
