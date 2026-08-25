@@ -634,7 +634,7 @@ describe("what a write wakes", () => {
   // the case the count comparison missed: notifyReplaced woke the key-set dep
   // only when the NUMBER of keys changed, so swapping one name for another left
   // Object.keys stale - shipped since notifyReplaced arrived, before 0.6.0
-  // (TODOS/2026-08-25.two-defects-a-review-found.md)
+  // (RECORD/2026-08-25.two-defects-a-review-found.md)
   it("wakes it when a replacement changes which keys there are, not how many", () => {
     const store = $reactive({ props: { a: 1, b: 2, c: 3, d: 4 } as Record<string, number> })
 
@@ -697,7 +697,7 @@ describe("what a write wakes", () => {
 })
 
 describe("a splice announced as the shift it is", () => {
-  // TODOS/2026-08-23.notify-a-splice.md. `data = data.filter(...)` used to look
+  // RECORD/2026-08-23.notify-a-splice.md. `data = data.filter(...)` used to look
   // like a wholesale replacement to the container diff - every index after the
   // cut holds a different object - and cost a sweep of the whole subtree
   const rows = (length: number) => Array.from({ length }, (_, id) => ({ id, label: `l${id}` }))

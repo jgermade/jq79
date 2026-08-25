@@ -432,7 +432,7 @@ const removeRange = ({ first, last }: NodeRange) => {
 // removes several ranges that sit next to each other, in one DOM call each run
 // rather than one per node. A list dropping all its rows hands them over as a
 // single span: unlinking 10,000 rows one at a time is 40% of that operation,
-// profiled - see TODOS/2026-08-23.batch-range-removal.md. Runs are built by the
+// profiled - see RECORD/2026-08-23.batch-range-removal.md. Runs are built by the
 // caller, which is the only place that knows what else is going
 const removeRuns = (runs: NodeRange[]) => {
   runs.forEach(run => {
@@ -506,7 +506,7 @@ const scanComponentKey = (scope: Record<string, any>, tag: string): string | nul
 // a template renders before its setup script settles, so `const Row = await
 // $import(...)` arrives as a new store key *after* elements are on the page -
 // and a cached "no component called Row" that outlived the pass would never be
-// revisited. See TODOS/2026-08-23.component-key-scan.md
+// revisited. See RECORD/2026-08-23.component-key-scan.md
 // The memo answers for one *base* scope - the one the pass was opened with -
 // and nothing below it. A lookup walks from wherever it starts up to that base,
 // checking own keys as it goes (an :each item scope has two or three, a :with
@@ -548,6 +548,31 @@ const closeRenderPass = (outer: RenderPass) => {
   tagMemo = outer.memo
   memoBase = outer.base
 }
+
+// which scope key a tag resolves to, and the only place that decides it. Two
+// spellings reach a component and nothing else does:
+//
+// - **the name the author capitalized**, read off `component` rather than off
+//   the tag, because the tag no longer holds it: the pre-parse rewrite renames
+//   <Circle /> to <c79-circle> precisely so the parser cannot build a native
+//   element from it (see componentTagName)
+// - **a dashed tag** - <drop-area> resolves DropArea - which is custom-element
+//   shaped and so cannot collide with a native element either
+//
+// An undashed lowercase tag resolves to nothing, whatever is in scope. That is
+// the other half of the capture this closes: a `Td` in scope no longer turns
+// every <td> under it into a component, and <mychip> no longer becomes MyChip
+// when the key arrives. See RECORD/2026-08-25.component-tag-prefix.md
+const componentKeyOf = (node: TemplateNode, scope: Record<string, any>): string | null =>
+  node.component !== undefined
+    ? findComponentKey(scope, node.component)
+    : node.tag.includes("-")
+      ? findComponentKey(scope, node.tag)
+      : null
+
+// what to call a tag in a message: the name the author wrote. A component tag's
+// `tag` is the renamed c79-* one, which nobody typed and nobody should read
+const tagLabel = (node: TemplateNode): string => node.component ?? node.tag
 
 const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
   if (!tagMemo) return scanComponentKey(scope, tag)
@@ -694,7 +719,7 @@ const partitionSlots = (node: TemplateNode): Record<string, SlotContent> => {
     // first wins, like two <template name="X"> in one file: a duplicate is a
     // typo, and the fix is to delete one - not to guess which
     if (name in contents) {
-      console.warn(`jq79: two <template ${slotAttrName(name)}> in <${node.tag}>; the second was ignored`)
+      console.warn(`jq79: two <template ${slotAttrName(name)}> in <${tagLabel(node)}>; the second was ignored`)
       return
     }
     contents[name] = { nodes: child.children, binder: child.attrs[attr] || undefined }
@@ -703,7 +728,7 @@ const partitionSlots = (node: TemplateNode): Record<string, SlotContent> => {
   const hasLoose = loose.some(isMeaningful)
   if (hasLoose && "default" in contents) {
     console.warn(
-      `jq79: <${node.tag}> has both a <template :slot> and content outside it - ` +
+      `jq79: <${tagLabel(node)}> has both a <template :slot> and content outside it - ` +
       "the <template> is the default slot's content, and the rest was ignored"
     )
   } else if (hasLoose) {
@@ -824,6 +849,44 @@ const renderSlot = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   return wrapper
 }
 
+// the element a component instance renders in - <c79-user-card> - and the
+// reason step 2 of the tag rename exists: a component stops being a pair of
+// comments around loose content and becomes a box that names itself in the
+// inspector and can be addressed by name in CSS.
+//
+// Named after the *component*, not the usage site, so `<UserCard />` and
+// `<user-card>` render the same box and a stylesheet has one name to target.
+//
+// It carries the PARENT's scope stamp, which is not an arbitrary pick: a
+// <style scoped> is rewritten to demand the stamp of whoever wrote it, and
+// `Circle { … }` is written by the parent. The stamp is already on the node -
+// stampScope walks the parent's template and the component tag is part of it -
+// and today it is dropped for want of an element to put it on. The child's own
+// root still carries no stamp from the parent, so a parent gets the box and
+// never what is inside it.
+//
+// EXCEPT inside <svg> or <math>: SVG's rendering model renders neither an
+// unknown element nor its children, and `display: contents` is not the escape
+// hatch there that it is in HTML, so a wrapper could turn a diagram into a
+// blank. A foreign-namespace usage site keeps the anchors alone, as it always
+// had. See RECORD/2026-08-25.the-wrapper-and-the-css-rename.md
+const COMPONENT_BOX_ATTR = "data-c79-box"
+
+const componentBox = (key: string, node: TemplateNode, shadow: boolean): DocumentFragment | HTMLElement => {
+  if (node.ns !== undefined) return document.createDocumentFragment()
+  const box = document.createElement(componentTagName(key))
+  // the marker the default stylesheet selects on. A tag name cannot be
+  // prefix-matched in CSS, and one attribute is one rule for every box on the
+  // page - see wrapperStyle()
+  box.setAttribute(COMPONENT_BOX_ATTR, "")
+  const stamp = node.attrs[SCOPE_ATTR]
+  if (stamp !== undefined) box.setAttribute(SCOPE_ATTR, stamp)
+  // a shadow-rendered tree leaves document.head alone - its copy of the rule
+  // rides with the instance's own styles instead (see renderWith)
+  if (!shadow) ensureWrapperStyle()
+  return box
+}
+
 // <MyComponent :user :title="'str'"></MyComponent> - renders a child
 // component instance at this position. Props: `:name="expr"` evaluates expr
 // in the parent scope (`:name` alone is shorthand for `:name="name"`), plain
@@ -844,7 +907,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // of it - it holds the anchors, which never move on their own (see boundsOf)
   const anchor = document.createComment(key)
   const endAnchor = document.createComment(`/${key}`)
-  const wrapper = document.createDocumentFragment()
+  const wrapper = componentBox(key, node, shadow)
   wrapper.append(anchor, endAnchor)
 
   // the tag's children, as content for the child's <slot>s. Built once per
@@ -914,14 +977,14 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   Object.entries(models).forEach(([name, expr]) => {
     const prop = modelProp(name)
     if (props[prop] !== undefined) {
-      console.warn(`jq79: <${node.tag}> binds prop "${prop}" through both :${prop} and ${modelAttr(name)} - ${modelAttr(name)} wins`)
+      console.warn(`jq79: <${tagLabel(node)}> binds prop "${prop}" through both :${prop} and ${modelAttr(name)} - ${modelAttr(name)} wins`)
     }
     props[prop] = expr
     // an expression that can't be an assignment target is a wiring mistake -
     // say so now, not on the first update that silently goes nowhere
     if (compileExpr(assignment(expr), ["$value"]) === null) {
       unassignable.add(name)
-      console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${node.tag}> will be dropped`)
+      console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${tagLabel(node)}> will be dropped`)
     }
   })
 
@@ -962,14 +1025,14 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       if (!unfilled?.has(key) || reported.has("unfilled")) return
       reported.add("unfilled")
       console.error(
-        `jq79: <${node.tag}> is declared as a prop and the parent passed nothing - nothing renders here. ` +
+        `jq79: <${tagLabel(node)}> is declared as a prop and the parent passed nothing - nothing renders here. ` +
         `Pass it (:${key}="…"), or drop it from the signature to use the one declared in this file.`
       )
       return
     }
     if (reported.has("type")) return
     reported.add("type")
-    console.error(`jq79: <${node.tag}> is ${typeof value}, not a component - nothing renders here`)
+    console.error(`jq79: <${tagLabel(node)}> is ${typeof value}, not a component - nothing renders here`)
   }
 
   fx.effect(() => {
@@ -1020,7 +1083,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
         if (expr === undefined) {
           if (!warned.has(name)) {
             warned.add(name)
-            console.warn(`jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
+            console.warn(`jq79: <${tagLabel(node)}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
           }
           return false
         }
@@ -1058,7 +1121,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // cuts an effect that wakes itself
     if (nestingDepth >= MAX_NESTING_DEPTH) {
       console.error(
-        `jq79: <${node.tag}> is ${MAX_NESTING_DEPTH} levels deep inside itself; giving up here. ` +
+        `jq79: <${tagLabel(node)}> is ${MAX_NESTING_DEPTH} levels deep inside itself; giving up here. ` +
         "A component that renders itself stops when its data stops - is there a cycle in it?"
       )
       return
@@ -1231,11 +1294,11 @@ const createFor = (node: TemplateNode): Element =>
 // answer comes from the engine that will render the page, so it cannot disagree
 // with what that same engine does with the attribute written out.
 //
-// This is not the IDL trick TODOS/2026-08-24.svg-namespace.md buried. That one
+// This is not the IDL trick RECORD/2026-08-24.svg-namespace.md buried. That one
 // asked "which family does this name belong to", a question with no ground
 // truth, and Chromium answered wrong for stdDeviation, attributeName and
 // repeatCount. This asks the table that decides the static case, and it is
-// right for all three - see TODOS/2026-08-25.svg-attribute-names.md.
+// right for all three - see RECORD/2026-08-25.svg-attribute-names.md.
 const FOREIGN_PROBES: Record<string, [wrapper: string, tag: string]> = {
   "http://www.w3.org/2000/svg": ["svg", "feGaussianBlur"],
   "http://www.w3.org/1998/Math/MathML": ["math", "mi"],
@@ -1313,7 +1376,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 //
 // Worth -20 to -49% of create1k depending on how much fixed structure a row
 // has, and nothing at all on a row that has none. Measured, with the method and
-// the caveats, in TODOS/2026-08-24.clone-skeletons-measured.md.
+// the caveats, in RECORD/2026-08-24.clone-skeletons-measured.md.
 //
 // Two rules keep this from becoming the bug it could be:
 //
@@ -1328,7 +1391,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 //    single directive renderNode treats specially that CONTROL_ATTRS does not
 //    name, so it slipped through the generic `:<name>` clause. Adding to this
 //    list is the dangerous edit in this file - see
-//    TODOS/2026-08-24.more-holes-in-the-cloner.md.
+//    RECORD/2026-08-24.more-holes-in-the-cloner.md.
 // 2. **The interpreted path stays the fallback for everything else**, including
 //    every tag that could still turn into a component. The upgrade watch and
 //    the unresolved-component throw are not reimplemented here; they are never
@@ -1368,7 +1431,7 @@ export type DebugFlags = {
 // list's problem: `:html.allowed` is rejected by the two clauses below (a
 // control attr, and a dotted name), so an element carrying one is never planned
 // and renderNode stays the only place that warning can fire from - once per
-// render, as before. See TODOS/2026-08-25.html-in-the-cloner.md
+// render, as before. See RECORD/2026-08-25.html-in-the-cloner.md
 const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":attrs", ":value", ":checked", ":selected"])
 
 // What a hole can be, in the order renderNode registers them.
@@ -1393,12 +1456,14 @@ const plannableAttr = (name: string): boolean => {
 const plannableNode = (node: TemplateNode): boolean => {
   if (node.component || node.tag.includes("-")) return false
   if (isSlotTag(node.tag) || node.tag === "template") return false
-  // an unknown tag may still become a component, so it stays interpreted - the
-  // upgrade watch lives there and a clone cannot carry it. A *foreign* element
-  // skips the test rather than failing it: <circle> is an HTMLUnknownElement
-  // when built with createElement, which is exactly the mistake this used to
-  // make, and nothing in an <svg> subtree can ever become a component (no SVG
-  // tag is uppercase-initial, so none is ever stamped as one)
+  // an unknown tag stays interpreted. It can no longer become a component - the
+  // upgrade watch narrowed to a stamped or dashed tag, both of which are
+  // rejected above - so this is a conservative rule rather than a load-bearing
+  // one: an undashed name the parser does not know is a typo or a custom
+  // element that can never register, and nothing is measured to be gained by
+  // cloning it. A *foreign* element skips the test rather than failing it:
+  // <circle> is an HTMLUnknownElement when built with createElement, which is
+  // exactly the mistake this used to make
   if (node.ns === undefined && document.createElement(node.tag) instanceof HTMLUnknownElement) return false
   for (const key in node.attrs) if (!plannableAttr(key)) return false
   // an element with :text or :html has no children on either path (see
@@ -1425,13 +1490,12 @@ type SkeletonOp =
   | { kind: "checked"; path: number[]; expr: string }
   | { kind: "selected"; path: number[]; expr: string }
 
-type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[]; tags: string[] }
+type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[] }
 
 // mirrors renderNode's own order: the attribute walk (events and attribute
 // bindings as they appear), then :class, then the children. Effects run in
 // registration order, so this is not cosmetic
-const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], tags: Set<string>): Element => {
-  tags.add(node.tag)
+const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[]): Element => {
   const el = createFor(node)
 
   let classExpr: string | undefined
@@ -1478,7 +1542,7 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
       } else el.appendChild(document.createTextNode(child))
       return
     }
-    el.appendChild(buildSkeleton(child, [...path, index], ops, tags))
+    el.appendChild(buildSkeleton(child, [...path, index], ops))
   })
 
   // after the children, because renderNode registers them there and for its
@@ -1514,7 +1578,7 @@ const skeletonPlans = new WeakMap<TemplateNode, SkeletonPlan | null>()
 
 // A definition rendered ONCE pays for a plan it never reuses: +23% at
 // MIN_SKELETON_ELEMENTS, +11.5% at six elements, measured in
-// TODOS/2026-08-24.one-shot-render-measured.md. So the plan is built on the
+// RECORD/2026-08-24.one-shot-render-measured.md. So the plan is built on the
 // SECOND render, not the first - a one-shot definition never builds one at all,
 // and a :each of 1,000 rows interprets row 1 and clones the other 999.
 //
@@ -1545,9 +1609,8 @@ const planOf = (node: TemplateNode): SkeletonPlan | null => {
   let plan: SkeletonPlan | null = null
   if (plannableNode(node) && countElements(node) >= MIN_SKELETON_ELEMENTS) {
     const ops: SkeletonOp[] = []
-    const tags = new Set<string>()
-    const skeleton = buildSkeleton(node, [], ops, tags)
-    plan = { skeleton, ops, tags: Array.from(tags) }
+    const skeleton = buildSkeleton(node, [], ops)
+    plan = { skeleton, ops }
   }
   skeletonPlans.set(node, plan)
   return plan
@@ -1614,7 +1677,7 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
       // renderNode's effect with its `allowUrl` arm removed, because an element
       // carrying :html.allowed is never planned - the attribute is rejected by
       // plannableAttr, which is what keeps that directive's warning in exactly
-      // one place. TODOS/2026-08-25.html-in-the-cloner.md
+      // one place. RECORD/2026-08-25.html-in-the-cloner.md
       const el = target as Element
       const { expr } = op
       fx.effect(() => { el.innerHTML = sanitizeHTML(String(evalExpr(expr, scope) ?? "")) })
@@ -1661,57 +1724,63 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   if (isSlotTag(node.tag)) return renderSlot(node, scope, fx, shadow)
   if (node.tag === "template" && slotAttrOf(node) !== undefined) return misplacedSlotContent(node)
 
-  const componentKey = findComponentKey(scope, node.tag)
+  const componentKey = componentKeyOf(node, scope)
   if (componentKey) return renderNestedComponent(componentKey, node, scope, fx, shadow)
 
-  // A planned subtree is cloned - unless a scope key captures one of its tags.
-  // findComponentKey strips dashes and lowercases, and every PascalCase scope
-  // key participates, so a variable named `Td` makes every <td> under it a
-  // component and `Map`, `Data`, `Table`, `Form` and `Label` are all HTML tags
-  // somebody might name a component after. "It is a known HTML tag" is not on
-  // its own an answer; this is. It costs what the interpreted path already
-  // pays - one findComponentKey per distinct tag, memoized per render pass
+  // A planned subtree is cloned, and no scope key can take one of its tags away
+  // any more: a plannable tag is undashed, unstamped and a name the HTML parser
+  // knows, which is exactly the set componentKeyOf answers "no" to. This used
+  // to walk plan.tags calling findComponentKey for each, because a variable
+  // named `Td` made every <td> under it a component and `Map`, `Data`, `Table`,
+  // `Form` and `Label` are all HTML tags somebody might name a component after.
+  // The rename is what retires that check - see RECORD/2026-08-25.component-tag-prefix.md
   if (debugFlags.cloneSkeletons) {
     const plan = planOf(node)
-    if (plan && !plan.tags.some(tag => findComponentKey(scope, tag))) return renderFromSkeleton(plan, scope, fx)
+    if (plan) return renderFromSkeleton(plan, scope, fx)
   }
 
   const el = createFor(node)
 
-  // <UserCrad /> - written as a component (node.component), resolving to no
-  // component, and not an element either. Nothing else on the page can supply
-  // the name once every script has settled, so this renders no markup, no
-  // styles, no children and no script, forever, and says so by throwing rather
-  // than leaving a hole where a region of the page was meant to be.
+  // <UserCrad /> - written as a component (node.component) and resolving to
+  // none. Nothing else on the page can supply the name once every script has
+  // settled, so this renders no markup, no styles, no children and no script,
+  // forever, and says so by throwing rather than leaving a hole where a region
+  // of the page was meant to be.
   //
-  // All three conditions carry weight. Without the capitalization <lable> and
-  // <svg> would be fatal (createElement builds SVG names in the HTML namespace,
-  // so an <svg> is an HTMLUnknownElement too); without the element check <DIV>
-  // would be, though it renders a perfectly good div; and without the pending
-  // count a factory that awaits $mounted() before returning its components
-  // could never render one, which is exactly what the watcher below is for.
+  // Two conditions now, where there were three. The capitalization still
+  // carries the claim - <lable>, <svg> and <my-widget> are not judged - but the
+  // element check is gone with the rename: a stamped tag is a c79-* one, so it
+  // is never the element it was named after, and <DIV> is judged like any other
+  // capitalized tag. It is a component claim that resolves to nothing, and it
+  // says so instead of quietly rendering a div.
   //
-  // An *absent* count is a fourth case, and it is not zero: renderComponent()
-  // renders a template against a store somebody else owns and assembles, so
-  // nothing there has finished and nothing says a key can't still be written
-  // in. The claim being tested is a component's claim about its own scripts,
-  // and where none was made the tag waits for the upgrade, as it always has.
+  // The pending count still carries the rest: without it a factory that awaits
+  // $mounted() before returning its components could never render one, which is
+  // exactly what the watcher below is for. An *absent* count is its own case,
+  // and it is not zero: renderComponent() renders a template against a store
+  // somebody else owns and assembles, so nothing there has finished and nothing
+  // says a key can't still be written in. The claim being tested is a
+  // component's claim about its own scripts, and where none was made the tag
+  // waits for the upgrade, as it always has.
   //
   // Written without a local for the count because renderNode is on the stack
   // for the whole of the subtree below it, so a slot here is a slot per level
   // of a component nested inside itself - see renderWith
-  if (node.component && el instanceof HTMLUnknownElement && ((scope as any)[PENDING_SCRIPTS] as PendingScripts | undefined)?.count === 0) {
+  if (node.component !== undefined && ((scope as any)[PENDING_SCRIPTS] as PendingScripts | undefined)?.count === 0) {
     throw unresolvedComponent(node.component, scope)
   }
 
-  // a tag that isn't standard HTML but has no matching scope key *yet* may be
-  // a component that arrives later (e.g. an async factory script exposing an
-  // imported component after `await`). Watch for the key: the effect tracks
-  // no deps, so it only re-runs on the store's new-key sweep, and swaps the
-  // placeholder element for the component exactly once
-  // dashes included, because findComponentKey matches them case-insensitively
-  // with dashes stripped: <drop-area> resolves DropArea, so a dashed tag is a
-  // possible component too, not only a custom element.
+  // a tag that may still name a component whose key has not arrived yet (an
+  // async factory script exposing an imported component after `await`). Watch
+  // for the key: the effect tracks no deps, so it only re-runs on the store's
+  // new-key sweep, and swaps the placeholder element for the component exactly
+  // once.
+  //
+  // The two spellings componentKeyOf accepts, and no others - a capitalized tag
+  // (which is a c79-* element here, since it resolved to nothing) and a dashed
+  // one, because <drop-area> resolves DropArea. An unknown *undashed* lowercase
+  // tag no longer waits: <mychip> is a typo or a custom element that never
+  // registered, not a component that has yet to arrive.
   //
   // Never for a foreign element, and the dash clause is why that has to be said
   // out loud: <annotation-xml> is the one MathML or SVG tag with a hyphen in it,
@@ -1720,13 +1789,13 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // itself replaced the moment something named AnnotationXml enters scope. The
   // namespace is the parser's answer to "where was this written", so ns !== undefined
   // means inside a <math> or an <svg>, where no component can live - the same
-  // argument plannableNode makes. See TODOS/2026-08-24.mathml.md
-  const mayUpgrade = node.ns === undefined && (el instanceof HTMLUnknownElement || node.tag.includes("-"))
+  // argument plannableNode makes. See RECORD/2026-08-24.mathml.md
+  const mayUpgrade = node.ns === undefined && (node.component !== undefined || node.tag.includes("-"))
   if (mayUpgrade) {
     let upgraded = false
     fx.effect(() => {
       if (upgraded) return
-      const key = findComponentKey(scope, node.tag)
+      const key = componentKeyOf(node, scope)
       if (!key) return
       upgraded = true
       const replacement = renderNestedComponent(key, node, scope, fx, shadow)
@@ -1743,17 +1812,17 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // entries form allocates one array of pairs plus one two-element array per
   // attribute *per instance*. Nothing here reads the pairs as pairs, so the
   // allocation buys nothing and the garbage it makes is measurable - see
-  // TODOS/2026-08-23.where-the-create-time-goes.md
+  // RECORD/2026-08-23.where-the-create-time-goes.md
   for (const key in node.attrs) {
     const value = node.attrs[key]
     if (key.startsWith("@")) bindEvent(el, key, value, scope)
     else if (key === ":model" || key.startsWith(":model.")) {
-      // :model binds component tags only (see TODOS/2026-07-15.model-directive.md;
+      // :model binds component tags only (see RECORD/2026-07-15.model-directive.md;
       // the native-element form is parked there). Warn on a real element, but
       // not on a tag that may still upgrade into a component - the upgrade
       // re-renders through renderNestedComponent, models and all
       if (!mayUpgrade) {
-        console.warn(`jq79: ${key} on <${node.tag}> does nothing - :model binds component tags only (for now)`)
+        console.warn(`jq79: ${key} on <${tagLabel(node)}> does nothing - :model binds component tags only (for now)`)
       }
     } else if (isControlAttr(key)) {
       // a directive of its own, bound further down (or by renderNodes)
@@ -1768,7 +1837,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // On a tag that may still upgrade this is a *parameter*, not an
       // attribute: leave it written verbatim, as before, so the upgrade's
       // renderNestedComponent still finds it. A component tag has no single
-      // root for an attribute to land on anyway (TODOS/2026-07-15.class-directive.md)
+      // root for an attribute to land on anyway (RECORD/2026-07-15.class-directive.md)
       if (mayUpgrade) el.setAttribute(key, value)
       else {
         const written = key.slice(1)
@@ -1877,7 +1946,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // written out rather than looped over a literal array: the loop allocated the
   // array *and* its closure for every element rendered - 8,000 of each per
   // create1k, almost all of them to find nothing. Same reason the attribute
-  // walk above is a `for...in` (TODOS/2026-08-23.where-the-create-time-goes.md)
+  // walk above is a `for...in` (RECORD/2026-08-23.where-the-create-time-goes.md)
   const checkedExpr = node.attrs[":checked"]
   if (checkedExpr !== undefined) {
     fx.effect(() => { (el as HTMLInputElement).checked = !!evalExpr(checkedExpr, scope) })
@@ -2081,7 +2150,7 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
   // one key per row, so a 1,000-row list paid 1,000 `with`-scoped calls through
   // the store proxy to discover that nothing had changed: most of the 37% of a
   // pass that goes on evaluating expressions
-  // (TODOS/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
+  // (RECORD/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
   // an index, a deeper path, a name from the outer scope - still goes through
   // evalExpr, and so does a non-object item, which keeps every diagnostic a
   // property read of a null row would have raised
@@ -2100,7 +2169,7 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
   // it was 9ms of removeRow's 25ms. Decided once, from the template, rather
   // than per row per render. The item name is deliberately not in this list:
   // nearly every binding reads it, and it is not what goes stale.
-  // See TODOS/2026-08-23.positional-refresh.md
+  // See RECORD/2026-08-23.positional-refresh.md
   const positionalNames = ["$index", ...(atName ? [atName] : [])]
   const readsPosition = mentionsAny(itemNode, positionalNames)
 
@@ -2122,7 +2191,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   // one key per row, so a 1,000-row list paid 1,000 `with`-scoped calls through
   // the store proxy to discover that nothing had changed: most of the 37% of a
   // pass that goes on evaluating expressions
-  // (TODOS/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
+  // (RECORD/2026-08-23.where-the-list-operations-go.md). Anything else - a call,
   // an index, a deeper path, a name from the outer scope - still goes through
   // evalExpr, and so does a non-object item, which keeps every diagnostic a
   // property read of a null row would have raised
@@ -2321,7 +2390,7 @@ const warnChainAttrs = (node: TemplateNode) => {
   // allocated only on the way to a warning, never on the path that finds none
   const present = [hasIf ? ":if" : null, hasElseif ? ":elseif" : null, hasElse ? ":else" : null].filter(Boolean)
   console.warn(
-    `jq79: ${present.join(" and ")} on the same <${node.tag}> - only ${present[0]} applies; ` +
+    `jq79: ${present.join(" and ")} on the same <${tagLabel(node)}> - only ${present[0]} applies; ` +
     "the branches of a chain are sibling elements, one directive each"
   )
 }
@@ -2334,9 +2403,9 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
   const attr = ":elseif" in node.attrs ? ":elseif" : ":else"
   console.warn(
     afterClosedChain
-      ? `jq79: a second ${attr} on <${node.tag}> - the chain before it already ended with :else, ` +
+      ? `jq79: a second ${attr} on <${tagLabel(node)}> - the chain before it already ended with :else, ` +
         "which closes it. One :if, any number of :elseif, at most one :else"
-      : `jq79: ${attr} on <${node.tag}> continues no :if - it renders unconditionally. ` +
+      : `jq79: ${attr} on <${tagLabel(node)}> continues no :if - it renders unconditionally. ` +
         "A chain is :if, then :elseif, then :else, on adjacent siblings: anything but whitespace between them breaks it"
   )
 }
@@ -2356,7 +2425,7 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
 // <template> is the legitimate native use and must stay silent. A top-level one
 // never arrives here at all - parseComponentString lifts declarations out
 // before componentPartsFrom runs - so the position needs no exclusion.
-// See TODOS/2026-08-24.template-directive-warning.md
+// See RECORD/2026-08-24.template-directive-warning.md
 const TEMPLATE_DIRECTIVES = [":if", ":elseif", ":else", ":each"]
 
 const warnTemplateDirective = (node: TemplateNode, parent: TemplateNode | undefined) => {
@@ -2675,12 +2744,10 @@ const SLOT_TAG_RE = /^slot\./i
 // <script>/<style> bodies split out, only start-tag interiors scanned, quoted
 // values consumed whole.
 //
-// Two name positions, not one: attribute names (`:model.firstName`) and the
-// dotted tag names (`<slot.firstName>`), whose closing halves are rewritten
-// too or the parser sees a mismatched pair. Component tags are deliberately
-// left alone - findComponentKey already matches them case-insensitively with
-// dashes stripped, so <UserCard> needs no help and rewriting it would only
-// obscure what the author wrote
+// Three name positions, not one: attribute names (`:model.firstName`), the
+// dotted tag names (`<slot.firstName>`) and component tags (`<UserCard>`,
+// renamed by componentTagName below). The last two have closing halves that are
+// rewritten too, or the parser sees a mismatched pair
 const kebabTagName = (tag: string): string =>
   SLOT_TAG_RE.test(tag) ? `slot.${camelToKebab(tag.slice("slot.".length))}` : tag
 
@@ -2700,6 +2767,41 @@ const kebabTagName = (tag: string): string =>
 // <Card :component="Widget" />
 const COMPONENT_TAG_ATTR = ":jq79-component"
 const COMPONENT_TAG_RE = /^[A-Z]/
+
+// A component tag is renamed to a name the HTML parser cannot resolve to an
+// element, because a PascalCase tag is lowercased by the parser and what comes
+// out is *the native element of that name*: <Circle /> inside an <svg> is a
+// circle, <Tr /> is a row placed inside its <tbody>, and 70 of 90 ordinary
+// one-word component names collide the same way. The claim the author made -
+// this is a component - survives in the stamp, and the tag stops being a name
+// anything downstream can mistake for an element's.
+//
+//   <Circle />    ->  <c79-circle :jq79-component="Circle" />
+//   </UserCard>   ->  </c79-user-card>
+//
+// Hyphenated, and that is not cosmetic: `c79-circle` is a valid custom element
+// name, so the parser builds an HTMLElement for it, where `c79circle` would be
+// an HTMLUnknownElement. The hyphen is the shape the platform reserves for what
+// is not native, which is the principle this rests on applied to our own tags -
+// and it reads for itself in the inspector, where a component that resolves to
+// nothing leaves <c79-circle> rather than a plausible-looking <circle>.
+//
+// Every capitalized tag, not only the colliding ones: today's safe name is
+// tomorrow's element. See RECORD/2026-08-25.component-tag-prefix.md
+const COMPONENT_TAG_PREFIX = "c79-"
+
+const componentTagName = (tag: string): string =>
+  `${COMPONENT_TAG_PREFIX}${camelToKebab(tag[0].toLowerCase() + tag.slice(1))}`
+
+const rewriteTagName = (tag: string): string =>
+  COMPONENT_TAG_RE.test(tag) ? componentTagName(tag) : kebabTagName(tag)
+
+// the closing half of the rename. OPEN_TAG_RE matches open tags only, which was
+// fine while both ends lowercased to the same name; rename one end and not the
+// other and `<c79-circle>` gets closed by `</circle>`, nesting everything that
+// follows inside it. </slot.x> keeps its own pass - it is lowercase and
+// unaffected by this one
+const CLOSE_COMPONENT_RE = /<\/([A-Z][\w.-]*)(\s*)>/g
 
 // appends the stamp inside the tag, *before* a self-closing slash: this pass
 // runs first and expandSelfClosingTags still has to recognize the `/>` that
@@ -2725,9 +2827,10 @@ const expandNameCase = (src: string): string =>
               const rewritten = attrs.replace(ATTR_NAME_RE, (whole, space: string | undefined, name: string | undefined) =>
                 name === undefined ? whole : `${space}${camelToKebab(name)}`
               )
-              return `<${kebabTagName(tag)}${stampComponentTag(tag, rewritten)}>`
+              return `<${rewriteTagName(tag)}${stampComponentTag(tag, rewritten)}>`
             })
             .replace(CLOSE_SLOT_RE, (_match, suffix: string, space: string) => `</slot.${camelToKebab(suffix)}${space}>`)
+            .replace(CLOSE_COMPONENT_RE, (_match, tag: string, space: string) => `</${componentTagName(tag)}${space}>`)
     )
     .join("")
 
@@ -2777,6 +2880,100 @@ const scopeRules = (rules: CSSRuleList, scope: string) => {
     if (rule instanceof CSSStyleRule) rule.selectorText = scopeSelector(rule.selectorText, scope)
     else if (rule instanceof CSSGroupingRule) scopeRules(rule.cssRules, scope)
   })
+}
+
+// A component's name in a selector - `Circle { color: red }` - names the box
+// the component renders in (see renderNestedComponent), so it is rewritten to
+// the tag that box actually has. Same rename componentTagName does for markup,
+// so the author types the prefix in neither place.
+//
+// It runs on the SOURCE, before any CSS parser sees it, and that is not a
+// stylistic choice: in an HTML document a type selector matches
+// case-insensitively, and an engine is free to lowercase it when it serializes
+// `selectorText`. jsdom hands `Circle` back as written; an engine that hands
+// back `circle` would leave a rewrite made there matching nothing - green in
+// this repo's tests and inert in a browser. See
+// RECORD/2026-08-25.the-wrapper-and-the-css-rename.md
+//
+// Only a capitalized name with a lowercase letter in it is a component name
+// here: `DIV`, `A` and `SPAN` are shouty type selectors, which CSS has always
+// matched case-insensitively, and stay elements. That differs from the markup
+// rule on purpose - there, capitalization is the whole claim - and it leaves
+// one corner: a component named with no lowercase letter at all cannot be
+// styled by name
+const COMPONENT_SELECTOR_RE = /(^|[\s>+~,(])([A-Z][A-Za-z0-9]*)(?![\w-])/g
+const HAS_LOWER_RE = /[a-z]/
+
+const renameSelectorNames = (selectors: string): string =>
+  selectors.replace(COMPONENT_SELECTOR_RE, (whole, before: string, name: string) =>
+    HAS_LOWER_RE.test(name) ? `${before}${componentTagName(name)}` : whole
+  )
+
+// at-rules whose block holds rules rather than declarations, so what is inside
+// their braces is selector position again
+const NESTED_AT_RULE_RE = /^\s*@(media|supports|container|layer|scope|document)\b/i
+const AT_RULE_RE = /^\s*@/
+
+// the scan: strings, comments and nesting tracked so a rename only ever lands
+// in selector position. A declaration block is skipped whole (`content: "A"`,
+// `font-family: Georgia` are not selectors), and so is an at-rule's own prelude
+// (`@import url(Foo.css)` names a file, not a component).
+//
+// A string or a comment inside a selector is emitted verbatim and *ends* the
+// chunk being renamed, so `[title="a > Boo"]` keeps its Boo. The at-rule test
+// reads the whole prelude rather than the last chunk, or a `@supports
+// (font-family: "X")` would stop looking like one the moment its string was
+// split off
+const renameComponentSelectors = (css: string): string => {
+  let out = ""
+  let pending = "" // renamable text: selector source since the last verbatim run
+  let prelude = "" // everything since the last delimiter, for the at-rule test
+  const stack: boolean[] = [] // true = the block holds rules, not declarations
+  const inSelectorPosition = () => stack.length === 0 || stack[stack.length - 1]
+
+  const flush = () => {
+    out += inSelectorPosition() && !AT_RULE_RE.test(prelude) ? renameSelectorNames(pending) : pending
+    pending = ""
+  }
+  const verbatim = (text: string) => {
+    flush()
+    out += text
+    prelude += text
+  }
+  const delimiter = (char: string, holdsRules?: boolean) => {
+    flush()
+    out += char
+    prelude = ""
+    if (holdsRules !== undefined) stack.push(holdsRules)
+    else if (char === "}") stack.pop()
+  }
+
+  for (let i = 0; i < css.length; ) {
+    const char = css[i]
+    if (char === "/" && css[i + 1] === "*") {
+      const end = css.indexOf("*/", i + 2)
+      const stop = end === -1 ? css.length : end + 2
+      verbatim(css.slice(i, stop))
+      i = stop
+    } else if (char === '"' || char === "'") {
+      let j = i + 1
+      while (j < css.length && css[j] !== char) j += css[j] === "\\" ? 2 : 1
+      verbatim(css.slice(i, Math.min(j + 1, css.length)))
+      i = j + 1
+    } else if (char === "{") {
+      delimiter("{", NESTED_AT_RULE_RE.test(prelude))
+      i++
+    } else if (char === "}" || char === ";") {
+      delimiter(char)
+      i++
+    } else {
+      pending += char
+      prelude += char
+      i++
+    }
+  }
+  flush()
+  return out
 }
 
 // the CSS parser is the browser's own (no dependency, no hand-rolled parser).
@@ -2909,6 +3106,15 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
     }
   })
 
+  // a component's name in a selector becomes the tag its box actually has,
+  // once per definition and in `content` itself, so every path downstream gets
+  // it: document.head, the scoped rewrite below, and a shadow root (which uses
+  // `content` directly). A `lang` block is skipped for the same reason scoping
+  // skips it - it is not CSS yet
+  styles.forEach(style => {
+    if (!("lang" in style.attrs)) style.content = renameComponentSelectors(style.content)
+  })
+
   // scoping is resolved once, here: the stamped template and the scoped CSS
   // are what every instance of this definition renders and injects. An
   // uncompiled `lang` block is left as it was written - rewriting selectors
@@ -3012,6 +3218,30 @@ const sourceUrlComment = (filename: string | undefined, index: number): string =
 // `:host` rules only shadow rendering can have (`:host[data-jq79=...]` matches
 // nothing: the host element is outside the template, so it carries no stamp)
 const headStyle = (style: TagBlock): string => style.scoped ?? style.content
+
+// the one rule every component box needs: an element where there was none is a
+// box where there was none, and a component inside a flex or grid parent would
+// otherwise become an inline wrapper holding the real child. `display: contents`
+// removes the box and leaves the children in the parent's layout.
+//
+// `:where()` is load-bearing: it has zero specificity, so any author rule wins
+// without !important and without depending on which stylesheet the browser saw
+// first. `c79-panel { display: flex }` opts a component's box back into being a
+// box, which is the point of naming it.
+//
+// Not refcounted like a component's own styles: it is one constant rule for the
+// whole document, so it is injected on the first box and stays. The
+// isConnected check is what makes it survive a head somebody emptied
+const WRAPPER_STYLE = `:where([${COMPONENT_BOX_ATTR}]) { display: contents }`
+
+let wrapperStyleEl: HTMLStyleElement | null = null
+
+const ensureWrapperStyle = () => {
+  if (wrapperStyleEl?.isConnected) return
+  wrapperStyleEl = document.createElement("style")
+  wrapperStyleEl.textContent = WRAPPER_STYLE
+  document.head.appendChild(wrapperStyleEl)
+}
 
 // document.head styles are shared by content and refcounted, so N instances
 // of the same component (e.g. one per :each item) inject a single <style> tag
@@ -3632,7 +3862,7 @@ export class Component79 {
         // the key before the value: a typo carrying a boolean - `cloneSkeleton`
         // for `cloneSkeletons` - used to pass this guard, land in the flags and
         // come back in the return value, so a caller read "cloning is off" while
-        // it was still on. TODOS/2026-08-25.two-defects-a-review-found.md
+        // it was still on. RECORD/2026-08-25.two-defects-a-review-found.md
         // hasOwnProperty, not `in`: `in` walks the prototype chain, so
         // `debug({ toString: false })` passed this guard and landed on the flags
         if (!Object.prototype.hasOwnProperty.call(debugFlags, key)) {
@@ -3958,11 +4188,18 @@ export class Component79 {
     }
 
     if (shadow) {
-      this.styleEls = this.styles.map(style => {
+      // document.head cannot reach into a shadow root, so every component box
+      // rendered inside this one needs the wrapper rule here. It goes last, and
+      // the position carries nothing: :where() has no specificity, so an author
+      // rule wins wherever it sits. What it does buy is that "the shadow root's
+      // style" still means the component's own
+      const wrapperEl = document.createElement("style")
+      wrapperEl.textContent = WRAPPER_STYLE
+      this.styleEls = [...this.styles.map(style => {
         const el = document.createElement("style")
         el.textContent = style.content // the source: a shadow root scopes it already
         return el
-      })
+      }), wrapperEl]
     } else {
       this.styles.forEach(style => acquireStyle(headStyle(style)))
       this.ownsSharedStyles = true

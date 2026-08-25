@@ -705,7 +705,7 @@ describe("renderComponent", () => {
   })
 
   // the flaky seams found in the 2026-07-15 review, closed by the effect
-  // runner hardening (TODOS/2026-07-15.effect-runner-hardening.md): a
+  // runner hardening (RECORD/2026-07-15.effect-runner-hardening.md): a
   // reentrancy guard with a trailing re-run, no-op writes not notifying, and
   // repositioned entries refreshing their dep-less bindings
   describe(":each flaky seams", () => {
@@ -725,7 +725,7 @@ describe("renderComponent", () => {
     it("still refreshes a moved entry when a nested tag is handed $index as a prop", () => {
       // the positional-name walk has to reach attributes of nodes *inside* the
       // item, not just the item's own - a prop is how $index escapes into a
-      // child (TODOS/2026-08-23.positional-refresh.md)
+      // child (RECORD/2026-08-23.positional-refresh.md)
       const component = parseComponent(`<li :each="u in users" :key="u.id"><b :data-at="$index"></b></li>`)
       const data = $reactive({ users: [{ id: 1 }, { id: 2 }] })
       container.appendChild(renderComponent(component, data))
@@ -842,7 +842,7 @@ describe("renderComponent", () => {
       // `data.filter(...)` shifts every row behind the cut, which read as a
       // wholesale replacement and swept the container: 1,000 rows meant ~3,000
       // bindings re-rendering identical output. The rows did not change - they
-      // moved - and the diff now says so (TODOS/2026-08-23.notify-a-splice.md)
+      // moved - and the diff now says so (RECORD/2026-08-23.notify-a-splice.md)
       const runs: string[] = []
       const component = parseComponent(`<li :each="u in users" :key="u.id">{{ seen(u.name) }}</li>`)
       const data = $reactive({
@@ -1252,13 +1252,16 @@ describe(":attr - the single-attribute form", () => {
 
   it("leaves a tag that may still become a component written as-is", () => {
     // <drop-area> resolves DropArea, so its :foo is a parameter the upgrade
-    // re-reads - not an attribute to bind now
+    // re-reads - not an attribute to bind now. <Later /> is the same claim
+    // written the other way, and it sits in the DOM under the name the pre-parse
+    // rewrite gave it: <c79-later>, which is nothing the parser can resolve
     const component = parseComponent(`<div><Later :foo="n" /><drop-area :foo="n"></drop-area></div>`)
     const data = $reactive({ n: 1 })
 
     container.appendChild(renderComponent(component, data))
 
-    expect(container.querySelector("later")!.getAttribute(":foo")).toBe("n")
+    expect(container.querySelector("later")).toBeNull()
+    expect(container.querySelector("c79-later")!.getAttribute(":foo")).toBe("n")
     expect(container.querySelector("drop-area")!.getAttribute(":foo")).toBe("n")
   })
 })
@@ -1555,17 +1558,20 @@ describe("nested component recursion", () => {
     // no runaway recursion by construction: the child's scope holds only its
     // props, and prop names pass through the HTML parser lowercased - so the
     // PascalCase key a component tag needs can never arrive via an attribute.
-    // Here the inner <A> finds no "A" in the child scope and falls back to a
-    // plain HTML <a> anchor
+    // The inner <A> finds no "A" in the child scope, and it no longer falls
+    // back to a plain <a> anchor: a capitalized tag is a component claim, the
+    // rewrite renamed it to <c79-a>, and a claim that resolves to nothing after
+    // every script has settled throws (RECORD/2026-08-25.component-tag-prefix.md)
     const container = document.createElement("div")
     document.body.appendChild(container)
     const A = parseComponent(`<div class="a"><A></A></div>`)
     const data = $reactive({ A })
 
-    container.appendChild(renderComponent(A, data))
-
-    expect(container.querySelectorAll("div.a").length).toBe(2)
-    expect(container.querySelector("div.a div.a a")).not.toBeNull()
+    expect(() => container.appendChild(renderComponent(A, data))).toThrow(/<A> is not defined/)
+    // and nothing of it reaches the page: the throw happens while the subtree is
+    // still detached, so there is no half-rendered component to look at
+    expect(container.querySelector("div.a")).toBeNull()
+    expect(container.querySelector("a")).toBeNull()
   })
 })
 
@@ -1602,7 +1608,7 @@ describe(":each with a component in the loop variable", () => {
 // one shows nothing in either state, the :slot one has its directive dropped
 // and renders anyway - and neither is a rendering bug to fix. Both are worth
 // the console line every other it-does-nothing case gets
-// TODOS/2026-08-24.template-directive-warning.md
+// RECORD/2026-08-24.template-directive-warning.md
 describe("a directive on a nested <template>", () => {
   let container: HTMLDivElement
   let warn: ReturnType<typeof vi.spyOn>
@@ -1850,7 +1856,7 @@ describe(":if/:elseif/:else chain validation", () => {
 // left in the DOM verbatim (an unknown element is a component that might still
 // arrive, so renderNode keeps its `:` attributes as parameters), and any
 // camelCase tag lowercased. The namespace now rides on the AST node, read off
-// the tree DOMParser already built - TODOS/2026-08-24.svg-namespace.md
+// the tree DOMParser already built - RECORD/2026-08-24.svg-namespace.md
 describe("svg", () => {
   let container: HTMLDivElement
 
@@ -1928,13 +1934,24 @@ describe("svg", () => {
     expect(container.querySelector("p")).toBeInstanceOf(HTMLElement)
   })
 
-  // The other half of the same rule, pinned so the choice is explicit rather
-  // than accidental: a PascalCase key ALREADY in scope captures a foreign tag,
-  // exactly as `Td` captures `<td>`. Every SVG tag whose name someone might
-  // give a component - Text, Path, Filter, Marker, Circle - is reachable this
-  // way. Recorded as open in TODOS/2026-08-25.open-after-the-oracle.md §5
-  it("is captured by a scope key that was already there, like any other tag", () => {
+  // The other half of the same rule, and it moved: a PascalCase key in scope
+  // used to capture the foreign tag of that name (`Circle` took `<circle>`, the
+  // trade `Td` had with `<td>`), so every SVG tag somebody might name a
+  // component after - Text, Path, Filter, Marker, Circle - was reachable that
+  // way. A lowercase tag resolves to no component now, whatever is in scope:
+  // RECORD/2026-08-25.component-tag-prefix.md
+  it("is not captured by a scope key of the same name", () => {
     render(`<div><svg><circle r="4" /></svg></div>`, { Circle: parseComponent(`<b class="taken">tomado</b>`) })
+
+    expect(container.querySelector(".taken")).toBeNull()
+    expect(container.querySelector("circle")!.namespaceURI).toBe("http://www.w3.org/2000/svg")
+  })
+
+  // and the capitalized spelling is what reaches the component, in an <svg>
+  // like anywhere else - the tag the parser saw was <c79-circle>, which is not
+  // an SVG name, so nothing of the element it was named after survives
+  it("renders a component written capitalized, inside an svg", () => {
+    render(`<div><svg><Circle r="4" /></svg></div>`, { Circle: parseComponent(`<b class="taken">tomado</b>`) })
 
     expect(container.querySelector(".taken")).not.toBeNull()
     expect(container.querySelector("circle")).toBeNull()
@@ -1955,11 +1972,11 @@ describe("svg", () => {
   // rewrite turns `:viewBox` into `:view-box` before the parse, and SVG has no
   // such attribute. The name is resolved against the parser's own adjust table
   // now - the one that makes a written-out viewBox survive
-  // TODOS/2026-08-25.svg-attribute-names.md
+  // RECORD/2026-08-25.svg-attribute-names.md
   //
   // Hardcoded rather than asked, so these pin a semantics instead of agreeing
   // with the implementation. The last three are the ones that killed the IDL
-  // trick this replaces (TODOS/2026-08-24.svg-namespace.md)
+  // trick this replaces (RECORD/2026-08-24.svg-namespace.md)
   const CAMEL_ATTRS: [tag: string, attribute: string][] = [
     ["svg", "viewBox"],
     ["svg", "preserveAspectRatio"],
@@ -2070,7 +2087,7 @@ describe("svg", () => {
 // non-HTML namespace, not SVG's - so most of this was true and untested. What
 // was NOT true is <annotation-xml>: the one tag in either foreign namespace
 // with a hyphen in it, and a hyphen is how this library recognizes a custom
-// element - TODOS/2026-08-24.mathml.md
+// element - RECORD/2026-08-24.mathml.md
 const MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 
 describe("mathml", () => {
@@ -2217,5 +2234,262 @@ describe("mathml", () => {
 
     expect(container.querySelector("math")!.querySelector("p"), "the <p> is a sibling of the <math>, not a child").toBeNull()
     expect(container.querySelector("p")!.namespaceURI).toBe("http://www.w3.org/1999/xhtml")
+  })
+})
+
+// The pre-parse rename: <Circle /> reaches the HTML parser as <c79-circle>, so
+// no component tag is ever the native element it was named after.
+// RECORD/2026-08-25.component-tag-prefix.md
+describe("the component tag rename", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => container.remove())
+
+  const render = (template: string, data: Record<string, any> = {}) => {
+    const store = $reactive(data)
+    container.appendChild(renderComponent(parseComponent(template), store))
+    return store as any
+  }
+
+  it("renames every capitalized tag, not only the ones that collide", () => {
+    const [circle, card] = parseComponent(`<div><Circle /><UserCard /></div>`).template[0].children as any[]
+
+    expect(circle.tag).toBe("c79-circle")
+    expect(circle.component).toBe("Circle")
+    expect(card.tag).toBe("c79-user-card")
+    expect(card.component).toBe("UserCard")
+  })
+
+  it("builds an HTMLElement for the renamed tag, not an HTMLUnknownElement", () => {
+    // the hyphen is why: `c79-circle` is a valid custom element name and
+    // `c79circle` would not be. The placeholder is what an unresolved component
+    // leaves in the page, and it names itself there
+    render(`<div><Circle /></div>`)
+    const el = container.querySelector("c79-circle")!
+
+    expect(el).not.toBeInstanceOf(HTMLUnknownElement)
+    expect(el).toBeInstanceOf(HTMLElement)
+  })
+
+  it("closes the renamed tag too, so the siblings after it stay siblings", () => {
+    // OPEN_TAG_RE matches open tags only. Rename one end and not the other and
+    // </user-card> closes nothing, leaving everything that follows nested
+    // inside the component tag instead of beside it
+    render(`<div><UserCard>dentro</UserCard><b class="after">fuera</b></div>`, {
+      UserCard: parseComponent(`<span class="card"><slot /></span>`),
+    })
+
+    expect(container.querySelector(".card")!.textContent).toBe("dentro")
+    expect(container.querySelector(".card .after"), "the <b> is a sibling of the component, not its content").toBeNull()
+    expect(container.querySelector("div > .after")).not.toBeNull()
+  })
+
+  it("resolves a component by the name the author wrote, dashes and case aside", () => {
+    render(`<div><UserCard /><user-card /><USER-CARD /></div>`, {
+      UserCard: parseComponent(`<span class="card">tarjeta</span>`),
+    })
+
+    expect(container.querySelectorAll(".card")).toHaveLength(3)
+  })
+
+  it("never resolves an undashed lowercase tag, whatever is in scope", () => {
+    // withdrawn with the rename: <mychip> used to become MyChip, both when the
+    // key was there and when it arrived later
+    const data = render(`<div><mychip></mychip><label></label></div>`, {
+      MyChip: parseComponent(`<b class="chip">tomado</b>`),
+      Label: parseComponent(`<b class="chip">tomado</b>`),
+    })
+    data.MyChip = parseComponent(`<b class="chip">llegué</b>`)
+
+    expect(container.querySelector(".chip")).toBeNull()
+    expect(container.querySelector("mychip")).not.toBeNull()
+    expect(container.querySelector("label")).not.toBeNull()
+  })
+
+  it("names the component the author wrote in its messages, not the renamed tag", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      render(`<div><Field :model.name="who" :name="x" /></div>`, {
+        who: "ada", x: "y",
+        Field: parseComponent(`<script :setup>let name = ""</script><b class="f">{{ name }}</b>`),
+      })
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("<Field>"))
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("c79-field"))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // the cost, pinned rather than left to be rediscovered: a component tag is no
+  // longer a `tr` to the parser, so table foster-parenting evicts it from the
+  // table it was written in. The row component is a `:each` on the <tr> itself
+  it("cannot sit in table-row position any more", () => {
+    render(`<table><tbody><Row /></tbody></table>`, {
+      Row: parseComponent(`<b class="row">fila</b>`),
+    })
+
+    expect(container.querySelector(".row"), "the component still renders").not.toBeNull()
+    expect(container.querySelector("table .row"), "but outside the table the author wrote it in").toBeNull()
+  })
+})
+
+// Step 2 of the tag rename: a component instance renders in an element of its
+// own - <c79-name> - instead of a bare pair of comment anchors, and a
+// stylesheet can name the component to reach that box.
+// RECORD/2026-08-25.the-wrapper-and-the-css-rename.md
+describe("the component box", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => container.remove())
+
+  const mount = (src: string) => new Component79(src).render().mount(container)
+
+  it("wraps every instance, whatever it renders - one root, several, or none", () => {
+    // "sometimes" is not an alternative: the same component renders one root or
+    // two according to its data, so a box that appears only in the multi-root
+    // case would make the parent's CSS depend on what the child rendered this
+    // pass. And the empty case has nothing to hang a box off but a box
+    mount(`
+      <div class="w"><One /><Many /><None /></div>
+      <template name="One"><p class="a">uno</p></template>
+      <template name="Many"><h2>t</h2><p>c</p></template>
+      <template name="None"><p :if="false">no</p></template>
+    `)
+
+    expect(container.querySelector("c79-one > .a")).not.toBeNull()
+    expect(container.querySelectorAll("c79-many > *")).toHaveLength(2)
+    const none = container.querySelector("c79-none")!
+    expect(none, "a component that renders nothing is still a box").not.toBeNull()
+    expect(none.querySelector("*")).toBeNull()
+  })
+
+  it("names the box after the component, not after the usage site", () => {
+    mount(`
+      <div class="w"><UserCard /><user-card /></div>
+      <template name="UserCard"><b class="card">tarjeta</b></template>
+    `)
+
+    expect(container.querySelectorAll("c79-user-card")).toHaveLength(2)
+    expect(container.querySelectorAll(".card")).toHaveLength(2)
+  })
+
+  it("stamps the box with the parent's scope, and the child's root with neither", () => {
+    const jq79 = mount(`
+      <div class="p"><Chip /></div>
+      <style scoped>.p { color: red }</style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+    const scope = container.querySelector(".p")!.getAttribute("data-jq79")
+
+    expect(scope).not.toBeNull()
+    expect(container.querySelector("c79-chip")!.getAttribute("data-jq79")).toBe(scope)
+    expect(container.querySelector(".c")!.getAttribute("data-jq79"), "the parent gets the box, never what is inside it").toBeNull()
+
+    jq79.destroy()
+  })
+
+  it("rewrites a component's name in a selector to the tag its box has", () => {
+    const jq79 = new Component79(`
+      <div class="p"><Chip /></div>
+      <style scoped>Chip { color: red } .p > Chip { color: blue }</style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+    jq79.render().mount(container)
+    const scope = container.querySelector(".p")!.getAttribute("data-jq79")
+    const css = jq79.styles[0].scoped!
+
+    expect(css).toContain(`c79-chip[data-jq79="${scope}"]`)
+    expect(css).toContain(`.p > c79-chip[data-jq79="${scope}"]`)
+    expect(css).not.toContain("Chip")
+
+    jq79.destroy()
+  })
+
+  it("renames in an unscoped style too, and inside a media query", () => {
+    const jq79 = new Component79(`
+      <div><Chip /></div>
+      <style>Chip { color: red } @media (min-width: 1px) { Chip { color: blue } }</style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+
+    expect(jq79.styles[0].content).toContain("c79-chip { color: red }")
+    expect(jq79.styles[0].content).toContain("@media (min-width: 1px) { c79-chip { color: blue } }")
+  })
+
+  it("renames only in selector position - not declarations, at-rule preludes, strings or classes", () => {
+    const jq79 = new Component79(`
+      <div><Chip /></div>
+      <style>
+        @import url(Chip.css);
+        .Chip, #Chip { font-family: Georgia; content: "Chip" }
+        DIV { color: red }
+        p[title="Chip"] { color: blue }
+        p[title="a > Chip"] /* keep Chip */ { color: teal }
+      </style>
+      <template name="Chip"><b class="c">x</b></template>
+    `)
+    const css = jq79.styles[0].content
+
+    expect(css).toContain("@import url(Chip.css);")
+    expect(css).toContain(".Chip, #Chip")
+    expect(css).toContain("font-family: Georgia")
+    expect(css).toContain(`content: "Chip"`)
+    expect(css).toContain(`p[title="Chip"]`)
+    // a string or a comment inside a selector is verbatim, not renamable text
+    expect(css).toContain(`p[title="a > Chip"] /* keep Chip */`)
+    // shouty type selectors are established CSS and match case-insensitively;
+    // only a name with a lowercase letter in it is read as a component
+    expect(css).toContain("DIV { color: red }")
+    expect(css).not.toContain("c79-")
+  })
+
+  it("gives the box display:contents through a rule any author rule outranks", () => {
+    mount(`<div><Chip /></div><template name="Chip"><b class="c">x</b></template>`)
+    const rules = [...document.head.querySelectorAll("style")].map(el => el.textContent)
+    const wrapper = rules.filter(css => css?.includes("display: contents"))
+
+    expect(wrapper).toHaveLength(1)
+    // :where() has no specificity, so `c79-chip { display: flex }` wins without
+    // !important and without depending on stylesheet order
+    expect(wrapper[0]).toBe(":where([data-c79-box]) { display: contents }")
+  })
+
+  it("renders no box inside an svg, where an unknown element would take its children with it", () => {
+    mount(`
+      <div><svg class="s"><Dot /></svg></div>
+      <template name="Dot"><circle r="4" /></template>
+    `)
+
+    expect(container.querySelector("svg circle"), "the component still renders").not.toBeNull()
+    expect(container.querySelector("c79-dot")).toBeNull()
+  })
+
+  it("moves component rows as one node when :each reorders them", () => {
+    // the box is a stable single-node range, where the anchors were a pair with
+    // dynamic content between them - boundsOf resolves an element as itself
+    const jq79 = new Component79(`
+      <ul><Row :each="row in rows" :key="row.id" :label="row.label" /></ul>
+      <template name="Row"><script :setup="{ label }"></script><li class="r">{{ label }}</li></template>
+    `).render({ rows: [{ id: 1, label: "a" }, { id: 2, label: "b" }] }).mount(container)
+
+    const [first] = [...container.querySelectorAll("c79-row")]
+    const rows = jq79.data!.rows
+    jq79.data!.rows = [rows[1], rows[0]] // the same items, reordered
+
+    const boxes = [...container.querySelectorAll("c79-row")]
+    expect(boxes).toHaveLength(2)
+    expect(boxes[1], "the same box moved, not a re-rendered one").toBe(first)
+    expect([...container.querySelectorAll(".r")].map(el => el.textContent)).toEqual(["b", "a"])
+
+    jq79.destroy()
   })
 })

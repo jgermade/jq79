@@ -1,6 +1,6 @@
 // Does a definition that renders ONCE pay for its skeleton plan?
 //
-// The question §5 of TODOS/2026-08-24.what-is-still-open.md left open, and the
+// The question §5 of RECORD/2026-08-24.what-is-still-open.md left open, and the
 // reason it stayed open: the instrument built for it timed *parse + render* as
 // one block - ~154µs, nearly all of it parsing - so the few µs of plan work sat
 // under a null control of ±19% and nothing could be read out of it.

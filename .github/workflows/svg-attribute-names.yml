@@ -2,7 +2,7 @@
 #
 # src/jq79.ts resolves a bound camelCase SVG or MathML attribute name by asking
 # the HTML parser's own foreign-attribute adjustment table, rather than shipping
-# a copy of it (TODOS/2026-08-25.svg-attribute-names.md). That design was
+# a copy of it (RECORD/2026-08-25.svg-attribute-names.md). That design was
 # measured in Chromium and jsdom, and this is what says it holds in Firefox and
 # WebKit - which could not be installed where it was written.
 #

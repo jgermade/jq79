@@ -56,7 +56,7 @@ const probe = (values: Record<string, any>): [Record<string, any>, string[]] => 
 // paths agree when the second one never runs. That is not hypothetical: making
 // the plan on the second render took the corpus from 26 entries reaching the
 // cloner to 5, with every test still green
-// (TODOS/2026-08-24.plan-on-the-second-render.md). It was caught by hand.
+// (RECORD/2026-08-24.plan-on-the-second-render.md). It was caught by hand.
 //
 // renderFromSkeleton's `plan.skeleton.cloneNode(true)` is the library's ONLY
 // deep clone - the one other cloneNode in src/ is the sanitizer copying a text
@@ -153,10 +153,15 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({}), () => {}, "never"],
     ["a nested component", `<div class="a"><p class="b">{{ v }}</p><Chip :label="v" /><p class="c">{{ v }}</p></div>`,
       () => ({ v: "x", Chip: parseComponent(`<span class="chip">{{ label }}</span>`) }), d => { d.v = "y" }, "never"],
-    ["a scope key that captures an HTML tag", `<table class="a"><tr><td class="c1">plano</td><td class="c2">plano</td></tr></table>`,
-      () => ({ Td: parseComponent(`<span class="captured">tomado</span>`) }), () => {}, "never"],
+    // it used to sit in SHAPE_CORPUS as the reason the clone path had to ask,
+    // per plan, whether a scope key captured one of its tags: a variable named
+    // `Td` made every <td> under it a component. A lowercase tag resolves to no
+    // component now (RECORD/2026-08-25.component-tag-prefix.md), so the subtree
+    // clones and the key is inert - which is what this entry proves
+    ["a scope key named after an HTML tag captures nothing", `<table class="a"><tbody><tr><td class="c1">plano</td><td class="c2">plano</td></tr></tbody></table>`,
+      () => ({ Td: parseComponent(`<span class="captured">tomado</span>`) }), () => {}, "second"],
     // the five directives the cloner learned to fill in
-    // TODOS/2026-08-24.more-holes-in-the-cloner.md. They keep the container they
+    // RECORD/2026-08-24.more-holes-in-the-cloner.md. They keep the container they
     // had as trip wires - a wrapper that is otherwise perfectly clonable and big
     // enough to be planned - because that is the only shape in which a hole is
     // reached through the clone path at all
@@ -165,7 +170,7 @@ describe("the clone path renders what the interpreted path renders", () => {
     [":text over children the interpreted path never renders", `<div class="w"><span class="p">uno</span><p class="q" :text="v"><b>{{ ignored }}</b><Chip :label="v" /></p><span class="r">dos</span></div>`,
       () => ({ v: "x", ignored: "no", Chip: parseComponent(`<span class="chip">{{ label }}</span>`) }), d => { d.v = "y"; d.ignored = "still no" }, "second"],
     // :html sat in SHAPE_CORPUS proving its subtree fell through. It is a hole
-    // the skeleton fills now (TODOS/2026-08-25.html-in-the-cloner.md), so what
+    // the skeleton fills now (RECORD/2026-08-25.html-in-the-cloner.md), so what
     // it proves moved: both paths sanitize the same value into the same DOM,
     // and the children written inside it are rendered by neither
     [":html in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :html="markup"><b>{{ ignored }}</b></p><span class="r">dos</span></div>`,
@@ -188,7 +193,7 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ pick: "b", a: "a", b: "b" }), d => { d.pick = "a" }, "second"],
     // <svg> used to be rejected by plannableNode as an HTMLUnknownElement, so it
     // sat in SHAPE_CORPUS proving it fell through. It is a real namespaced
-    // element now (TODOS/2026-08-24.svg-namespace.md) and therefore plannable,
+    // element now (RECORD/2026-08-24.svg-namespace.md) and therefore plannable,
     // so what it proves moved: the cloner has to build it in the same namespace
     // the interpreted path does, or the two disagree about `viewBox`
     ["an svg", `<div class="w"><span class="p">uno</span><svg class="q" viewBox="0 0 10 10"><circle cx="5" r="4" :fill="color" /></svg><span class="r">dos</span></div>`,
@@ -198,13 +203,13 @@ describe("the clone path renders what the interpreted path renders", () => {
     ["a foreignObject hands the namespace back", `<div class="w"><span class="p">uno</span><svg class="q"><foreignObject><p>{{ v }}</p></foreignObject></svg><span class="r">dos</span></div>`,
       () => ({ v: "x" }), d => { d.v = "y" }, "second"],
     // a bound camelCase name is resolved against the parser's adjust table
-    // (TODOS/2026-08-25.svg-attribute-names.md), and the resolution happens in
+    // (RECORD/2026-08-25.svg-attribute-names.md), and the resolution happens in
     // two places - once per instance interpreted, once per definition in the
     // plan. This is what says the two agree about which attribute they wrote
     ["an svg with a bound camelCase attribute", `<div class="w"><span class="p">uno</span><svg class="q" :viewBox="box"><circle r="1" :stroke-width="sw" /></svg><span class="r">dos</span></div>`,
       () => ({ box: "0 0 10 10", sw: 2 }), d => { d.box = "0 0 20 20"; d.sw = 4 }, "second"],
     // MathML rides on the same AST field <svg> does, so the cloner has to build
-    // it in its own namespace for the same reason - TODOS/2026-08-24.mathml.md
+    // it in its own namespace for the same reason - RECORD/2026-08-24.mathml.md
     ["a math", `<div class="w"><span class="p">uno</span><math class="q" display="block"><mrow><mi :mathcolor="color">x</mi><mn>{{ n }}</mn></mrow></math><span class="r">dos</span></div>`,
       () => ({ color: "red", n: 1 }), d => { d.color = "blue"; d.n = 2 }, "second"],
     ["a mixed row", `<table class="a"><tbody><tr :each="row in rows" :key="row.id" :class="{ danger: row.id === sel }">
@@ -257,11 +262,15 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({}), () => {}, "never"],
     ["a nested template element", `<div class="w"><span class="p">uno</span><template class="q"><b>x</b></template><span class="r">dos</span></div>`,
       () => ({}), () => {}, "never"],
-    // the upgrade watch: an unknown, undashed tag is a component that has not
-    // arrived yet (an async factory writes the key in after the template has
-    // rendered), and the interpreted path swaps it when it does. Nothing in a
-    // clone can watch for that, which is why an unknown tag is never plannable
-    ["a tag that becomes a component after mount", `<div class="w"><span class="p">uno</span><mychip></mychip><span class="r">dos</span></div>`,
+    // the upgrade watch: a dashed tag may be a component that has not arrived
+    // yet (an async factory writes the key in after the template has rendered),
+    // and the interpreted path swaps it when it does. Nothing in a clone can
+    // watch for that, which is why a dashed tag is never plannable.
+    //
+    // It was <mychip> until the rename: an unknown, undashed lowercase tag used
+    // to upgrade too, and that is withdrawn - it is a typo or a custom element
+    // that never registered, not a component in waiting
+    ["a tag that becomes a component after mount", `<div class="w"><span class="p">uno</span><my-chip></my-chip><span class="r">dos</span></div>`,
       () => ({}), d => { d.MyChip = parseComponent(`<b class="chip">llegué</b>`) }, "never"],
     ["a slot", `<div class="w"><span class="p">uno</span><Panel><b class="in">dentro</b></Panel><span class="r">dos</span></div>`,
       () => ({ Panel: parseComponent(`<section class="panel"><slot /></section>`) }), () => {}, "never"],
@@ -269,7 +278,7 @@ describe("the clone path renders what the interpreted path renders", () => {
     // rejects a dashed tag as a possible custom element and does not make the
     // foreign exception mayUpgrade now makes, so <annotation-xml> keeps its
     // whole <math> ancestor interpreted: slower, correct, and a trip wire if
-    // anybody widens that rule - TODOS/2026-08-24.mathml.md
+    // anybody widens that rule - RECORD/2026-08-24.mathml.md
     ["an annotation-xml", `<div class="w"><span class="p">uno</span><math class="q"><annotation-xml encoding="text/html" :id="which"><p>{{ v }}</p></annotation-xml></math><span class="r">dos</span></div>`,
       () => ({ which: "uno", v: "x" }), d => { d.which = "dos"; d.v = "y" }, "never"],
   ]
@@ -278,7 +287,7 @@ describe("the clone path renders what the interpreted path renders", () => {
     it(`${name}`, () => {
       const [before, after] = bothWays(() => {
         // ONE parse, rendered TWICE. The plan is built on the second render
-        // (TODOS/2026-08-24.plan-on-the-second-render.md), so a template parsed
+        // (RECORD/2026-08-24.plan-on-the-second-render.md), so a template parsed
         // fresh for every render would never reach the clone path and every
         // assertion below would pass without testing anything
         const component = parseComponent(template)
@@ -308,7 +317,7 @@ describe("the clone path renders what the interpreted path renders", () => {
       // and the assertions the three above are worthless without: that the
       // clone path ran at all. Counted, not inferred - the manual procedure
       // this replaces was a marker attribute and a count in prose
-      // (TODOS/2026-08-24.clone-path-coverage-check.md)
+      // (RECORD/2026-08-24.clone-path-coverage-check.md)
       expect(before.first.cloned || before.second.cloned,
         "cloning is off on this arm and something cloned anyway").toBe(false)
       expect(after.first.cloned,
@@ -391,7 +400,7 @@ describe("the clone path renders every tutorial exercise identically", () => {
       // built ONCE per arm and mounted twice. The plan is built on the second
       // render of a definition, so a component reparsed per mount would never
       // reach the clone path - and this whole describe block would pass while
-      // testing nothing (TODOS/2026-08-24.plan-on-the-second-render.md)
+      // testing nothing (RECORD/2026-08-24.plan-on-the-second-render.md)
       const build = () => {
         const modules: Record<string, Component79> = {}
         Object.entries(files)
@@ -410,7 +419,7 @@ describe("the clone path renders every tutorial exercise identically", () => {
       //
       // So: poll on a real delay until the DOM has been unchanged for a quiet
       // period, with a deadline. The same instrument tests/tutorial.test.ts
-      // uses, and the same reason (§8 of TODOS/2026-08-24.open-after-pr-12.md)
+      // uses, and the same reason (§8 of RECORD/2026-08-24.open-after-pr-12.md)
       const QUIET_POLLS = 3
       const POLL_MS = 5
       const DEADLINE_MS = 2000

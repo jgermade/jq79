@@ -137,7 +137,7 @@ describe("setup script scanner", () => {
 // inflated the depth for good. The scanners now consume a regex whole,
 // deciding regex-vs-division by the last meaningful token (division needs a
 // completed expression on its left; everywhere else a `/` can only open a
-// regex). See TODOS/2026-07-15.scanner-regex-literals.md
+// regex). See RECORD/2026-07-15.scanner-regex-literals.md
 // ---------------------------------------------------------------------------
 describe("regex literals", () => {
   it("keeps a statement whole when a regex hides `//` before its closing bracket", () => {
@@ -651,7 +651,7 @@ describe("parseFactoryProps", () => {
 
 // destructuring declarations: rewritten into assignment patterns, which is
 // what makes their bindings reactive inside `with` - see the plan in
-// TODOS/2026-07-15.setup-destructuring.md
+// RECORD/2026-07-15.setup-destructuring.md
 describe("setup script scanner on destructuring declarations", () => {
   it("rewrites an object pattern and registers its bindings", () => {
     const { vars, code } = transformSetupScript(`let { a, b } = obj`)

@@ -310,12 +310,50 @@ A tag matching a **PascalCase scope variable** renders as a child component. Com
 - Props: `:name="expr"` evaluates in the parent scope; `:name` alone is shorthand for `:name="name"`; plain attributes pass as literal strings.
 - Props are **live**: when a parent expression's dependencies change (deeply), the new value is written into the child's store.
 - `@event` on the tag hears the child's `$emit`s, and `:model` binds two-way — see their sections above.
-- HTML lowercases everything, so tag matching ignores case and dashes: `<NestedComponent>` and `<nested-component>` both resolve `NestedComponent`. Prop names are normalized too — `:user-name` and `:userName` both become the `userName` prop (see [name casing](#name-casing)).
+- Two spellings reach a component and no others: a **capitalized** tag (`<NestedComponent />`) and a **dashed** one (`<nested-component>`). Matching ignores case and dashes, so both resolve `NestedComponent`. Prop names are normalized too — `:user-name` and `:userName` both become the `userName` prop (see [name casing](#name-casing)).
+- An **undashed lowercase** tag is never a component, whatever is in scope: `<circle>` is a circle even beside a `Circle` component, and `<mychip>` is an unknown element even when `MyChip` is imported. Write `<MyChip />` or `<my-chip>`.
+- Before the page is parsed, a capitalized tag is renamed to one the HTML parser cannot resolve to an element: `<Circle />` becomes `<c79-circle>`, `</UserCard>` becomes `</c79-user-card>`. You never type the prefix — it appears only where a component tag is still waiting for its name, and there it says what it is. This is what keeps `<Circle />` from being an SVG circle and `<Table />` from being a table; the cost is that a component tag can no longer sit in table-row position (`<Row />` inside a `<tbody>` is moved out of the table by the parser, as any non-`<tr>` is). Loop the `<tr>` itself with `:each` instead.
 - `await import('/x.html')` returns a `Component79` (non-`.html` URLs fall through to native `import()`). While the promise is pending nothing renders; the child appears when it resolves. Under the [Vite plugin](vite-plugin.md), literal relative specifiers resolve from the bundle instead of fetching.
 - Each usage site gets its own instance (own store, effects and DOM); instances are destroyed with their parent. Identical `<style>` blocks are refcounted, so N instances inject one tag.
 - Self-closing tags work: jq79 expands `<MyComponent />` (and `<div />`) into explicit open+close pairs before HTML parsing, since the HTML parser would otherwise treat them as unclosed. Void elements (`<img />`, `<br />`) and `<script>`/`<style>` contents are left untouched.
 - A tag can also resolve to a component the same file declares with `<template name="…">`, with no import at all — see [several components in one file](components.md#several-components-in-one-file).
 - A tag's children are **content for the child's slots** — see below.
+
+### A component renders in a box of its own
+
+Every instance renders inside an element named after the component — one root,
+several, or none:
+
+```html
+<div class="w">
+  <c79-user-card data-c79-box data-jq79="1a2b3c">…the instance's DOM…</c79-user-card>
+</div>
+```
+
+- **Always**, so the shape of the tree doesn't depend on what the child rendered
+  this pass. A component whose only root sits behind a false `:if` is an empty
+  box rather than nothing at all.
+- **Named after the component, not the tag you wrote**: `<UserCard />` and
+  `<user-card>` both render `<c79-user-card>`.
+- **`display: contents` by default**, so the box is not a box: children stay in
+  the parent's flex or grid layout. The rule is `:where([data-c79-box]) { display:
+  contents }`, which has no specificity — any rule of yours wins, with no
+  `!important` and whatever the stylesheet order:
+
+  ```css
+  c79-panel { display: flex; gap: 8px }   /* opts the box back into being a box */
+  ```
+
+- **It carries the parent's scope stamp**, so a parent's `<style scoped>` can
+  address it by name — see [styles](components.md#styles).
+- **Not inside `<svg>` or `<math>`.** SVG renders neither an unknown element nor
+  its children, so a component in a foreign namespace renders inline, as it
+  always did.
+
+What it costs: a child or sibling combinator in **global** CSS stops crossing the
+boundary (`.grid > .item` no longer matches an `.item` a component rendered), and
+a parent's `:empty` stops matching when a child renders nothing. Scoped rules lose
+nothing — they could never reach across that boundary anyway.
 
 ### A tag that names no component throws
 
@@ -331,8 +369,9 @@ a <template name="UserCrad"> to this file. In scope: UserCard, Button.
 
 Only a tag **you capitalized** is judged this way — that's the spelling that
 claims a component, and it is never valid HTML. `<my-widget>`, `<svg>` and a
-plain typo like `<lable>` render as they always have, and so does an HTML
-element written in caps (`<DIV>`).
+plain typo like `<lable>` render as they always have. An HTML element written
+in caps is judged like anything else you capitalized: `<DIV>` is a component
+claim that resolves to nothing, and it throws instead of rendering a div.
 
 It is also only about a name that resolves to *nothing*. A component variable
 that is `undefined` still waits quietly — that's how an `await import(...)`

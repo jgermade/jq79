@@ -62,7 +62,7 @@ const walkLeaves = (obj: Record<string, any>, path: string, visit: (dotKey: stri
 //
 // Which of the two directions actually wakes an effect is the thing that makes
 // this fast, and it is not symmetric - see effectsFor and
-// TODOS/2026-08-23.narrow-the-wake-rule.md
+// RECORD/2026-08-23.narrow-the-wake-rule.md
 //
 // `children`/`own`/`deep` are allocated on first use and `parent`/`segment` let
 // a removal walk back up without re-splitting the path: a 10,000-row table is
@@ -262,7 +262,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   //   `data[5].label = x`: an effect that read the array on its way to row
   //   7's label has no stake in row 5's, and waking all of them is what made
   //   100 row writes cost 100,000 effect runs - see
-  //   TODOS/2026-08-23.narrow-the-wake-rule.md
+  //   RECORD/2026-08-23.narrow-the-wake-rule.md
   //
   // Returned as a snapshot, so the effects it wakes can reindex themselves -
   // or dispose each other - while it drains
@@ -521,7 +521,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // Object.keys(container). It is not `keys.length > 0`: a replacement can
   // change every value and no key name at all, and it used to be decided by
   // comparing key COUNTS, which misses swapping one name for another
-  // (TODOS/2026-08-25.two-defects-a-review-found.md)
+  // (RECORD/2026-08-25.two-defects-a-review-found.md)
   type Difference = { keys: string[]; exact: boolean; keysChanged: boolean }
 
   const NOT_SPLICED = -1
@@ -532,7 +532,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // container differs" to the walk below, which gives up and has the whole
   // subtree swept; this recognises the shift for what it is. O(n), no
   // allocation, and O(1) to reject on any pair whose lengths differ by
-  // anything but one. See TODOS/2026-08-23.notify-a-splice.md
+  // anything but one. See RECORD/2026-08-23.notify-a-splice.md
   const splicedAt = (previous: any[], next: any[]): number => {
     const grew = next.length > previous.length
     const shorter = grew ? previous : next
@@ -592,7 +592,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // `data = [...data, ...more]` holds the very same row objects at every index
   // it had before, so waking all thirty thousand of their bindings to re-render
   // identical output is ~150ms of a 208ms append - see
-  // TODOS/2026-08-23.notify-the-difference.md
+  // RECORD/2026-08-23.notify-the-difference.md
   //
   // One level deep on purpose: an element that differs is a changed value, and
   // notifying it sweeps its own subtree, which is what a changed value deserves.
@@ -955,7 +955,7 @@ export type EffectScope = {
 // is 70,000 objects that exist to hold, on the common path, three disposers.
 // The prototype's methods are shared, and a row that registers nothing (a
 // static template) now allocates one object and no arrays at all.
-// See TODOS/2026-08-23.where-the-create-time-goes.md
+// See RECORD/2026-08-23.where-the-create-time-goes.md
 //
 // Prototype methods need their receiver: a caller that hands one on as a bare
 // function (`runSetupScript(..., fx.effect, ...)` did) must wrap it instead

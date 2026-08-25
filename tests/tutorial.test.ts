@@ -101,7 +101,7 @@ const until = async (ready: () => boolean, what: string, timeout = 5000) => {
 // not a style" is the thing to wait for. Measured across the tutorial: 31 of 42
 // mounts have content on the first pass and 11 on the second, and the fixed
 // tick this replaces was one scheduling change away from reading the empty one
-// - see §8 of TODOS/2026-08-24.open-after-pr-12.md and the flake it names
+// - see §8 of RECORD/2026-08-24.open-after-pr-12.md and the flake it names
 const rendered = (host: HTMLElement) =>
   until(
     () => [...(host.shadowRoot ?? host).children].some(el => el.tagName !== "STYLE"),
