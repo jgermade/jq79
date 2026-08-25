@@ -290,11 +290,17 @@ describe("multi-template files", () => {
       expect($(host, "lable")).not.toBeNull()
     })
 
-    it("leaves an HTML element written in caps alone", () => {
-      new Component79(`<DIV class="shouty"><A href="/x">link</A></DIV>`).render().mount(host)
+    it("judges an HTML element written in caps like any other capitalized tag", () => {
+      // it used to render a plain <div>: the tag reached the parser as written,
+      // came out lowercased, and the throw was suppressed because the element
+      // existed. The rename removes the element - <DIV> is <c79-d-i-v> now - so
+      // the capitalization is the whole claim, and a claim that resolves to
+      // nothing says so. TODOS/2026-08-25.component-tag-prefix.md
+      expect(() => {
+        new Component79(`<DIV class="shouty">x</DIV>`).render().mount(host)
+      }).toThrow(/<DIV> is not defined/)
 
-      expect($(host, "div.shouty")).not.toBeNull()
-      expect($(host, "a")!.getAttribute("href")).toBe("/x")
+      expect($(host, "div.shouty")).toBeNull()
     })
 
     it("leaves a prop named component alone - the tag stamp is not that name", () => {

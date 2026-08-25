@@ -112,6 +112,24 @@ If you refactor the render, run the cyclic-data test in
 it is the only thing standing between that guard and the stack, and it passes in
 a full-suite run at depths where it fails alone.
 
+**A component tag is renamed before the parse, and resolution reads the stamp.**
+`<Circle />` reaches the HTML parser as `<c79-circle :jq79-component="Circle">`,
+and the resolution that follows reads that stamp (`node.component`) — never
+`node.tag`. Both halves are the same fix and neither works alone. A PascalCase
+tag is lowercased by the parser, and what comes out is *the native element of
+that name*: `<Circle />` inside an `<svg>` was a circle, `<Tr />` was a row the
+parser placed inside its `<tbody>`, and 70 of 90 ordinary one-word component
+names collide the same way. Rename without moving the resolution and nothing
+resolves; move the resolution without renaming and the tag is still an element
+to everything downstream (`plannableNode`, `createFor`, `foreignAttrName`,
+`mayUpgrade` all read `tag` and `ns`). The prefix is hyphenated because
+`c79-circle` is a valid custom element name and `c79circle` is an
+`HTMLUnknownElement`, and the rewrite has to rename **closing** tags too or
+`</circle>` closes `<c79-circle>` and swallows everything after it. What this
+buys, besides the collision: an undashed lowercase tag resolves to nothing, so
+the clone path no longer has to ask whether a scope key captured one of its tags.
+See [TODOS/2026-08-25.component-tag-prefix.md](../TODOS/2026-08-25.component-tag-prefix.md).
+
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same
 scope variable wakes itself on repeat — but only from the **second** pass, since an

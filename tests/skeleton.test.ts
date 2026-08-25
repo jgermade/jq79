@@ -153,8 +153,13 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({}), () => {}, "never"],
     ["a nested component", `<div class="a"><p class="b">{{ v }}</p><Chip :label="v" /><p class="c">{{ v }}</p></div>`,
       () => ({ v: "x", Chip: parseComponent(`<span class="chip">{{ label }}</span>`) }), d => { d.v = "y" }, "never"],
-    ["a scope key that captures an HTML tag", `<table class="a"><tr><td class="c1">plano</td><td class="c2">plano</td></tr></table>`,
-      () => ({ Td: parseComponent(`<span class="captured">tomado</span>`) }), () => {}, "never"],
+    // it used to sit in SHAPE_CORPUS as the reason the clone path had to ask,
+    // per plan, whether a scope key captured one of its tags: a variable named
+    // `Td` made every <td> under it a component. A lowercase tag resolves to no
+    // component now (TODOS/2026-08-25.component-tag-prefix.md), so the subtree
+    // clones and the key is inert - which is what this entry proves
+    ["a scope key named after an HTML tag captures nothing", `<table class="a"><tbody><tr><td class="c1">plano</td><td class="c2">plano</td></tr></tbody></table>`,
+      () => ({ Td: parseComponent(`<span class="captured">tomado</span>`) }), () => {}, "second"],
     // the five directives the cloner learned to fill in
     // TODOS/2026-08-24.more-holes-in-the-cloner.md. They keep the container they
     // had as trip wires - a wrapper that is otherwise perfectly clonable and big
@@ -257,11 +262,15 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({}), () => {}, "never"],
     ["a nested template element", `<div class="w"><span class="p">uno</span><template class="q"><b>x</b></template><span class="r">dos</span></div>`,
       () => ({}), () => {}, "never"],
-    // the upgrade watch: an unknown, undashed tag is a component that has not
-    // arrived yet (an async factory writes the key in after the template has
-    // rendered), and the interpreted path swaps it when it does. Nothing in a
-    // clone can watch for that, which is why an unknown tag is never plannable
-    ["a tag that becomes a component after mount", `<div class="w"><span class="p">uno</span><mychip></mychip><span class="r">dos</span></div>`,
+    // the upgrade watch: a dashed tag may be a component that has not arrived
+    // yet (an async factory writes the key in after the template has rendered),
+    // and the interpreted path swaps it when it does. Nothing in a clone can
+    // watch for that, which is why a dashed tag is never plannable.
+    //
+    // It was <mychip> until the rename: an unknown, undashed lowercase tag used
+    // to upgrade too, and that is withdrawn - it is a typo or a custom element
+    // that never registered, not a component in waiting
+    ["a tag that becomes a component after mount", `<div class="w"><span class="p">uno</span><my-chip></my-chip><span class="r">dos</span></div>`,
       () => ({}), d => { d.MyChip = parseComponent(`<b class="chip">llegué</b>`) }, "never"],
     ["a slot", `<div class="w"><span class="p">uno</span><Panel><b class="in">dentro</b></Panel><span class="r">dos</span></div>`,
       () => ({ Panel: parseComponent(`<section class="panel"><slot /></section>`) }), () => {}, "never"],

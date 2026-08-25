@@ -549,6 +549,31 @@ const closeRenderPass = (outer: RenderPass) => {
   memoBase = outer.base
 }
 
+// which scope key a tag resolves to, and the only place that decides it. Two
+// spellings reach a component and nothing else does:
+//
+// - **the name the author capitalized**, read off `component` rather than off
+//   the tag, because the tag no longer holds it: the pre-parse rewrite renames
+//   <Circle /> to <c79-circle> precisely so the parser cannot build a native
+//   element from it (see componentTagName)
+// - **a dashed tag** - <drop-area> resolves DropArea - which is custom-element
+//   shaped and so cannot collide with a native element either
+//
+// An undashed lowercase tag resolves to nothing, whatever is in scope. That is
+// the other half of the capture this closes: a `Td` in scope no longer turns
+// every <td> under it into a component, and <mychip> no longer becomes MyChip
+// when the key arrives. See TODOS/2026-08-25.component-tag-prefix.md
+const componentKeyOf = (node: TemplateNode, scope: Record<string, any>): string | null =>
+  node.component !== undefined
+    ? findComponentKey(scope, node.component)
+    : node.tag.includes("-")
+      ? findComponentKey(scope, node.tag)
+      : null
+
+// what to call a tag in a message: the name the author wrote. A component tag's
+// `tag` is the renamed c79-* one, which nobody typed and nobody should read
+const tagLabel = (node: TemplateNode): string => node.component ?? node.tag
+
 const findComponentKey = (scope: Record<string, any>, tag: string): string | null => {
   if (!tagMemo) return scanComponentKey(scope, tag)
   const normalized = tag.replace(/-/g, "").toLowerCase()
@@ -694,7 +719,7 @@ const partitionSlots = (node: TemplateNode): Record<string, SlotContent> => {
     // first wins, like two <template name="X"> in one file: a duplicate is a
     // typo, and the fix is to delete one - not to guess which
     if (name in contents) {
-      console.warn(`jq79: two <template ${slotAttrName(name)}> in <${node.tag}>; the second was ignored`)
+      console.warn(`jq79: two <template ${slotAttrName(name)}> in <${tagLabel(node)}>; the second was ignored`)
       return
     }
     contents[name] = { nodes: child.children, binder: child.attrs[attr] || undefined }
@@ -703,7 +728,7 @@ const partitionSlots = (node: TemplateNode): Record<string, SlotContent> => {
   const hasLoose = loose.some(isMeaningful)
   if (hasLoose && "default" in contents) {
     console.warn(
-      `jq79: <${node.tag}> has both a <template :slot> and content outside it - ` +
+      `jq79: <${tagLabel(node)}> has both a <template :slot> and content outside it - ` +
       "the <template> is the default slot's content, and the rest was ignored"
     )
   } else if (hasLoose) {
@@ -914,14 +939,14 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   Object.entries(models).forEach(([name, expr]) => {
     const prop = modelProp(name)
     if (props[prop] !== undefined) {
-      console.warn(`jq79: <${node.tag}> binds prop "${prop}" through both :${prop} and ${modelAttr(name)} - ${modelAttr(name)} wins`)
+      console.warn(`jq79: <${tagLabel(node)}> binds prop "${prop}" through both :${prop} and ${modelAttr(name)} - ${modelAttr(name)} wins`)
     }
     props[prop] = expr
     // an expression that can't be an assignment target is a wiring mistake -
     // say so now, not on the first update that silently goes nowhere
     if (compileExpr(assignment(expr), ["$value"]) === null) {
       unassignable.add(name)
-      console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${node.tag}> will be dropped`)
+      console.warn(`jq79: ${modelAttr(name)}="${expr}" is not assignable - updates from <${tagLabel(node)}> will be dropped`)
     }
   })
 
@@ -962,14 +987,14 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       if (!unfilled?.has(key) || reported.has("unfilled")) return
       reported.add("unfilled")
       console.error(
-        `jq79: <${node.tag}> is declared as a prop and the parent passed nothing - nothing renders here. ` +
+        `jq79: <${tagLabel(node)}> is declared as a prop and the parent passed nothing - nothing renders here. ` +
         `Pass it (:${key}="…"), or drop it from the signature to use the one declared in this file.`
       )
       return
     }
     if (reported.has("type")) return
     reported.add("type")
-    console.error(`jq79: <${node.tag}> is ${typeof value}, not a component - nothing renders here`)
+    console.error(`jq79: <${tagLabel(node)}> is ${typeof value}, not a component - nothing renders here`)
   }
 
   fx.effect(() => {
@@ -1020,7 +1045,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
         if (expr === undefined) {
           if (!warned.has(name)) {
             warned.add(name)
-            console.warn(`jq79: <${node.tag}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
+            console.warn(`jq79: <${tagLabel(node)}> has no ${modelAttr(name)} - bound: ${Object.keys(models).map(modelAttr).join(", ")}`)
           }
           return false
         }
@@ -1058,7 +1083,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // cuts an effect that wakes itself
     if (nestingDepth >= MAX_NESTING_DEPTH) {
       console.error(
-        `jq79: <${node.tag}> is ${MAX_NESTING_DEPTH} levels deep inside itself; giving up here. ` +
+        `jq79: <${tagLabel(node)}> is ${MAX_NESTING_DEPTH} levels deep inside itself; giving up here. ` +
         "A component that renders itself stops when its data stops - is there a cycle in it?"
       )
       return
@@ -1393,12 +1418,14 @@ const plannableAttr = (name: string): boolean => {
 const plannableNode = (node: TemplateNode): boolean => {
   if (node.component || node.tag.includes("-")) return false
   if (isSlotTag(node.tag) || node.tag === "template") return false
-  // an unknown tag may still become a component, so it stays interpreted - the
-  // upgrade watch lives there and a clone cannot carry it. A *foreign* element
-  // skips the test rather than failing it: <circle> is an HTMLUnknownElement
-  // when built with createElement, which is exactly the mistake this used to
-  // make, and nothing in an <svg> subtree can ever become a component (no SVG
-  // tag is uppercase-initial, so none is ever stamped as one)
+  // an unknown tag stays interpreted. It can no longer become a component - the
+  // upgrade watch narrowed to a stamped or dashed tag, both of which are
+  // rejected above - so this is a conservative rule rather than a load-bearing
+  // one: an undashed name the parser does not know is a typo or a custom
+  // element that can never register, and nothing is measured to be gained by
+  // cloning it. A *foreign* element skips the test rather than failing it:
+  // <circle> is an HTMLUnknownElement when built with createElement, which is
+  // exactly the mistake this used to make
   if (node.ns === undefined && document.createElement(node.tag) instanceof HTMLUnknownElement) return false
   for (const key in node.attrs) if (!plannableAttr(key)) return false
   // an element with :text or :html has no children on either path (see
@@ -1425,13 +1452,12 @@ type SkeletonOp =
   | { kind: "checked"; path: number[]; expr: string }
   | { kind: "selected"; path: number[]; expr: string }
 
-type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[]; tags: string[] }
+type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[] }
 
 // mirrors renderNode's own order: the attribute walk (events and attribute
 // bindings as they appear), then :class, then the children. Effects run in
 // registration order, so this is not cosmetic
-const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], tags: Set<string>): Element => {
-  tags.add(node.tag)
+const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[]): Element => {
   const el = createFor(node)
 
   let classExpr: string | undefined
@@ -1478,7 +1504,7 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[], ta
       } else el.appendChild(document.createTextNode(child))
       return
     }
-    el.appendChild(buildSkeleton(child, [...path, index], ops, tags))
+    el.appendChild(buildSkeleton(child, [...path, index], ops))
   })
 
   // after the children, because renderNode registers them there and for its
@@ -1545,9 +1571,8 @@ const planOf = (node: TemplateNode): SkeletonPlan | null => {
   let plan: SkeletonPlan | null = null
   if (plannableNode(node) && countElements(node) >= MIN_SKELETON_ELEMENTS) {
     const ops: SkeletonOp[] = []
-    const tags = new Set<string>()
-    const skeleton = buildSkeleton(node, [], ops, tags)
-    plan = { skeleton, ops, tags: Array.from(tags) }
+    const skeleton = buildSkeleton(node, [], ops)
+    plan = { skeleton, ops }
   }
   skeletonPlans.set(node, plan)
   return plan
@@ -1661,57 +1686,63 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   if (isSlotTag(node.tag)) return renderSlot(node, scope, fx, shadow)
   if (node.tag === "template" && slotAttrOf(node) !== undefined) return misplacedSlotContent(node)
 
-  const componentKey = findComponentKey(scope, node.tag)
+  const componentKey = componentKeyOf(node, scope)
   if (componentKey) return renderNestedComponent(componentKey, node, scope, fx, shadow)
 
-  // A planned subtree is cloned - unless a scope key captures one of its tags.
-  // findComponentKey strips dashes and lowercases, and every PascalCase scope
-  // key participates, so a variable named `Td` makes every <td> under it a
-  // component and `Map`, `Data`, `Table`, `Form` and `Label` are all HTML tags
-  // somebody might name a component after. "It is a known HTML tag" is not on
-  // its own an answer; this is. It costs what the interpreted path already
-  // pays - one findComponentKey per distinct tag, memoized per render pass
+  // A planned subtree is cloned, and no scope key can take one of its tags away
+  // any more: a plannable tag is undashed, unstamped and a name the HTML parser
+  // knows, which is exactly the set componentKeyOf answers "no" to. This used
+  // to walk plan.tags calling findComponentKey for each, because a variable
+  // named `Td` made every <td> under it a component and `Map`, `Data`, `Table`,
+  // `Form` and `Label` are all HTML tags somebody might name a component after.
+  // The rename is what retires that check - see TODOS/2026-08-25.component-tag-prefix.md
   if (debugFlags.cloneSkeletons) {
     const plan = planOf(node)
-    if (plan && !plan.tags.some(tag => findComponentKey(scope, tag))) return renderFromSkeleton(plan, scope, fx)
+    if (plan) return renderFromSkeleton(plan, scope, fx)
   }
 
   const el = createFor(node)
 
-  // <UserCrad /> - written as a component (node.component), resolving to no
-  // component, and not an element either. Nothing else on the page can supply
-  // the name once every script has settled, so this renders no markup, no
-  // styles, no children and no script, forever, and says so by throwing rather
-  // than leaving a hole where a region of the page was meant to be.
+  // <UserCrad /> - written as a component (node.component) and resolving to
+  // none. Nothing else on the page can supply the name once every script has
+  // settled, so this renders no markup, no styles, no children and no script,
+  // forever, and says so by throwing rather than leaving a hole where a region
+  // of the page was meant to be.
   //
-  // All three conditions carry weight. Without the capitalization <lable> and
-  // <svg> would be fatal (createElement builds SVG names in the HTML namespace,
-  // so an <svg> is an HTMLUnknownElement too); without the element check <DIV>
-  // would be, though it renders a perfectly good div; and without the pending
-  // count a factory that awaits $mounted() before returning its components
-  // could never render one, which is exactly what the watcher below is for.
+  // Two conditions now, where there were three. The capitalization still
+  // carries the claim - <lable>, <svg> and <my-widget> are not judged - but the
+  // element check is gone with the rename: a stamped tag is a c79-* one, so it
+  // is never the element it was named after, and <DIV> is judged like any other
+  // capitalized tag. It is a component claim that resolves to nothing, and it
+  // says so instead of quietly rendering a div.
   //
-  // An *absent* count is a fourth case, and it is not zero: renderComponent()
-  // renders a template against a store somebody else owns and assembles, so
-  // nothing there has finished and nothing says a key can't still be written
-  // in. The claim being tested is a component's claim about its own scripts,
-  // and where none was made the tag waits for the upgrade, as it always has.
+  // The pending count still carries the rest: without it a factory that awaits
+  // $mounted() before returning its components could never render one, which is
+  // exactly what the watcher below is for. An *absent* count is its own case,
+  // and it is not zero: renderComponent() renders a template against a store
+  // somebody else owns and assembles, so nothing there has finished and nothing
+  // says a key can't still be written in. The claim being tested is a
+  // component's claim about its own scripts, and where none was made the tag
+  // waits for the upgrade, as it always has.
   //
   // Written without a local for the count because renderNode is on the stack
   // for the whole of the subtree below it, so a slot here is a slot per level
   // of a component nested inside itself - see renderWith
-  if (node.component && el instanceof HTMLUnknownElement && ((scope as any)[PENDING_SCRIPTS] as PendingScripts | undefined)?.count === 0) {
+  if (node.component !== undefined && ((scope as any)[PENDING_SCRIPTS] as PendingScripts | undefined)?.count === 0) {
     throw unresolvedComponent(node.component, scope)
   }
 
-  // a tag that isn't standard HTML but has no matching scope key *yet* may be
-  // a component that arrives later (e.g. an async factory script exposing an
-  // imported component after `await`). Watch for the key: the effect tracks
-  // no deps, so it only re-runs on the store's new-key sweep, and swaps the
-  // placeholder element for the component exactly once
-  // dashes included, because findComponentKey matches them case-insensitively
-  // with dashes stripped: <drop-area> resolves DropArea, so a dashed tag is a
-  // possible component too, not only a custom element.
+  // a tag that may still name a component whose key has not arrived yet (an
+  // async factory script exposing an imported component after `await`). Watch
+  // for the key: the effect tracks no deps, so it only re-runs on the store's
+  // new-key sweep, and swaps the placeholder element for the component exactly
+  // once.
+  //
+  // The two spellings componentKeyOf accepts, and no others - a capitalized tag
+  // (which is a c79-* element here, since it resolved to nothing) and a dashed
+  // one, because <drop-area> resolves DropArea. An unknown *undashed* lowercase
+  // tag no longer waits: <mychip> is a typo or a custom element that never
+  // registered, not a component that has yet to arrive.
   //
   // Never for a foreign element, and the dash clause is why that has to be said
   // out loud: <annotation-xml> is the one MathML or SVG tag with a hyphen in it,
@@ -1721,12 +1752,12 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // namespace is the parser's answer to "where was this written", so ns !== undefined
   // means inside a <math> or an <svg>, where no component can live - the same
   // argument plannableNode makes. See TODOS/2026-08-24.mathml.md
-  const mayUpgrade = node.ns === undefined && (el instanceof HTMLUnknownElement || node.tag.includes("-"))
+  const mayUpgrade = node.ns === undefined && (node.component !== undefined || node.tag.includes("-"))
   if (mayUpgrade) {
     let upgraded = false
     fx.effect(() => {
       if (upgraded) return
-      const key = findComponentKey(scope, node.tag)
+      const key = componentKeyOf(node, scope)
       if (!key) return
       upgraded = true
       const replacement = renderNestedComponent(key, node, scope, fx, shadow)
@@ -1753,7 +1784,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // not on a tag that may still upgrade into a component - the upgrade
       // re-renders through renderNestedComponent, models and all
       if (!mayUpgrade) {
-        console.warn(`jq79: ${key} on <${node.tag}> does nothing - :model binds component tags only (for now)`)
+        console.warn(`jq79: ${key} on <${tagLabel(node)}> does nothing - :model binds component tags only (for now)`)
       }
     } else if (isControlAttr(key)) {
       // a directive of its own, bound further down (or by renderNodes)
@@ -2321,7 +2352,7 @@ const warnChainAttrs = (node: TemplateNode) => {
   // allocated only on the way to a warning, never on the path that finds none
   const present = [hasIf ? ":if" : null, hasElseif ? ":elseif" : null, hasElse ? ":else" : null].filter(Boolean)
   console.warn(
-    `jq79: ${present.join(" and ")} on the same <${node.tag}> - only ${present[0]} applies; ` +
+    `jq79: ${present.join(" and ")} on the same <${tagLabel(node)}> - only ${present[0]} applies; ` +
     "the branches of a chain are sibling elements, one directive each"
   )
 }
@@ -2334,9 +2365,9 @@ const warnOrphanBranch = (node: TemplateNode, afterClosedChain: boolean) => {
   const attr = ":elseif" in node.attrs ? ":elseif" : ":else"
   console.warn(
     afterClosedChain
-      ? `jq79: a second ${attr} on <${node.tag}> - the chain before it already ended with :else, ` +
+      ? `jq79: a second ${attr} on <${tagLabel(node)}> - the chain before it already ended with :else, ` +
         "which closes it. One :if, any number of :elseif, at most one :else"
-      : `jq79: ${attr} on <${node.tag}> continues no :if - it renders unconditionally. ` +
+      : `jq79: ${attr} on <${tagLabel(node)}> continues no :if - it renders unconditionally. ` +
         "A chain is :if, then :elseif, then :else, on adjacent siblings: anything but whitespace between them breaks it"
   )
 }
@@ -2675,12 +2706,10 @@ const SLOT_TAG_RE = /^slot\./i
 // <script>/<style> bodies split out, only start-tag interiors scanned, quoted
 // values consumed whole.
 //
-// Two name positions, not one: attribute names (`:model.firstName`) and the
-// dotted tag names (`<slot.firstName>`), whose closing halves are rewritten
-// too or the parser sees a mismatched pair. Component tags are deliberately
-// left alone - findComponentKey already matches them case-insensitively with
-// dashes stripped, so <UserCard> needs no help and rewriting it would only
-// obscure what the author wrote
+// Three name positions, not one: attribute names (`:model.firstName`), the
+// dotted tag names (`<slot.firstName>`) and component tags (`<UserCard>`,
+// renamed by componentTagName below). The last two have closing halves that are
+// rewritten too, or the parser sees a mismatched pair
 const kebabTagName = (tag: string): string =>
   SLOT_TAG_RE.test(tag) ? `slot.${camelToKebab(tag.slice("slot.".length))}` : tag
 
@@ -2700,6 +2729,41 @@ const kebabTagName = (tag: string): string =>
 // <Card :component="Widget" />
 const COMPONENT_TAG_ATTR = ":jq79-component"
 const COMPONENT_TAG_RE = /^[A-Z]/
+
+// A component tag is renamed to a name the HTML parser cannot resolve to an
+// element, because a PascalCase tag is lowercased by the parser and what comes
+// out is *the native element of that name*: <Circle /> inside an <svg> is a
+// circle, <Tr /> is a row placed inside its <tbody>, and 70 of 90 ordinary
+// one-word component names collide the same way. The claim the author made -
+// this is a component - survives in the stamp, and the tag stops being a name
+// anything downstream can mistake for an element's.
+//
+//   <Circle />    ->  <c79-circle :jq79-component="Circle" />
+//   </UserCard>   ->  </c79-user-card>
+//
+// Hyphenated, and that is not cosmetic: `c79-circle` is a valid custom element
+// name, so the parser builds an HTMLElement for it, where `c79circle` would be
+// an HTMLUnknownElement. The hyphen is the shape the platform reserves for what
+// is not native, which is the principle this rests on applied to our own tags -
+// and it reads for itself in the inspector, where a component that resolves to
+// nothing leaves <c79-circle> rather than a plausible-looking <circle>.
+//
+// Every capitalized tag, not only the colliding ones: today's safe name is
+// tomorrow's element. See TODOS/2026-08-25.component-tag-prefix.md
+const COMPONENT_TAG_PREFIX = "c79-"
+
+const componentTagName = (tag: string): string =>
+  `${COMPONENT_TAG_PREFIX}${camelToKebab(tag[0].toLowerCase() + tag.slice(1))}`
+
+const rewriteTagName = (tag: string): string =>
+  COMPONENT_TAG_RE.test(tag) ? componentTagName(tag) : kebabTagName(tag)
+
+// the closing half of the rename. OPEN_TAG_RE matches open tags only, which was
+// fine while both ends lowercased to the same name; rename one end and not the
+// other and `<c79-circle>` gets closed by `</circle>`, nesting everything that
+// follows inside it. </slot.x> keeps its own pass - it is lowercase and
+// unaffected by this one
+const CLOSE_COMPONENT_RE = /<\/([A-Z][\w.-]*)(\s*)>/g
 
 // appends the stamp inside the tag, *before* a self-closing slash: this pass
 // runs first and expandSelfClosingTags still has to recognize the `/>` that
@@ -2725,9 +2789,10 @@ const expandNameCase = (src: string): string =>
               const rewritten = attrs.replace(ATTR_NAME_RE, (whole, space: string | undefined, name: string | undefined) =>
                 name === undefined ? whole : `${space}${camelToKebab(name)}`
               )
-              return `<${kebabTagName(tag)}${stampComponentTag(tag, rewritten)}>`
+              return `<${rewriteTagName(tag)}${stampComponentTag(tag, rewritten)}>`
             })
             .replace(CLOSE_SLOT_RE, (_match, suffix: string, space: string) => `</slot.${camelToKebab(suffix)}${space}>`)
+            .replace(CLOSE_COMPONENT_RE, (_match, tag: string, space: string) => `</${componentTagName(tag)}${space}>`)
     )
     .join("")
 
