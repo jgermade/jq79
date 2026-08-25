@@ -2473,6 +2473,27 @@ describe("the component box", () => {
     expect(container.querySelector("c79-dot")).toBeNull()
   })
 
+  // and what "renders" means there, which the assertion above cannot see: jsdom
+  // finds the element by name, a browser draws nothing. A component's template
+  // is parsed on its own, where a bare <circle> is not in a foreign context, so
+  // its root is an HTML element wherever the usage site sits. Measured in
+  // Chromium - RECORD/2026-08-25.what-the-browser-said.md - and pinned here so
+  // the day it changes is a day somebody chose.
+  //
+  // A component meant for an <svg> roots its own template at <svg>, which is a
+  // foreign context of its own and draws
+  it("gives a bare-SVG root the HTML namespace, wherever the usage site sits", () => {
+    mount(`
+      <div><svg class="s"><Bare /><Rooted /></svg></div>
+      <template name="Bare"><circle class="bare" r="4" /></template>
+      <template name="Rooted"><svg class="rooted"><circle class="inner" r="4" /></svg></template>
+    `)
+
+    expect(container.querySelector(".bare")!.namespaceURI, "parsed outside any <svg>").toBe("http://www.w3.org/1999/xhtml")
+    expect(container.querySelector(".rooted")!.namespaceURI).toBe("http://www.w3.org/2000/svg")
+    expect(container.querySelector(".inner")!.namespaceURI, "a root of its own is a foreign context of its own").toBe("http://www.w3.org/2000/svg")
+  })
+
   it("moves component rows as one node when :each reorders them", () => {
     // the box is a stable single-node range, where the anchors were a pair with
     // dynamic content between them - boundsOf resolves an element as itself
