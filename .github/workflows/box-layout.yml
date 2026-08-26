@@ -1,0 +1,140 @@
+# Does the component box behave in a browser?
+#
+# Every assertion behind the box - the element each component instance renders
+# inside, and its one line of CSS - is jsdom's, and jsdom has no layout and no
+# cascade (RECORD/2026-08-25.open-a-browser.md). This is what opens a browser.
+#
+# It fails the build on two things, both ours: the box changing the layout its
+# children were in, and an author's `c79-panel { display: flex }` losing to the
+# default. Where a component tag lands in table-row position, and what an <svg>
+# does with an unknown element around one, are facts about the web platform -
+# reported in the table, never gated.
+#
+# Each gating probe measures its own counterfactual, so a probe that could not
+# have failed fails instead of passing. See the script; it says why at length.
+
+name: Box layout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/check-box-layout.mjs'
+      - '.github/workflows/box-layout.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/check-box-layout.mjs'
+      - '.github/workflows/box-layout.yml'
+  schedule:
+    # Mondays, 05:41 UTC. Off the hour, and off the oracle's :17, so the two
+    # browser jobs do not queue behind each other
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+jobs:
+  engines:
+    runs-on: ubuntu-latest
+    strategy:
+      # every engine reports, even when one of them fails - a single red engine
+      # is the interesting case and the other two are its control
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm install
+
+      # the check measures what ships, not the source: dist/ is gitignored, so
+      # it has to be built here
+      - run: npm run build
+
+      - name: Cache browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ matrix.engine }}-${{ hashFiles('package-lock.json') }}
+
+      - run: npx playwright install --with-deps ${{ matrix.engine }}
+
+      # `shell: bash` is what turns pipefail on (Actions runs it as
+      # `bash -eo pipefail`), and the pipe into tee would otherwise report the
+      # exit code of tee - a failing check that never fails the build
+      - name: Check the box
+        shell: bash
+        run: |
+          set -o pipefail
+          # 2>&1 so the failure detail - which rect moved, and by how much -
+          # reaches report.txt and the job summary
+          node scripts/check-box-layout.mjs ${{ matrix.engine }} --json answers.json 2>&1 | tee report.txt
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## ${{ matrix.engine }}"
+            echo '```'
+            cat report.txt || echo "the check produced no report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # uploaded even when the check failed: an engine that disagrees is exactly
+      # the one the comparison below is worth reading for
+      - name: Keep this engine's answers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-layout-${{ matrix.engine }}
+          path: answers.json
+          if-no-files-found: warn
+
+  # The matrix puts every engine on its own runner, so no job in it can see the
+  # others. This is the job that can - the same shape the oracle's workflow grew
+  # after its cross-engine table turned out to be structurally unreachable.
+  #
+  # It reports and never fails: level 2 is the platform's answer, and level 1
+  # already gated inside each engine's own job.
+  compare:
+    needs: engines
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: box-layout-*
+          path: answers
+
+      # no npm install, and none needed: --compare reads JSON and never imports
+      # playwright. The oracle's compare job failed its first run on exactly that
+      - name: Compare the engines
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/check-box-layout.mjs --compare answers 2>&1 | tee compared.txt
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## the box, engine by engine"
+            echo '```'
+            cat compared.txt || echo "no comparison was produced"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

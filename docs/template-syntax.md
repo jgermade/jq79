@@ -348,7 +348,23 @@ several, or none:
   address it by name — see [styles](components.md#styles).
 - **Not inside `<svg>` or `<math>`.** SVG renders neither an unknown element nor
   its children, so a component in a foreign namespace renders inline, as it
-  always did.
+  always did. Measured: with a box there, the drawing disappears — and
+  `display: contents` makes it worse rather than better, since on an element SVG
+  renders itself it computes to `none`.
+
+A component used inside an `<svg>` has to **root its own template at `<svg>`**:
+
+```html
+<svg viewBox="0 0 100 100"><Dot /></svg>
+
+<template name="Dot"><svg x="10" y="10"><circle cx="8" cy="8" r="8" /></svg></template>
+<template name="Bare"><circle cx="8" cy="8" r="8" /></template>   <!-- draws nothing -->
+```
+
+A component's template is parsed on its own, so a bare `<circle>` at its root is
+an HTML element with an SVG name — it lands in the tree and never draws, wherever
+the tag was written. A root of its own `<svg>` is a foreign context of its own,
+and everything inside it is in the SVG namespace as usual.
 
 What it costs: a child or sibling combinator in **global** CSS stops crossing the
 boundary (`.grid > .item` no longer matches an `.item` a component rendered), and

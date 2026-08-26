@@ -901,14 +901,22 @@ const componentBox = (key: string, node: TemplateNode, shadow: boolean): Documen
 // tree, and a style that never applies to its own component would still be
 // restyling the page around it
 const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
-  // two anchors bracketing everything this usage site ever renders: the
-  // instance's DOM is dynamic (the definition can resolve late or be swapped),
-  // so a caller that needs to move or remove this chunk later can't hold any
-  // of it - it holds the anchors, which never move on their own (see boundsOf)
-  const anchor = document.createComment(key)
-  const endAnchor = document.createComment(`/${key}`)
+  // What this usage site ever renders needs stable bounds: the instance's DOM
+  // is dynamic (the definition can resolve late or be swapped), so a caller
+  // that moves or removes the chunk later cannot hold any of it.
+  //
+  // The BOX is those bounds where there is one - it is created once here and
+  // never replaced, and boundsOf resolves an element as { first: el, last: el }.
+  // So a boxed usage site renders no anchors at all: two comment nodes per
+  // instance that nothing read (RECORD/2026-08-25.retire-the-anchors.md).
+  //
+  // In a foreign namespace there is no box (componentBox returns a fragment,
+  // because a wrapper inside <svg> takes the drawing with it - measured in
+  // three engines), and there the anchors are still doing the whole job
   const wrapper = componentBox(key, node, shadow)
-  wrapper.append(anchor, endAnchor)
+  const boxed = !(wrapper instanceof DocumentFragment)
+  const endAnchor = boxed ? null : document.createComment(`/${key}`)
+  if (!boxed) wrapper.append(document.createComment(key), endAnchor!)
 
   // the tag's children, as content for the child's <slot>s. Built once per
   // usage site (the AST doesn't change) and closed over the parent's scope
@@ -1132,7 +1140,12 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     } finally {
       nestingDepth--
     }
-    endAnchor.parentNode!.insertBefore(holder, endAnchor)
+    // the box holds this instance and nothing else, so appending is the whole
+    // of it; without one, the end anchor is the only fixed point there is - and
+    // its parentNode is the fragment before this site is inserted and the real
+    // parent after, which is why it is read here rather than captured
+    if (endAnchor) endAnchor.parentNode!.insertBefore(holder, endAnchor)
+    else wrapper.appendChild(holder)
 
     // deep: a prop sync forwards whatever the expression evaluates to, whole,
     // into the child's store - it reads `user`, never `user.name`, so it can't
