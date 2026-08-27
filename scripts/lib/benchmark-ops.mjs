@@ -36,90 +36,104 @@ export const installAndBuild = async (dir, installArgs = []) => {
 // full animation frame, which would add a ~16ms floor to every measurement
 // and swamp the fast operations (select/swap are single-digit milliseconds).
 
+// Four of these are a batch of 16 clicks timed as one measurement - the shape
+// the official benchmark writes `_x16`, and for the same reason. A single click
+// on any of them landed between 1.5ms and 6.3ms; Chromium quantises
+// performance.now() to 0.05ms, so one step was 3% of "Update every 10th row"
+// and the whole operation was 30 of them. They also sat under run-ab.mjs's
+// GATE_MIN_MS, which meant a regression in the two operations jq79 is fastest
+// at could not fail a build. Sixteen clicks clear both floors.
+//
+// The suite builds, appends to and clears a 10,000-row table, and until now it
+// only ever *updated* a 1,000-row one - so `update10k_x16` is the cell its own
+// symmetry was missing. See RECORD/2026-08-27.measuring-the-update-side.md.
+
+// one selector per click. A batch that clicked the same row link 16 times would
+// measure fifteen no-ops - selecting an already-selected row changes nothing -
+// so the select batch walks 16 different rows instead
+const repeat = (selector, times = 16) => Array(times).fill(selector)
+const rowLinks = (times = 16) => Array.from({ length: times }, (_, i) => `#tbody tr:nth-child(${i + 2}) td:nth-child(2) a`)
+const build = (button, rows) => async page => {
+  await page.click(button)
+  await waitForRows(page, rows)
+}
+
 export const OPERATIONS = [
   {
     id: "create1k",
     label: "Create 1,000 rows",
     prepare: async page => {},
-    selector: "#run",
-    expectedRows: 1000,
+    clicks: ["#run"],
+    expect: { rows: 1000 },
   },
   {
     id: "replace1k",
     label: "Replace all 1,000 rows",
-    prepare: async page => {
-      await page.click("#run")
-      await waitForRows(page, 1000)
-    },
-    selector: "#run",
-    expectedRows: null,
+    prepare: build("#run", 1000),
+    clicks: ["#run"],
+    expect: { rows: 1000 },
   },
   {
-    id: "partialUpdate",
-    label: "Update every 10th row",
-    prepare: async page => {
-      await page.click("#run")
-      await waitForRows(page, 1000)
-    },
-    selector: "#update",
-    expectedRows: null,
+    id: "update1k_x16",
+    label: "Update every 10th row, 1,000 rows ×16",
+    prepare: build("#run", 1000),
+    clicks: repeat("#update"),
+    // every click appends " !!!" to row 1's label, so all 16 have to have
+    // landed for the first cell to carry 16 marks
+    expect: { rows: 1000, updateMarks: 16 },
   },
   {
-    id: "selectRow",
-    label: "Select a row",
-    prepare: async page => {
-      await page.click("#run")
-      await waitForRows(page, 1000)
-    },
-    selector: "#tbody tr:nth-child(2) td:nth-child(2) a",
-    expectedRows: null,
+    id: "select1k_x16",
+    label: "Select a row, 1,000 rows ×16",
+    prepare: build("#run", 1000),
+    clicks: rowLinks(),
+    expect: { rows: 1000, selectedRows: 1 },
   },
   {
-    id: "swapRows",
-    label: "Swap rows",
-    prepare: async page => {
-      await page.click("#run")
-      await waitForRows(page, 1000)
-    },
-    selector: "#swaprows",
-    expectedRows: null,
+    id: "swap1k_x16",
+    label: "Swap rows, 1,000 rows ×16",
+    prepare: build("#run", 1000),
+    clicks: repeat("#swaprows"),
+    // 16 swaps of the same two rows is an even number of them, so the table
+    // ends where it started
+    expect: { rows: 1000 },
   },
   {
     id: "removeRow",
     label: "Remove a row",
-    prepare: async page => {
-      await page.click("#run")
-      await waitForRows(page, 1000)
-    },
-    selector: "#tbody tr:nth-child(4) td:nth-child(3) a",
-    expectedRows: 999,
+    // the only one that cannot repeat without rebuilding the table between
+    // clicks, which would put the rebuild inside the measurement
+    prepare: build("#run", 1000),
+    clicks: ["#tbody tr:nth-child(4) td:nth-child(3) a"],
+    expect: { rows: 999 },
   },
   {
     id: "create10k",
     label: "Create 10,000 rows",
     prepare: async page => {},
-    selector: "#runlots",
-    expectedRows: 10000,
+    clicks: ["#runlots"],
+    expect: { rows: 10000 },
+  },
+  {
+    id: "update10k_x16",
+    label: "Update every 10th row, 10,000 rows ×16",
+    prepare: build("#runlots", 10000),
+    clicks: repeat("#update"),
+    expect: { rows: 10000, updateMarks: 16 },
   },
   {
     id: "appendToLarge",
     label: "Append 1,000 rows to 10,000",
-    prepare: async page => {
-      await page.click("#runlots")
-      await waitForRows(page, 10000)
-    },
-    selector: "#add",
-    expectedRows: 11000,
+    prepare: build("#runlots", 10000),
+    clicks: ["#add"],
+    expect: { rows: 11000 },
   },
   {
     id: "clearLarge",
     label: "Clear 10,000 rows",
-    prepare: async page => {
-      await page.click("#runlots")
-      await waitForRows(page, 10000)
-    },
-    selector: "#clear",
-    expectedRows: 0,
+    prepare: build("#runlots", 10000),
+    clicks: ["#clear"],
+    expect: { rows: 0 },
   },
 ]
 
@@ -127,24 +141,42 @@ export const waitForRows = (page, n) =>
   page.waitForFunction(count => document.querySelectorAll("#tbody tr").length === count, n, { timeout: 15000 })
 
 // runs entirely inside the page (one round-trip) so Playwright's own IPC
-// doesn't get counted as part of the operation
-export const clickAndTime = (page, selector, expectedRows) =>
+// doesn't get counted as part of the operation. Every element is resolved
+// before the clock starts - a querySelector against a 10,000-row table is not
+// free, and it is not what any of these operations is about
+export const clickAndTime = (page, clicks, expect) =>
   page.evaluate(
-    async ({ selector, expectedRows }) => {
-      const el = document.querySelector(selector)
+    async ({ clicks, expect }) => {
+      const els = clicks.map(selector => {
+        const el = document.querySelector(selector)
+        if (!el) throw new Error(`no element matched ${selector}`)
+        return el
+      })
       const start = performance.now()
-      el.click()
-      // let any microtask-queued reactivity (Vue's scheduler, React's
-      // batching, Svelte's effects) flush before reading the DOM or the clock
-      for (let i = 0; i < 8; i++) await null
+      for (const el of els) {
+        el.click()
+        // let any microtask-queued reactivity (Vue's scheduler, React's
+        // batching, Svelte's effects) flush before reading the DOM or the clock
+        for (let i = 0; i < 8; i++) await null
+      }
       const elapsed = performance.now() - start
-      if (expectedRows != null) {
-        const actual = document.querySelectorAll("#tbody tr").length
-        if (actual !== expectedRows) throw new Error(`expected ${expectedRows} rows after ${selector}, found ${actual}`)
+
+      // what the operation was supposed to do, checked after the clock stops.
+      // A batch whose clicks land on detached nodes does no work and reports a
+      // very good time for it, and that is the failure this catches
+      const check = (what, actual, wanted) => {
+        if (wanted != null && actual !== wanted) throw new Error(`expected ${wanted} ${what} after ${clicks.length} click(s), found ${actual}`)
+      }
+      check("rows", document.querySelectorAll("#tbody tr").length, expect.rows)
+      check("selected rows", document.querySelectorAll("#tbody tr.danger").length, expect.selectedRows)
+      if (expect.updateMarks != null) {
+        // the update walks every 10th row, so row 1 carries one " !!!" per click
+        const label = document.querySelector("#tbody tr:nth-child(1) td:nth-child(2) a")?.textContent ?? ""
+        check("update marks on row 1", (label.match(/!!!/g) ?? []).length, expect.updateMarks)
       }
       return elapsed
     },
-    { selector, expectedRows }
+    { clicks, expect }
   )
 
 export const trimmedMean = samples => {
@@ -175,7 +207,7 @@ export const measureApp = async (page, url, samples, only = null) => {
       await page.goto(url)
       await page.waitForSelector("#run")
       await op.prepare(page)
-      times.push(await clickAndTime(page, op.selector, op.expectedRows))
+      times.push(await clickAndTime(page, op.clicks, op.expect))
     }
     results.push({
       id: op.id,
