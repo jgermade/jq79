@@ -107,6 +107,50 @@ const bothWays = <T>(render: () => T): [T, T] => {
   }
 }
 
+// An unchanged write is still a write. `el.textContent = same` replaces the
+// element's child text node with a fresh one, so an effect that re-runs for a
+// neighbour's sake would hand every observer - and every reference anyone held -
+// a different node for the same string. :text, :checked and :selected compare
+// first, on both paths, which is what the text-node binding and :value already
+// did. RECORD/2026-08-27.grouping-a-row-s-bindings.md
+describe("a binding that would write the same value writes nothing", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => {
+    container.remove()
+    Component79.debug({ cloneSkeletons: true })
+    Node.prototype.cloneNode = nativeCloneNode
+  })
+
+  // the store already skips a write that changes nothing, so the effect has to
+  // be woken by something that DOES change while the string it renders does not
+  const TEMPLATE = `<div class="w"><p class="a" :text="n > 5 ? 'many' : 'few'"></p><span class="b">{{ other }}</span><hr /></div>`
+
+  it("keeps the text node :text wrote, on both paths", () => {
+    bothWays(() => {
+      const component = parseComponent(TEMPLATE)
+      for (let render = 0; render < 2; render++) {
+        const host = document.createElement("div")
+        container.appendChild(host)
+        const data = $reactive({ n: 9, other: "x" })
+        host.appendChild(renderComponent(component, data))
+        const node = host.querySelector(".a")!.firstChild
+        expect(host.querySelector(".a")!.textContent).toBe("many")
+
+        data.n = 10 // the effect re-runs; "many" is still "many"
+        expect(host.querySelector(".a")!.firstChild, "an unchanged :text replaced its text node").toBe(node)
+
+        data.n = 1 // and a real change still writes
+        expect(host.querySelector(".a")!.textContent).toBe("few")
+      }
+    })
+  })
+})
+
 describe("the clone path renders what the interpreted path renders", () => {
   let container: HTMLDivElement
 

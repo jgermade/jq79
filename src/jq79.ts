@@ -1785,7 +1785,13 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
     } else if (op.kind === "textContent") {
       const el = target as Element
       const { expr } = op
-      fx.effect(() => { el.textContent = String(evalExpr(expr, scope) ?? "") })
+      // compared before it lands, like the text node above: an unchanged write
+      // still replaces the element's child text node, so a re-run that changed
+      // nothing would hand every observer a new node
+      fx.effect(() => {
+        const text = String(evalExpr(expr, scope) ?? "")
+        if (el.textContent !== text) el.textContent = text
+      })
     } else if (op.kind === "html") {
       // renderNode's effect with its `allowUrl` arm removed, because an element
       // carrying :html.allowed is never planned - the attribute is rejected by
@@ -1806,11 +1812,17 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
     } else if (op.kind === "checked") {
       const el = target as HTMLInputElement
       const { expr } = op
-      fx.effect(() => { el.checked = !!evalExpr(expr, scope) })
+      fx.effect(() => {
+        const checked = !!evalExpr(expr, scope)
+        if (el.checked !== checked) el.checked = checked
+      })
     } else if (op.kind === "selected") {
       const el = target as HTMLOptionElement
       const { expr } = op
-      fx.effect(() => { el.selected = !!evalExpr(expr, scope) })
+      fx.effect(() => {
+        const selected = !!evalExpr(expr, scope)
+        if (el.selected !== selected) el.selected = selected
+      })
     } else {
       // every kind is named above, so this is unreachable - and the assignment
       // is what makes the compiler say so. A kind added to SkeletonOp and
@@ -2024,7 +2036,10 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     console.warn("jq79: :html.allowed without :html on the same element does nothing")
   }
   if (textExpr !== undefined) {
-    fx.effect(() => { el.textContent = String(evalExpr(textExpr, scope) ?? "") })
+    fx.effect(() => {
+      const text = String(evalExpr(textExpr, scope) ?? "")
+      if (el.textContent !== text) el.textContent = text
+    })
   } else if (htmlExpr !== undefined) {
     fx.effect(() => {
       const options = allowedExpr !== undefined ? { allowUrl: normalizeAllowUrl(evalExpr(allowedExpr, scope)) } : undefined
@@ -2062,11 +2077,17 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // walk above is a `for...in` (RECORD/2026-08-23.where-the-create-time-goes.md)
   const checkedExpr = node.attrs[":checked"]
   if (checkedExpr !== undefined) {
-    fx.effect(() => { (el as HTMLInputElement).checked = !!evalExpr(checkedExpr, scope) })
+    fx.effect(() => {
+      const checked = !!evalExpr(checkedExpr, scope)
+      if ((el as HTMLInputElement).checked !== checked) (el as HTMLInputElement).checked = checked
+    })
   }
   const selectedExpr = node.attrs[":selected"]
   if (selectedExpr !== undefined) {
-    fx.effect(() => { (el as HTMLOptionElement).selected = !!evalExpr(selectedExpr, scope) })
+    fx.effect(() => {
+      const selected = !!evalExpr(selectedExpr, scope)
+      if ((el as HTMLOptionElement).selected !== selected) (el as HTMLOptionElement).selected = selected
+    })
   }
 
   return el
