@@ -3,7 +3,7 @@ import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl } from "./dom"
 import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
-import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
+import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, freeIdentifiers, type PropDecl } from "./transform"
 
 export { $, $$, $create } from "./dom"
 export { $reactive, $toRaw } from "./reactive"
@@ -106,22 +106,102 @@ const elementToAST = (el: Element): TemplateNode => {
 // recompiled, and rethrown as undefined, exactly as before
 const compiled = new Map<string, Function | null>()
 
+// the keys whose compiled function is the `const` form below rather than the
+// `with` one - the only ones a ReferenceError can be worth retrying for
+const scopedKeys = new Set<string>()
+
+// Resolves a name the `const` prologue could not: its fast read came back
+// undefined, which means one of three different things. `with` told them apart
+// by consulting [[HasProperty]] on every read of every name; this consults it
+// only here, which is why the fast path has no `has` trap in it at all
+//
+// The `in scope` branch is load-bearing beyond "declared but undefined": a
+// deleted key leaves a tombstone the store still claims, so `user ? user.name :
+// "none"` takes its else branch instead of dying against globalThis (see
+// RECORD/2026-08-23.narrow-the-wake-rule.md)
+const resolveName = (scope: Record<string, any>, name: string): any => {
+  if (name in scope) return undefined
+  if (name in globalThis) return (globalThis as any)[name]
+  // the same error `with` threw, with the same wording, so reportExprError's
+  // MISSING_NAME_RE reads it exactly as it always has
+  throw new ReferenceError(`${name} is not defined`)
+}
+
+// the newline before `)` ends a trailing line comment in the expression
+// ({{ msg // greeting }}); ASI doesn't apply inside parens, so everything else
+// is untouched. Without it the comment eats the rest of this single-line body
+// and the expression never compiles
+const compileWith = (expr: string, params: string[]): Function | null => {
+  try {
+    return new Function("$scope", "$r", ...params, `with ($scope) { return (${expr}\n); }`)
+  } catch {
+    return null // a syntax error: it will never compile, so don't try again
+  }
+}
+
+// The same evaluation with the names resolved by hand: each free identifier
+// becomes a `const` read straight off the scope, and the expression's own text
+// is left exactly as authored inside the return. One proxy `get` per name -
+// the same read `with` would have made, so the deps tracked are the same ones.
+// Worth 63% of a one-name evaluation and 72% of a two-name one, measured in
+// RECORD/2026-08-27.name-resolution-without-with.md
+//
+// Returns null for anything freeIdentifiers refuses (an assignment, an arrow,
+// a declaration, a called name - handlers, mostly, where an evaluation's cost
+// does not matter), and for a prologue that will not compile: the caller falls
+// back to `with`.
+//
+// A name the extractor MISSES is not that benign, and a sabotage measured it:
+// the prologue does not declare it, so the expression reads it off globalThis.
+// Where nothing is there it throws and runExpr demotes the whole expression to
+// `with` - slower, same answer - but where the page has a global of that name
+// (`name`, `status`, `length`, `top`, `event` ... window has hundreds) it reads
+// the global instead of the store, and nothing throws. So the extractor's
+// misses are a correctness surface, not only a performance one, and the
+// differential in tests/expressions.test.ts is what stands behind it
+const compileScoped = (expr: string, params: string[]): Function | null => {
+  if (!debugFlags.scopedNames) return null
+  const free = freeIdentifiers(expr)
+  if (free === null) return null
+  // an extra is already a parameter of this function: declaring it again would
+  // shadow the value the caller passed in
+  const names = free.filter(name => !params.includes(name))
+  const prologue = names.length === 0 ? "" : `let $t; ${names.map(name =>
+    `const ${name} = ($t = $scope.${name}) !== undefined ? $t : $r($scope, ${JSON.stringify(name)});`).join(" ")}`
+  try {
+    return new Function("$scope", "$r", ...params, `${prologue} return (${expr}\n);`)
+  } catch {
+    return null
+  }
+}
+
 const compileExpr = (expr: string, params: string[]): Function | null => {
   const key = `${params.join(",")}|${expr}`
   let fn = compiled.get(key)
   if (fn === undefined) {
-    try {
-      // the newline before `)` ends a trailing line comment in the
-      // expression ({{ msg // greeting }}); ASI doesn't apply inside parens,
-      // so everything else is untouched. Without it the comment eats the
-      // rest of this single-line body and the expression never compiles
-      fn = new Function("$scope", ...params, `with ($scope) { return (${expr}\n); }`)
-    } catch {
-      fn = null // a syntax error: it will never compile, so don't try again
-    }
+    fn = compileScoped(expr, params)
+    if (fn) scopedKeys.add(key)
+    else fn = compileWith(expr, params)
     compiled.set(key, fn)
   }
   return fn
+}
+
+// The safety net under the extractor. A free name it fails to collect is not
+// declared by the prologue, so the expression reaches for it against globalThis
+// and throws - and that is indistinguishable, from here, from the name being
+// genuinely undeclared. So the first ReferenceError out of a scoped function
+// demotes that expression to `with` permanently and evaluates it again: a name
+// the scanner missed costs one wasted evaluation, and a name that really is
+// missing throws again from `with`, reported exactly as before.
+//
+// The retry can run a call in the expression twice, which is why it happens
+// once per expression and never for the `with` form
+const demoteToWith = (key: string, expr: string, params: string[]): Function | null => {
+  const fallback = compileWith(expr, params)
+  compiled.set(key, fallback)
+  scopedKeys.delete(key)
+  return fallback
 }
 
 // a template expression is re-evaluated constantly - once per effect run, once
@@ -240,9 +320,20 @@ const reportExprError = (expr: string, scope: Record<string, any>, error: unknow
 }
 
 const runExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
-  const fn = compileExpr(expr, extras ? Object.keys(extras) : [])
+  const params = extras ? Object.keys(extras) : []
+  const fn = compileExpr(expr, params)
   if (!fn) return undefined // a syntax error: compileExpr cached the failure, and it stays undefined
-  return fn(scope, ...(extras ? Object.values(extras) : []))
+  const args = extras ? Object.values(extras) : []
+  const key = `${params.join(",")}|${expr}`
+  if (!scopedKeys.has(key)) return fn(scope, resolveName, ...args)
+  try {
+    return fn(scope, resolveName, ...args)
+  } catch (error) {
+    if (!(error instanceof ReferenceError)) throw error
+    const fallback = demoteToWith(key, expr, params)
+    if (!fallback) throw error
+    return fallback(scope, resolveName, ...args)
+  }
 }
 
 const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
@@ -1423,7 +1514,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // rebuild: a page that renders wrong is a bug report either way, but one whose
 // reporter can say "it goes away with cloning off" is a bug report that names
 // the file
-const debugFlags: DebugFlags = { cloneSkeletons: true }
+const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true }
 
 // What `Component79.debug()` can switch. One flag today; the shape is an object
 // so the next one does not change the call
@@ -1432,6 +1523,12 @@ export type DebugFlags = {
   // instead of walking the AST for every instance of it. Off means every
   // element goes through renderNode, exactly as before this existed
   cloneSkeletons: boolean
+
+  // resolve an expression's free names with a `const` prologue instead of
+  // `with ($scope)`. Off means every expression is compiled the way it always
+  // was, which is what makes the two forms comparable on one build - both in
+  // tests/expressions.test.ts and in `npm run benchmark:ab -- --flags`
+  scopedNames: boolean
 }
 
 // the control attributes a skeleton knows how to fill. The rest of
@@ -3870,6 +3967,11 @@ export class Component79 {
   // nobody could debug
   static debug(options?: Partial<DebugFlags>): DebugFlags {
     if (options) {
+      // an expression is compiled once and cached for the life of the page, so
+      // flipping the form it compiles to has to drop what was compiled under
+      // the old one - otherwise "off" leaves every expression already rendered
+      // still running the prologue
+      const scopedBefore = debugFlags.scopedNames
       for (const key in options) {
         const value = options[key as keyof DebugFlags]
         // the key before the value: a typo carrying a boolean - `cloneSkeleton`
@@ -3882,6 +3984,10 @@ export class Component79 {
           console.warn(`jq79: Component79.debug does not know "${key}" - the flags it has are: ${Object.keys(debugFlags).join(", ")}`)
         } else if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
         else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)
+      }
+      if (debugFlags.scopedNames !== scopedBefore) {
+        compiled.clear()
+        scopedKeys.clear()
       }
     }
     return { ...debugFlags }
