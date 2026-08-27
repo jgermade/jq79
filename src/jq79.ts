@@ -3,7 +3,7 @@ import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl } from "./dom"
 import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
-import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
+import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, freeIdentifiers, type PropDecl } from "./transform"
 
 export { $, $$, $create } from "./dom"
 export { $reactive, $toRaw } from "./reactive"
@@ -104,24 +104,107 @@ const elementToAST = (el: Element): TemplateNode => {
 // expression compiled with and without $event is two different functions. A
 // syntactically invalid expression caches its failure (null) so it isn't
 // recompiled, and rethrown as undefined, exactly as before
-const compiled = new Map<string, Function | null>()
+// One entry per (extras, expression). `scoped` says which form `fn` is, so the
+// evaluation path never rebuilds the key to ask - it is a string concatenation
+// per evaluation, and this is the hottest loop in the library
+type CompiledExpr = { fn: Function | null; scoped: boolean }
 
-const compileExpr = (expr: string, params: string[]): Function | null => {
-  const key = `${params.join(",")}|${expr}`
-  let fn = compiled.get(key)
-  if (fn === undefined) {
-    try {
-      // the newline before `)` ends a trailing line comment in the
-      // expression ({{ msg // greeting }}); ASI doesn't apply inside parens,
-      // so everything else is untouched. Without it the comment eats the
-      // rest of this single-line body and the expression never compiles
-      fn = new Function("$scope", ...params, `with ($scope) { return (${expr}\n); }`)
-    } catch {
-      fn = null // a syntax error: it will never compile, so don't try again
-    }
-    compiled.set(key, fn)
+const compiled = new Map<string, CompiledExpr>()
+
+// Resolves a name the `const` prologue could not: its fast read came back
+// undefined, which means one of three different things. `with` told them apart
+// by consulting [[HasProperty]] on every read of every name; this consults it
+// only here, which is why the fast path has no `has` trap in it at all
+//
+// The `in scope` branch is load-bearing beyond "declared but undefined": a
+// deleted key leaves a tombstone the store still claims, so `user ? user.name :
+// "none"` takes its else branch instead of dying against globalThis (see
+// RECORD/2026-08-23.narrow-the-wake-rule.md)
+const resolveName = (scope: Record<string, any>, name: string): any => {
+  if (name in scope) return undefined
+  if (name in globalThis) return (globalThis as any)[name]
+  // the same error `with` threw, with the same wording, so reportExprError's
+  // MISSING_NAME_RE reads it exactly as it always has
+  throw new ReferenceError(`${name} is not defined`)
+}
+
+// the newline before `)` ends a trailing line comment in the expression
+// ({{ msg // greeting }}); ASI doesn't apply inside parens, so everything else
+// is untouched. Without it the comment eats the rest of this single-line body
+// and the expression never compiles
+const compileWith = (expr: string, params: string[]): Function | null => {
+  try {
+    return new Function("$scope", "$r", ...params, `with ($scope) { return (${expr}\n); }`)
+  } catch {
+    return null // a syntax error: it will never compile, so don't try again
   }
-  return fn
+}
+
+// The same evaluation with the names resolved by hand: each free identifier
+// becomes a `const` read straight off the scope, and the expression's own text
+// is left exactly as authored inside the return. One proxy `get` per name -
+// the same read `with` would have made, so the deps tracked are the same ones.
+// Worth 63% of a one-name evaluation and 72% of a two-name one, measured in
+// RECORD/2026-08-27.name-resolution-without-with.md
+//
+// Returns null for anything freeIdentifiers refuses (an assignment, an arrow,
+// a declaration, a called name - handlers, mostly, where an evaluation's cost
+// does not matter), and for a prologue that will not compile: the caller falls
+// back to `with`.
+//
+// A name the extractor MISSES is not that benign, and a sabotage measured it:
+// the prologue does not declare it, so the expression reads it off globalThis.
+// Where nothing is there it throws and runExpr demotes the whole expression to
+// `with` - slower, same answer - but where the page has a global of that name
+// (`name`, `status`, `length`, `top`, `event` ... window has hundreds) it reads
+// the global instead of the store, and nothing throws. So the extractor's
+// misses are a correctness surface, not only a performance one, and the
+// differential in tests/expressions.test.ts is what stands behind it
+const compileScoped = (expr: string, params: string[]): Function | null => {
+  if (!debugFlags.scopedNames) return null
+  const free = freeIdentifiers(expr)
+  if (free === null) return null
+  // an extra is already a parameter of this function: declaring it again would
+  // shadow the value the caller passed in
+  const names = free.filter(name => !params.includes(name))
+  const prologue = names.length === 0 ? "" : `let $t; ${names.map(name =>
+    `const ${name} = ($t = $scope.${name}) !== undefined ? $t : $r($scope, ${JSON.stringify(name)});`).join(" ")}`
+  try {
+    return new Function("$scope", "$r", ...params, `${prologue} return (${expr}\n);`)
+  } catch {
+    return null
+  }
+}
+
+const entryFor = (key: string, expr: string, params: string[]): CompiledExpr => {
+  let entry = compiled.get(key)
+  if (entry === undefined) {
+    const scoped = compileScoped(expr, params)
+    entry = scoped ? { fn: scoped, scoped: true } : { fn: compileWith(expr, params), scoped: false }
+    compiled.set(key, entry)
+  }
+  return entry
+}
+
+const exprKey = (expr: string, params: string[]): string => `${params.join(",")}|${expr}`
+
+const compileExpr = (expr: string, params: string[]): Function | null =>
+  entryFor(exprKey(expr, params), expr, params).fn
+
+// The safety net under the extractor. A free name it fails to collect is not
+// declared by the prologue, so the expression reaches for it against globalThis
+// and throws - and that is indistinguishable, from here, from the name being
+// genuinely undeclared. So the first ReferenceError out of a scoped function
+// demotes that expression to `with` permanently and evaluates it again: a name
+// the scanner missed costs one wasted evaluation, and a name that really is
+// missing throws again from `with`, reported exactly as before.
+//
+// The retry can run a call in the expression twice, which is why it happens
+// once per expression and never for the `with` form
+const demoteToWith = (key: string, expr: string, params: string[]): Function | null => {
+  const fallback = compileWith(expr, params)
+  compiled.set(key, { fn: fallback, scoped: false })
+  return fallback
 }
 
 // a template expression is re-evaluated constantly - once per effect run, once
@@ -240,9 +323,20 @@ const reportExprError = (expr: string, scope: Record<string, any>, error: unknow
 }
 
 const runExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
-  const fn = compileExpr(expr, extras ? Object.keys(extras) : [])
-  if (!fn) return undefined // a syntax error: compileExpr cached the failure, and it stays undefined
-  return fn(scope, ...(extras ? Object.values(extras) : []))
+  const params = extras ? Object.keys(extras) : []
+  const key = exprKey(expr, params)
+  const { fn, scoped } = entryFor(key, expr, params)
+  if (!fn) return undefined // a syntax error: the failure is cached, and it stays undefined
+  const args = extras ? Object.values(extras) : []
+  if (!scoped) return fn(scope, resolveName, ...args)
+  try {
+    return fn(scope, resolveName, ...args)
+  } catch (error) {
+    if (!(error instanceof ReferenceError)) throw error
+    const fallback = demoteToWith(key, expr, params)
+    if (!fallback) throw error
+    return fallback(scope, resolveName, ...args)
+  }
 }
 
 const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
@@ -327,7 +421,7 @@ const renderText = (parts: TextPart[], scope: Record<string, any>): string => {
 }
 
 
-const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed", ":props"])
+const CONTROL_ATTRS = new Set([":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed", ":props"])
 
 // a control attribute is one the static-attr loop and nested-component prop
 // collection must skip. The set holds the fixed names; `:class.<name>` (the
@@ -900,6 +994,34 @@ const componentBox = (key: string, node: TemplateNode, shadow: boolean): Documen
 // <style> has to go in there with it - document.head can't reach into a shadow
 // tree, and a style that never applies to its own component would still be
 // restyling the page around it
+// once per usage site, not per instance: a :each of 1,000 rows shares one AST
+// node, and the message is about the position rather than the row
+const warnedForeignRoots = new WeakSet<TemplateNode>()
+
+// A namespace is a PARSE-time fact and a usage site is a RENDER-time one, and a
+// nested component is the first thing that separates them: a definition's
+// template is parsed on its own, so a template rooted at a bare <circle> comes
+// out of the parser in HTML - it lands inside the <svg> and never draws, in
+// every engine. Nothing about that is visible: no error, no gap, an element in
+// the DOM with nothing on the screen.
+//
+// A component's template decides its own namespace, which is the answer this
+// project chose (RECORD/2026-08-26.the-namespace-of-a-component.md): a component
+// used inside an <svg> roots its template at <svg>. This is what says so when it
+// does not, instead of leaving a blank diagram
+const warnForeignRoot = (node: TemplateNode, definition: Component79) => {
+  if (node.ns === undefined || warnedForeignRoots.has(node)) return
+  const root = definition.template.find(child => typeof child === "object") as TemplateNode | undefined
+  if (root === undefined || root.ns !== undefined) return
+  warnedForeignRoots.add(node)
+  const wrapper = node.ns === "http://www.w3.org/1998/Math/MathML" ? "<math>" : "<svg>"
+  console.warn(
+    `jq79: <${tagLabel(node)}> is used inside ${wrapper} and its template starts with <${root.tag.toLowerCase()}>, ` +
+    `which is parsed as HTML - it renders and never draws. A component's template decides its own namespace, ` +
+    `so root it at ${wrapper}`
+  )
+}
+
 const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   // What this usage site ever renders needs stable bounds: the instance's DOM
   // is dynamic (the definition can resolve late or be swapped), so a caller
@@ -1055,6 +1177,8 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     current = null
     currentDef = nextDef
     if (!nextDef) return
+
+    warnForeignRoot(node, nextDef)
 
     // a fresh instance per usage site: the definition's parsed parts (and
     // pre-resolved modules) are shared, but store/effects/DOM are per instance
@@ -1268,8 +1392,9 @@ const BOOLEAN_ATTRS = new Set([
   "playsinline", "readonly", "required", "reversed", "selected",
 ])
 
-// the one value rule, shared by `:attr="expr"` and `:attrs` so the two forms
-// can never disagree:
+// the value rule for `:attr="expr"`. It was shared with `:attrs` until that
+// directive was retired (RECORD/2026-08-27.retiring-attrs.md), which is why it
+// reads like a contract rather than an implementation detail:
 //
 // - a boolean attribute is removed by ANY falsy value and set to "" when
 //   truthy, so `:disabled="items.length"` enables the button on an empty list
@@ -1368,8 +1493,8 @@ const applyAttr = (el: Element, name: string, value: any) => {
   else el.setAttribute(name, boolean ? "" : String(value))
 }
 
-// renders a single element node: static attrs, @event listeners, a reactive
-// :attrs object, and its content - :text/:html override the element's own
+// renders a single element node: static attrs, @event listeners, `:name`
+// attribute bindings, and its content - :text/:html override the element's own
 // children with a reactive textContent/innerHTML, otherwise children render
 // normally. :if/:elseif/:else/:each are handled by renderNodes, which decides
 // *whether*/*how many times* a node is rendered before calling this. Tags
@@ -1423,7 +1548,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // rebuild: a page that renders wrong is a bug report either way, but one whose
 // reporter can say "it goes away with cloning off" is a bug report that names
 // the file
-const debugFlags: DebugFlags = { cloneSkeletons: true }
+const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true }
 
 // What `Component79.debug()` can switch. One flag today; the shape is an object
 // so the next one does not change the call
@@ -1432,6 +1557,12 @@ export type DebugFlags = {
   // instead of walking the AST for every instance of it. Off means every
   // element goes through renderNode, exactly as before this existed
   cloneSkeletons: boolean
+
+  // resolve an expression's free names with a `const` prologue instead of
+  // `with ($scope)`. Off means every expression is compiled the way it always
+  // was, which is what makes the two forms comparable on one build - both in
+  // tests/expressions.test.ts and in `npm run benchmark:ab -- --flags`
+  scopedNames: boolean
 }
 
 // the control attributes a skeleton knows how to fill. The rest of
@@ -1445,7 +1576,7 @@ export type DebugFlags = {
 // control attr, and a dotted name), so an element carrying one is never planned
 // and renderNode stays the only place that warning can fire from - once per
 // render, as before. See RECORD/2026-08-25.html-in-the-cloner.md
-const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":attrs", ":value", ":checked", ":selected"])
+const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":value", ":checked", ":selected"])
 
 // What a hole can be, in the order renderNode registers them.
 // A `:` attribute with a dot in it is rejected wholesale except `:class.`:
@@ -1495,7 +1626,6 @@ type SkeletonOp =
   | { kind: "text"; path: number[]; parts: TextPart[] }
   | { kind: "event"; path: number[]; attr: string; expr: string }
   | { kind: "attr"; path: number[]; name: string; expr: string }
-  | { kind: "attrs"; path: number[]; expr: string }
   | { kind: "class"; path: number[]; classExpr?: string; toggles: [string, string][] | null; staticClasses: Set<string> }
   | { kind: "textContent"; path: number[]; expr: string }
   | { kind: "html"; path: number[]; expr: string }
@@ -1530,9 +1660,6 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[]): E
       ops.push({ kind: "attr", path, name: foreignAttrName(el, name), expr: value || kebabToCamel(name) })
     } else el.setAttribute(key, value)
   }
-  const attrsExpr = node.attrs[":attrs"]
-  if (attrsExpr !== undefined) ops.push({ kind: "attrs", path, expr: attrsExpr })
-
   if (classExpr !== undefined || toggles) {
     ops.push({ kind: "class", path, classExpr, toggles, staticClasses: new Set(classNames(node.attrs.class ?? "")) })
   }
@@ -1672,20 +1799,16 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
         el.classList.add(...next)
         bound = next
       })
-    } else if (op.kind === "attrs") {
-      const el = target as Element
-      const { expr } = op
-      let boundKeys: string[] = []
-      fx.effect(() => {
-        boundKeys.forEach(key => el.removeAttribute(key))
-        const bound = evalExpr(expr, scope)
-        boundKeys = bound && typeof bound === "object" ? Object.keys(bound) : []
-        boundKeys.forEach(key => applyAttr(el, key, bound[key]))
-      })
     } else if (op.kind === "textContent") {
       const el = target as Element
       const { expr } = op
-      fx.effect(() => { el.textContent = String(evalExpr(expr, scope) ?? "") })
+      // compared before it lands, like the text node above: an unchanged write
+      // still replaces the element's child text node, so a re-run that changed
+      // nothing would hand every observer a new node
+      fx.effect(() => {
+        const text = String(evalExpr(expr, scope) ?? "")
+        if (el.textContent !== text) el.textContent = text
+      })
     } else if (op.kind === "html") {
       // renderNode's effect with its `allowUrl` arm removed, because an element
       // carrying :html.allowed is never planned - the attribute is rejected by
@@ -1706,11 +1829,17 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
     } else if (op.kind === "checked") {
       const el = target as HTMLInputElement
       const { expr } = op
-      fx.effect(() => { el.checked = !!evalExpr(expr, scope) })
+      fx.effect(() => {
+        const checked = !!evalExpr(expr, scope)
+        if (el.checked !== checked) el.checked = checked
+      })
     } else if (op.kind === "selected") {
       const el = target as HTMLOptionElement
       const { expr } = op
-      fx.effect(() => { el.selected = !!evalExpr(expr, scope) })
+      fx.effect(() => {
+        const selected = !!evalExpr(expr, scope)
+        if (el.selected !== selected) el.selected = selected
+      })
     } else {
       // every kind is named above, so this is unreachable - and the assignment
       // is what makes the compiler say so. A kind added to SkeletonOp and
@@ -1725,7 +1854,7 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
 }
 
 const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
-  // :with applies to the element's own bindings (@events, :attrs) and its
+  // :with applies to the element's own bindings (@events, :name) and its
   // whole subtree. On a :each element the item scope is already in place, so
   // :with="item" works
   const withExpr = node.attrs[":with"]
@@ -1841,7 +1970,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // a directive of its own, bound further down (or by renderNodes)
     } else if (key.startsWith(":")) {
       // :name="expr" binds that one attribute, reactively - the single-key
-      // case :attrs="{ name: expr }" was carrying. `:name` alone is shorthand
+      // case :attrs="{ name: expr }" used to carry. `:name` alone is shorthand
       // for `:name="name"`, like props and :model.<name>, and the shorthand
       // reads the camelCase variable while the attribute keeps its written
       // (kebab) name: `:aria-expanded` binds `ariaExpanded`, because
@@ -1861,18 +1990,6 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
         fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
       }
     } else el.setAttribute(key, value)
-  }
-
-  const bindExpr = node.attrs[":attrs"]
-  if (bindExpr !== undefined) {
-    let boundKeys: string[] = []
-
-    fx.effect(() => {
-      boundKeys.forEach(key => el.removeAttribute(key))
-      const bound = evalExpr(bindExpr, scope)
-      boundKeys = bound && typeof bound === "object" ? Object.keys(bound) : []
-      boundKeys.forEach(key => applyAttr(el, key, bound[key]))
-    })
   }
 
   // :class="expr" adds classes on top of the static `class` attribute, and
@@ -1924,7 +2041,10 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     console.warn("jq79: :html.allowed without :html on the same element does nothing")
   }
   if (textExpr !== undefined) {
-    fx.effect(() => { el.textContent = String(evalExpr(textExpr, scope) ?? "") })
+    fx.effect(() => {
+      const text = String(evalExpr(textExpr, scope) ?? "")
+      if (el.textContent !== text) el.textContent = text
+    })
   } else if (htmlExpr !== undefined) {
     fx.effect(() => {
       const options = allowedExpr !== undefined ? { allowUrl: normalizeAllowUrl(evalExpr(allowedExpr, scope)) } : undefined
@@ -1943,8 +2063,8 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
 
   // :value / :checked / :selected write the DOM *property*, not the
   // attribute - the attribute is only a form control's default, and detaches
-  // the moment the user interacts (which is why :attrs="{ value }" stops
-  // driving a typed-in input). One-way, store -> DOM: the way back stays an
+  // the moment the user interacts (which is why writing the value ATTRIBUTE
+  // stops driving a typed-in input). One-way, store -> DOM: the way back stays an
   // explicit @input/@change. :value skips the write when the property
   // already holds the string, so an unrelated re-run can't move the caret of
   // the input the user is typing into. Registered after the children render:
@@ -1962,11 +2082,17 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
   // walk above is a `for...in` (RECORD/2026-08-23.where-the-create-time-goes.md)
   const checkedExpr = node.attrs[":checked"]
   if (checkedExpr !== undefined) {
-    fx.effect(() => { (el as HTMLInputElement).checked = !!evalExpr(checkedExpr, scope) })
+    fx.effect(() => {
+      const checked = !!evalExpr(checkedExpr, scope)
+      if ((el as HTMLInputElement).checked !== checked) (el as HTMLInputElement).checked = checked
+    })
   }
   const selectedExpr = node.attrs[":selected"]
   if (selectedExpr !== undefined) {
-    fx.effect(() => { (el as HTMLOptionElement).selected = !!evalExpr(selectedExpr, scope) })
+    fx.effect(() => {
+      const selected = !!evalExpr(selectedExpr, scope)
+      if ((el as HTMLOptionElement).selected !== selected) (el as HTMLOptionElement).selected = selected
+    })
   }
 
   return el
@@ -2469,6 +2595,54 @@ const warnTemplateDirective = (node: TemplateNode, parent: TemplateNode | undefi
   )
 }
 
+// The directive names a `:` attribute can be a misspelling OF. Derived from
+// CONTROL_ATTRS rather than written out, plus the two families that are not in
+// it (`:model`, `:slot`) - so there is no second list to keep in step.
+const DIRECTIVE_NAMES = [...CONTROL_ATTRS, ":model", ":slot"].map(attr => attr.slice(1))
+
+// `:iff="ready"` renders the element unconditionally and writes iff="true", and
+// until now said nothing - because since RECORD/2026-08-07.attribute-directive.md
+// an unrecognized `:name` is not an error at all: it BINDS that attribute, which
+// is what makes `:src`, `:disabled` and `:aria-expanded` work. So there is no
+// "unknown directive" to report in general, and the only typo worth a word is
+// one that starts with a directive's own name: `:iff`, `:eachh`, `:classs`.
+//
+// A prefix, deliberately, and not an edit distance: the rule is derived from the
+// directive list itself, so nothing here is a table of near-misses to maintain
+// A name that WAS a directive and is not one any more. Bare removal would be
+// the silent kind: `:attrs` is now an ordinary binding, so it would write
+// attrs="[object Object]" on an element and pass a prop nobody declared to a
+// component. One entry, and the message carries the migration
+const RETIRED_DIRECTIVES: Record<string, string> = {
+  ":attrs": `:attrs was removed in 0.7 - it now binds an attribute called "attrs". ` +
+    `Bind them one at a time (:disabled="x", :title="y"), or :class for classes`,
+}
+
+const warnRetiredDirective = (node: TemplateNode) => {
+  for (const attr in node.attrs) {
+    const message = RETIRED_DIRECTIVES[attr]
+    if (message !== undefined) console.warn(`jq79: ${message}`)
+  }
+}
+
+const warnDirectiveTypo = (node: TemplateNode) => {
+  // on a component tag every `:name` is a prop by design, and on a tag that may
+  // still become one it is a parameter waiting for a definition
+  if (node.component !== undefined || node.tag.includes("-")) return
+
+  for (const attr in node.attrs) {
+    if (!attr.startsWith(":") || isControlAttr(attr) || attr === ":model" || attr.startsWith(":model.")) continue
+    const name = attr.slice(1)
+    const directive = DIRECTIVE_NAMES.find(known => name !== known && name.startsWith(known))
+    if (directive === undefined) continue
+    console.warn(
+      `jq79: ${attr} is not a directive - it bound an attribute named "${name}". ` +
+      `A ":name" jq79 does not recognize binds that attribute (which is what :src and :disabled are). ` +
+      `If you meant :${directive}, that is the spelling`
+    )
+  }
+}
+
 // Checks one node list's chains, and every list below it, against that grammar.
 // Run once per definition from componentPartsFrom, not per render: a template
 // says what it says before any data exists, so a stray :else is reported when
@@ -2488,6 +2662,8 @@ const validateChains = (nodes: (TemplateNode | string)[], parent?: TemplateNode)
     // with it because a <template :slot> means one thing under a component tag
     // and something else anywhere else
     warnTemplateDirective(node, parent)
+    warnRetiredDirective(node)
+    warnDirectiveTypo(node)
     validateChains(node.children, node)
   })
 
@@ -3019,7 +3195,7 @@ const parseComponentString = (component: string): ComponentParts => {
   //   const fullName = `${fname} ${lname}`
   // </script>
   //
-  // <div :attrs="{ fullName }"></div>
+  // <div :title="fullName"></div>
   // <div class="full-name">
   //  {{ fullName }}
   // </div>
@@ -3870,6 +4046,11 @@ export class Component79 {
   // nobody could debug
   static debug(options?: Partial<DebugFlags>): DebugFlags {
     if (options) {
+      // an expression is compiled once and cached for the life of the page, so
+      // flipping the form it compiles to has to drop what was compiled under
+      // the old one - otherwise "off" leaves every expression already rendered
+      // still running the prologue
+      const scopedBefore = debugFlags.scopedNames
       for (const key in options) {
         const value = options[key as keyof DebugFlags]
         // the key before the value: a typo carrying a boolean - `cloneSkeleton`
@@ -3883,6 +4064,7 @@ export class Component79 {
         } else if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
         else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)
       }
+      if (debugFlags.scopedNames !== scopedBefore) compiled.clear()
     }
     return { ...debugFlags }
   }

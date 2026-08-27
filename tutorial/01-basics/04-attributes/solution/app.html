@@ -10,7 +10,8 @@
 </script>
 
 <button
-  :attrs="{ disabled: saving, title: saving ? 'a save is already in flight' : 'save your work' }"
+  :disabled="saving"
+  :title="saving ? 'a save is already in flight' : 'save your work'"
   @click="save"
 >Save</button>
 <p class="status" :class="{ busy: saving }" :text="status"></p>

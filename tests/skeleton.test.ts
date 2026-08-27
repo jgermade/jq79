@@ -107,6 +107,50 @@ const bothWays = <T>(render: () => T): [T, T] => {
   }
 }
 
+// An unchanged write is still a write. `el.textContent = same` replaces the
+// element's child text node with a fresh one, so an effect that re-runs for a
+// neighbour's sake would hand every observer - and every reference anyone held -
+// a different node for the same string. :text, :checked and :selected compare
+// first, on both paths, which is what the text-node binding and :value already
+// did. RECORD/2026-08-27.grouping-a-row-s-bindings.md
+describe("a binding that would write the same value writes nothing", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+  afterEach(() => {
+    container.remove()
+    Component79.debug({ cloneSkeletons: true })
+    Node.prototype.cloneNode = nativeCloneNode
+  })
+
+  // the store already skips a write that changes nothing, so the effect has to
+  // be woken by something that DOES change while the string it renders does not
+  const TEMPLATE = `<div class="w"><p class="a" :text="n > 5 ? 'many' : 'few'"></p><span class="b">{{ other }}</span><hr /></div>`
+
+  it("keeps the text node :text wrote, on both paths", () => {
+    bothWays(() => {
+      const component = parseComponent(TEMPLATE)
+      for (let render = 0; render < 2; render++) {
+        const host = document.createElement("div")
+        container.appendChild(host)
+        const data = $reactive({ n: 9, other: "x" })
+        host.appendChild(renderComponent(component, data))
+        const node = host.querySelector(".a")!.firstChild
+        expect(host.querySelector(".a")!.textContent).toBe("many")
+
+        data.n = 10 // the effect re-runs; "many" is still "many"
+        expect(host.querySelector(".a")!.firstChild, "an unchanged :text replaced its text node").toBe(node)
+
+        data.n = 1 // and a real change still writes
+        expect(host.querySelector(".a")!.textContent).toBe("few")
+      }
+    })
+  })
+})
+
 describe("the clone path renders what the interpreted path renders", () => {
   let container: HTMLDivElement
 
@@ -145,7 +189,7 @@ describe("the clone path renders what the interpreted path renders", () => {
       () => ({ user: { name: "ada", email: "a@b" } }), d => { d.user = { name: "grace", email: "g@h" } }, "never"],
     [":text and :html", `<div class="a"><p :text="v"></p><div :html="markup"></div></div>`,
       () => ({ v: "x", markup: "<b>y</b>" }), d => { d.v = "z"; d.markup = "<i>w</i>" }, "second"],
-    [":attrs", `<div class="a"><button :attrs="{ title, disabled }">b</button></div>`,
+    ["two attribute bindings", `<div class="a"><button :title :disabled>b</button></div>`,
       () => ({ title: "t", disabled: false }), d => { d.title = "t2"; d.disabled = true }, "never"],
     ["form state", `<form class="a"><input :value="name" /><input type="checkbox" :checked="ok" /><select :value="lang"><option value="en">en</option><option value="es">es</option></select></form>`,
       () => ({ name: "ada", ok: false, lang: "en" }), d => { d.name = "grace"; d.ok = true; d.lang = "es" }, "second"],
@@ -175,10 +219,12 @@ describe("the clone path renders what the interpreted path renders", () => {
     // and the children written inside it are rendered by neither
     [":html in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :html="markup"><b>{{ ignored }}</b></p><span class="r">dos</span></div>`,
       () => ({ markup: "<b>x</b>", ignored: "no" }), d => { d.markup = "<i>y</i>"; d.ignored = "still no" }, "second"],
-    [":attrs in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :attrs="{ title }">x</p><span class="r">dos</span></div>`,
+    // what used to be ":attrs in a planned subtree", and beside it ":attrs
+    // dropping a key it set" - a hole in the cloner that went with the
+    // directive (RECORD/2026-08-27.retiring-attrs.md). A name binding is what
+    // is left, and it cannot drop a key because it never held a set of them
+    ["a shorthand attribute binding in a planned subtree", `<div class="w"><span class="p">uno</span><p class="q" :title>x</p><span class="r">dos</span></div>`,
       () => ({ title: "t" }), d => { d.title = "t2" }, "second"],
-    [":attrs dropping a key it set", `<div class="w"><span class="p">uno</span><p class="q" :attrs="bag">x</p><span class="r">dos</span></div>`,
-      () => ({ bag: { title: "t", lang: "es" } }), d => { d.bag = { title: "t2" } }, "second"],
     [":value in a planned subtree", `<form class="w"><span class="p">uno</span><input class="q" :value="v" /><span class="r">dos</span></form>`,
       () => ({ v: "a" }), d => { d.v = "b" }, "second"],
     [":checked in a planned subtree", `<form class="w"><span class="p">uno</span><input class="q" type="checkbox" :checked="on" /><span class="r">dos</span></form>`,
@@ -189,7 +235,7 @@ describe("the clone path renders what the interpreted path renders", () => {
     // its options' bindings; nothing about the resulting DOM says so, because
     // the property :value writes is not in innerHTML and the options exist in
     // the clone either way. The read log is what tells the two orders apart
-    [":value on a select whose options are bound", `<div class="w"><span class="p">uno</span><select class="q" :value="pick"><option :attrs="{ value: a }">A</option><option :attrs="{ value: b }">B</option></select><span class="r">dos</span></div>`,
+    [":value on a select whose options are bound", `<div class="w"><span class="p">uno</span><select class="q" :value="pick"><option :value="a">A</option><option :value="b">B</option></select><span class="r">dos</span></div>`,
       () => ({ pick: "b", a: "a", b: "b" }), d => { d.pick = "a" }, "second"],
     // <svg> used to be rejected by plannableNode as an HTMLUnknownElement, so it
     // sat in SHAPE_CORPUS proving it fell through. It is a real namespaced

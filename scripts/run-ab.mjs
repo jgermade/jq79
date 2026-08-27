@@ -15,7 +15,9 @@
 //   node scripts/run-ab.mjs --base none            # the same, said out loud
 //   node scripts/run-ab.mjs --base main            # this checkout vs main
 //   node scripts/run-ab.mjs --base v0.6.1 --rounds 4 --samples 12
-//   node scripts/run-ab.mjs --flags                # cloneSkeletons on vs off
+//   node scripts/run-ab.mjs --flags                # cloneSkeletons off vs on
+//   node scripts/run-ab.mjs --flags scopedNames    # any Component79.debug flag
+//   node scripts/run-ab.mjs --flags scopedNames --only partialUpdate --samples 40
 //
 // Writes <out>/benchmark-report.md and <out>/benchmark-report.json, and prints
 // the markdown to stdout so it survives in a CI log with no artifact download.
@@ -44,11 +46,18 @@ const BASE = (() => {
   const value = (arg("base", "") || "").trim()
   return !value || value === "none" ? null : value
 })()
-// --flags measures THIS checkout against itself with the skeleton clone path
-// off, which is a pairing no ref can express: one build, one dist, two URLs.
-// The benchmark app reads ?clone=0 and calls Component79.debug (see its
-// src/main.js), so nothing about the bundle differs between the two sides
+// --flags measures THIS checkout against itself with one debug flag off, which
+// is a pairing no ref can express: one build, one dist, two URLs. The benchmark
+// app switches any flag the query names and calls Component79.debug (see its
+// src/main.js), so nothing about the bundle differs between the two sides.
+// `--flags` alone means cloneSkeletons, the flag it was written for;
+// `--flags scopedNames` prices the const prologue against `with`
 const FLAGS = process.argv.includes("--flags")
+const FLAG = (() => {
+  if (!FLAGS) return null
+  const next = process.argv[process.argv.indexOf("--flags") + 1]
+  return next && !next.startsWith("--") ? next : "cloneSkeletons"
+})()
 if (FLAGS && BASE) throw new Error("--flags measures one build against itself; drop --base")
 const SAMPLES = Number(arg("samples", 10))
 const ROUNDS = Number(arg("rounds", 3))
@@ -58,6 +67,19 @@ const ROUNDS = Number(arg("rounds", 3))
 // against head's 35.5, and it was base that opened the session. So one full
 // round is run and thrown away
 const WARMUP = Number(arg("warmup", 1))
+// --only create1k,partialUpdate narrows every round to those operations, which
+// is how a small one gets the samples it needs: partialUpdate is ~1.5ms and the
+// harness resolves it in 0.05ms steps, so one step is 3% and a whole suite's
+// worth of rounds says less than a focused one does
+const ONLY = (() => {
+  const value = (arg("only", "") || "").trim()
+  if (!value) return null
+  const ids = value.split(",").map(id => id.trim()).filter(Boolean)
+  const known = new Set(OPERATIONS.map(op => op.id))
+  const unknown = ids.filter(id => !known.has(id))
+  if (unknown.length) throw new Error(`--only: no such operation: ${unknown.join(", ")} (have: ${[...known].join(", ")})`)
+  return ids
+})()
 const OUT = arg("out", ROOT)
 // The regression gate: fail the process when head is at least this much slower
 // than base. 0 turns it off, which is the default - a gate belongs where
@@ -158,21 +180,21 @@ if (FLAGS) {
   // same direction every other run of this script reports
   builds.push({
     id: "base",
-    label: `${shortSha("HEAD")}, cloneSkeletons off`,
+    label: `${shortSha("HEAD")}, ${FLAG} off`,
     ref: capture("git", ["rev-parse", "HEAD"]),
     dist: headDist,
-    query: "?clone=0",
+    query: `?${FLAG}=0`,
   })
 }
 
 builds.push({
   id: "head",
   label: FLAGS
-    ? `${shortSha("HEAD")}, cloneSkeletons on`
+    ? `${shortSha("HEAD")}, ${FLAG} on`
     : BASE ? `this checkout (${shortSha("HEAD")})` : `jq79 ${shortSha("HEAD")}`,
   ref: capture("git", ["rev-parse", "HEAD"]),
   dist: headDist,
-  query: FLAGS ? "?clone=1" : "",
+  query: FLAGS ? `?${FLAG}=1` : "",
 })
 
 let worktree = null
@@ -270,6 +292,9 @@ const operations = () =>
     }
     return entry
   })
+  // --only leaves the rest unmeasured, and an operation with no rounds behind
+  // it has nothing to say: reporting it would print a row of NaN
+  .filter(entry => entry.roundsMeasured > 0)
 
 // What the gate is willing to call a regression, and every clause is there to
 // keep a busy runner from blocking a merge on nothing:
@@ -327,7 +352,7 @@ try {
   for (let round = 0; round < WARMUP + ROUNDS; round++) {
     const warming = round < WARMUP
     const name = warming ? `warm-up ${round + 1}/${WARMUP}` : `round ${round + 1 - WARMUP}/${ROUNDS}`
-    const measured = await measureRound(name, round, null)
+    const measured = await measureRound(name, round, ONLY)
     if (!warming) rounds.push(measured)
   }
 

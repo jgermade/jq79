@@ -1,19 +1,19 @@
 # Attributes
 
-`:attrs` takes an expression that evaluates to an object, and turns each entry
-into an attribute. A `null`, `undefined` or `false` value *removes* the
-attribute rather than setting it to the string `"false"` — which is what you
-want for `disabled`, `hidden`, `checked` and friends:
+`:name="expr"` binds one attribute, reactively. A `null`, `undefined` or `false`
+value *removes* the attribute rather than setting it to the string `"false"` —
+which is what you want for `disabled`, `hidden`, `checked` and friends:
 
 ```html
-<button :attrs="{ disabled: isSaving, title: tooltip }">Save</button>
+<button :disabled="isSaving" :title="tooltip">Save</button>
 ```
 
-It's re-evaluated whenever anything it reads changes, and only the attributes
-that actually changed are touched.
+Each one is re-evaluated whenever the expression it holds reads something that
+changed, and nothing else on the element is touched. `:name` on its own is
+shorthand for `:name="name"`, so `:readonly` binds the `readonly` variable.
 
-Classes get their own directive, because toggling one through `:attrs` means
-concatenating strings. `:class` *adds to* the static `class` attribute — it
+Classes get their own directive, because toggling one through a plain attribute
+means concatenating strings. `:class` *adds to* the static `class` attribute — it
 never replaces it — and takes a string, an object whose truthy-valued keys
 become classes, or an array mixing both:
 

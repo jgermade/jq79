@@ -752,3 +752,150 @@ export const transformFactoryScript = (src: string): string | null => {
   return isFactory ? out : null
 }
 
+
+// ---------------------------------------------------------------------------
+// free identifiers in a template expression
+//
+// What a compiled expression reads from the scope, so it can be resolved by
+// name instead of by `with ($scope)` - which is 60% of an evaluation over a
+// store proxy, because it resolves every mention through [[HasProperty]] (the
+// proxy's `has` trap as well as its `get`) and consults Symbol.unscopables
+// besides. See RECORD/2026-08-27.name-resolution-without-with.md
+//
+// This is a scanner, not a parser, and it is deliberately conservative: `null`
+// means "keep `with`", and every shape that binds a name, assigns to one or
+// resolves one dynamically returns it. The caller falls back rather than
+// guesses, so a name this misses costs a slower evaluation, never a wrong one.
+// ---------------------------------------------------------------------------
+
+// words that scan as an identifier and are never a free variable read
+const NOT_A_FREE_NAME = new Set([
+  "true", "false", "null", "undefined", "this", "typeof", "instanceof", "in", "new", "void",
+  "delete", "of", "await", "yield", "NaN", "Infinity", "arguments", "case", "do", "else", "return",
+])
+
+// anything that introduces a binding or reaches the scope by another route.
+// A dynamic `import(...)` is absent deliberately: naming it here would put the
+// word next to a quote in the bundle, which is what tests/no-bundle.test.ts
+// greps for. It needs no entry - `import` is collected as a free name, the
+// prologue's `const import = …` will not compile, and compileScoped falls back
+const BINDS_A_NAME = new Set(["function", "class", "let", "const", "var", "eval", "with"])
+
+// the compiled function's own parameters and temporary: an expression that
+// mentions one would be reading the codegen's variable, not the author's
+const CODEGEN_NAMES = new Set(["$scope", "$r", "$t"])
+
+// operators that write, or bind - any of them and the expression keeps `with`
+const WRITES_RE = /^(?:\+\+|--|=>|\*\*=|<<=|>>>=|>>=|&&=|\|\|=|\?\?=|[+\-*/%&|^]=(?!=))/
+// operators that merely read, longest first so `===` is never read as `==` + `=`
+const READS_RE = /^(?:>>>|===|!==|\*\*|<<|>>|==|!=|<=|>=|&&|\|\||\?\?|\?\.)/
+
+const isIdentifierStart = (ch: string): boolean => /[A-Za-z_$]/.test(ch)
+
+// a numeric literal, consumed whole so `1e5` does not scan as the name `e5`
+const NUMBER_RE = /^(?:0[xXbBoO][\da-fA-F_]+|\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?)n?/
+
+export const freeIdentifiers = (expr: string): string[] | null => {
+  const names = new Set<string>()
+  // one entry per open bracket, counting the `?`s waiting for their `:` at that
+  // depth - which is what tells `{ danger: x }`'s key from `a ? b : c`'s colon
+  const ternaries: number[] = [0]
+  const brackets: string[] = []
+  let shortCircuits = false
+  let prev = "" // the last meaningful token: "name", "value", "." or "?." or a punctuator
+  let i = 0
+
+  while (i < expr.length) {
+    const ch = expr[i]
+    if (/\s/.test(ch)) { i++; continue }
+    if (ch === "/" && expr[i + 1] === "/") { i = skipLineComment(expr, i); continue }
+    if (ch === "/" && expr[i + 1] === "*") { i = skipBlockComment(expr, i); continue }
+    if (ch === "/" && regexAllowed(expr, i)) { i = skipRegex(expr, i); prev = "value"; continue }
+    if (ch === '"' || ch === "'") { i = skipString(expr, i); prev = "value"; continue }
+
+    if (ch === "`") {
+      // a template literal reads names inside every ${...}, and nothing else
+      let j = i + 1
+      while (j < expr.length) {
+        if (expr[j] === "\\") { j += 2; continue }
+        if (expr[j] === "`") { j++; break }
+        if (expr[j] === "$" && expr[j + 1] === "{") {
+          let depth = 1
+          const start = (j += 2)
+          while (j < expr.length && depth > 0) {
+            if (expr[j] === "{") depth++
+            else if (expr[j] === "}") depth--
+            j++
+          }
+          const inner = freeIdentifiers(expr.slice(start, j - 1))
+          if (inner === null) return null
+          inner.forEach(name => names.add(name))
+          continue
+        }
+        j++
+      }
+      i = j
+      prev = "value"
+      continue
+    }
+
+    if (/\d/.test(ch) && prev !== "." && prev !== "?.") {
+      const match = NUMBER_RE.exec(expr.slice(i))
+      i += match ? match[0].length : 1
+      prev = "value"
+      continue
+    }
+
+    if (isIdentifierStart(ch)) {
+      let end = i
+      while (end < expr.length && /[\w$]/.test(expr[end])) end++
+      const word = expr.slice(i, end)
+      i = end
+      if (BINDS_A_NAME.has(word)) return null
+      if (prev === "." || prev === "?.") { prev = "value"; continue } // a property, not a name
+      if (NOT_A_FREE_NAME.has(word)) { prev = word === "this" ? "value" : "op"; continue }
+      if (CODEGEN_NAMES.has(word)) return null
+      let after = i
+      while (after < expr.length && /\s/.test(expr[after])) after++
+      // A free name that is CALLED is called with the with-object as its
+      // receiver: `add()` inside `with ($scope)` runs with `this === $scope`,
+      // and a factory component's `{ items: [], add() { this.items… } }`
+      // depends on it. A `const` cannot reproduce that - the call would get
+      // `undefined` - so a called name keeps `with`. Measured at 11 of this
+      // repository's 239 resolvable expressions, and 8 of those are handlers
+      if (expr[after] === "(") return null
+      // `{ danger: … }` names a key; `a ? b : c` names a value
+      const isKey = expr[after] === ":" && expr[after + 1] !== ":" &&
+        brackets[brackets.length - 1] === "{" && ternaries[ternaries.length - 1] === 0
+      if (!isKey) names.add(word)
+      prev = "value"
+      continue
+    }
+
+    const rest = expr.slice(i)
+    if (WRITES_RE.test(rest)) return null
+    const reads = READS_RE.exec(rest)
+    if (reads) {
+      if (reads[0] === "&&" || reads[0] === "||" || reads[0] === "??") shortCircuits = true
+      prev = reads[0] === "?." ? "?." : "op"
+      i += reads[0].length
+      continue
+    }
+    if (ch === "=") return null // a bare `=` left after READS_RE is an assignment
+
+    if (ch === "(" || ch === "[" || ch === "{") { brackets.push(ch); ternaries.push(0) }
+    else if (ch === ")" || ch === "]" || ch === "}") { brackets.pop(); if (ternaries.length > 1) ternaries.pop() }
+    else if (ch === "?") { ternaries[ternaries.length - 1]++; shortCircuits = true }
+    else if (ch === ":" && ternaries[ternaries.length - 1] > 0) ternaries[ternaries.length - 1]--
+
+    prev = ch
+    i++
+  }
+
+  // every name is resolved before the expression runs, so a branch that would
+  // not have been taken is read anyway: one more dep than `with` would track,
+  // and a ReferenceError for a name only the dead branch mentions. With one
+  // name there is no branch to be wrong about
+  if (shortCircuits && names.size > 1) return null
+  return [...names]
+}

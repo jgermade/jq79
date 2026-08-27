@@ -9,7 +9,7 @@ Any JS expression between `{{ }}`:
 <span>{{ price * quantity }} €</span>
 ```
 
-Expressions may span several lines — both here and in every directive (`:if`, `:each`, `:attrs`, `@event`, …):
+Expressions may span several lines — both here and in every directive (`:if`, `:each`, `:class`, `@event`, …):
 
 ```html
 <span>{{ items
@@ -36,12 +36,11 @@ The one exception is the indentation *between* the branches of an `:if`/`:elseif
 ```
 
 - `:name` alone is shorthand for `:name="name"`, like props and `:model.<name>`. The attribute keeps its written (kebab) name while the expression reads the camelCase variable, so `:aria-expanded` binds `ariaExpanded` — `aria-expanded` as an expression would be a subtraction.
-- Every name listed on this page is reserved and keeps its own meaning: `:if`, `:each`, `:class`, `:text`, `:attrs`, `:model`, `:value`/`:checked`/`:selected`, and the rest. So `:value` is the form-state directive (the DOM *property*), never the `value` attribute.
+- Every name listed on this page is reserved and keeps its own meaning: `:if`, `:each`, `:class`, `:text`, `:html`, `:model`, `:value`/`:checked`/`:selected`, and the rest. So `:value` is the form-state directive (the DOM *property*), never the `value` attribute.
 - On a **component tag** `:name` is a prop, not an attribute — a jq79 component has no single root for one to land on. See [nested components](#nested-components).
+- Because *any* unrecognized `:name` is a legal attribute binding, a misspelt directive is not an error — `:iff="ready"` binds an attribute called `iff` and the element renders unconditionally. So jq79 warns for a `:name` that **starts with a directive's name** and is not one (`:iff`, `:eachh`, `:classs`), naming the attribute it bound and the directive it looks like. A name that resembles nothing reserved stays silent: it is the feature.
 
 ### The value rule
-
-Shared with `:attrs`, so the two forms can never disagree:
 
 | value | boolean attribute (`disabled`, `checked`, `readonly`, …) | any other attribute |
 | ----- | --- | --- |
@@ -54,17 +53,6 @@ A boolean attribute counts as *present*, whatever its value — `disabled="false
 Everything else keeps `false` and `0`, because absent and `"false"` are different things: `aria-expanded="false"` is meaningful ARIA, and so is a `data-` flag.
 
 The boolean names are [HTML's list](https://html.spec.whatwg.org/multipage/indices.html#attributes-3): `allowfullscreen`, `async`, `autofocus`, `autoplay`, `checked`, `controls`, `default`, `defer`, `disabled`, `formnovalidate`, `inert`, `ismap`, `itemscope`, `loop`, `multiple`, `muted`, `nomodule`, `novalidate`, `open`, `playsinline`, `readonly`, `required`, `reversed`, `selected`.
-
-## `:attrs` — several dynamic attributes at once
-
-Evaluates to an object; each entry becomes an attribute, under the value rule above. Reach for it when the key set is dynamic (a spread, a computed object); for one known attribute, `:attr` says it in less.
-
-```html
-<button :attrs="{ disabled: isSaving, title: tooltip }">Save</button>
-<div :attrs="theme.wrapperAttrs"></div>
-```
-
-`:attrs` is wholesale — each run removes what it set and writes the new object — so don't bind the same name with both forms on one element: the `:attrs` re-run would wipe what `:attr` wrote until it happened to re-run too.
 
 ## `:class` — reactive classes
 
@@ -91,11 +79,11 @@ Write it kebab-case (`:class.is-active`) or camelCase (`:class.isActive`) — th
 
 Only classes the binding added are ever removed: the static list survives every re-run, even when the expression names one of its classes and then drops it (`class="btn" :class="{ btn: cond }"` keeps `btn` when `cond` goes false).
 
-Don't combine it with a `class` key inside `:attrs` on the same element — `:attrs` rewrites the whole attribute on each of its runs, wiping whatever `:class` added. On a nested-component tag `:class` is ignored, like `:text`/`:html`.
+`:class` is the only writer of the `class` attribute: the name is reserved, so `:class` is never a plain attribute binding. On a nested-component tag it is ignored, like `:text`/`:html`.
 
 ## `:value` / `:checked` / `:selected` — form state
 
-These write the DOM **property**, not the attribute. The difference matters on form controls: the attribute is only the control's *default*, and detaches the moment the user interacts — `:attrs="{ value }"` stops driving an input once something has been typed into it. The property directives keep driving it:
+These write the DOM **property**, not the attribute. The difference matters on form controls: the attribute is only the control's *default* and detaches the moment the user interacts, so an input whose `value` attribute is rewritten stops following it once something has been typed in. The property directives keep driving it:
 
 ```html
 <input :value="name" @input="name = $event.target.value">
@@ -204,7 +192,7 @@ Evaluates to an object whose properties become directly addressable inside the e
 </div>
 ```
 
-- Applies to the element's own bindings (`:attrs`, `@events`) and its whole subtree; object properties shadow same-named outer scope names.
+- Applies to the element's own bindings (`:name`, `@events`) and its whole subtree; object properties shadow same-named outer scope names.
 - Fully reactive: mutating a property of the object, or replacing the object itself (`user = other`), updates exactly what depends on it — the subtree is not rebuilt.
 - Assignments to names the object owns write through to it (`@click="name = 'x'"` inside `:with="user"` sets `user.name`, reactively).
 - If the expression isn't an object (`null`, still loading, …), names simply resolve from the outer scope.
@@ -363,7 +351,8 @@ A component used inside an `<svg>` has to **root its own template at `<svg>`**:
 
 A component's template is parsed on its own, so a bare `<circle>` at its root is
 an HTML element with an SVG name — it lands in the tree and never draws, wherever
-the tag was written. A root of its own `<svg>` is a foreign context of its own,
+the tag was written. **jq79 says so** — once per usage site, naming the component
+and the fix — rather than leaving you a blank diagram. A root of its own `<svg>` is a foreign context of its own,
 and everything inside it is in the SVG namespace as usual.
 
 What it costs: a child or sibling combinator in **global** CSS stops crossing the
@@ -510,13 +499,7 @@ SVG's camelCase attribute names work bound, and either spelling reaches the same
 
 You don't have to know which SVG attributes are camelCase and which are kebab — write the name however you like and jq79 resolves it against the parser's own table, the one that makes a written-out `viewBox` survive. Names outside that table (`fill`, `cx`, `stroke-width`, `clip-path`, and every `data-*` and `aria-*`) reach the DOM exactly as written.
 
-The one place the name is yours to get right is `:attrs`, which passes its keys through untouched — the key **is** the attribute name:
-
-```html
-<svg :attrs="{ viewBox: box }" />          <!-- viewBox — correct -->
-<circle :attrs="{ strokeWidth: w }" />     <!-- strokeWidth — not an SVG attribute, ignored -->
-<circle :attrs="{ 'stroke-width': w }" />  <!-- stroke-width — correct -->
-```
+There is no longer anywhere the name is yours to get right: `:attrs` used to pass its keys through untouched — `:attrs="{ strokeWidth: w }"` wrote an attribute SVG ignores, silently — and [retiring it](../RECORD/2026-08-27.retiring-attrs.md) closed the last way to write a dead attribute name.
 
 ## MathML
 

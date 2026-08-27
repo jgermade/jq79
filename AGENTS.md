@@ -26,6 +26,7 @@ npm run build         # tsup → dist/
 npm run site.dev      # the site + tutorial on a watch loop → localhost:4179
 npm run benchmark:ab -- --base main   # this branch vs a ref, on one machine
 npm run benchmark:ab -- --flags       # one build against itself, cloneSkeletons off vs on
+npm run benchmark:ab -- --flags scopedNames   # the same, for any Component79.debug flag
 npm run benchmark:once                # a definition rendered ONCE: does it pay for its plan?
 ```
 

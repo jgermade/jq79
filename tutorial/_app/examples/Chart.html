@@ -11,7 +11,7 @@
 <ul class="chart">
   <li :each="point in data" :key="point.label">
     <span class="label">{{ point.label }}</span>
-    <span class="bar" :attrs="{ style: `width: ${(point.value / top) * 100}%` }"></span>
+    <span class="bar" :style="`width: ${(point.value / top) * 100}%`"></span>
     <span class="value">{{ point.value }}</span>
   </li>
 </ul>

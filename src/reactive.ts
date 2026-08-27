@@ -68,12 +68,61 @@ const walkLeaves = (obj: Record<string, any>, path: string, visit: (dotKey: stri
 // a removal walk back up without re-splitting the path: a 10,000-row table is
 // ~40,000 nodes, and three eager allocations each (a Map and two Sets, almost
 // all of them staying empty) cost more than the index saves
+// The effects registered on one node, for one of the two channels. Almost every
+// dep has exactly ONE effect - `rows.7.label` is read by one text binding and
+// nothing else - so the first one lives in a slot of its own and a Set is
+// allocated only for the rest. It is the mirror of what indexEffect does one
+// layer up with soleDep/soleNode, and it is worth it because deleting an effect
+// from a one-entry Set was 60% of disposing it
+// (RECORD/2026-08-27.one-effect-per-node.md).
+//
+// TWO fields rather than one union, and that is the whole design: a field that
+// holds either an Effect or a Set makes every read of it polymorphic, and these
+// are read on the notify walk - the hot path of every write in the library. One
+// field of one shape each keeps both reads monomorphic.
+//
+// No invariant that `one` fills before `many`: an effect removed from `one`
+// leaves it null with `many` still populated, and nothing has to shuffle
 type TrieNode = {
   children: Map<string, TrieNode> | null
-  own: Set<Effect> | null
-  deep: Set<Effect> | null
+  own: Effect | null
+  ownMany: Set<Effect> | null
+  deep: Effect | null
+  deepMany: Set<Effect> | null
   parent: TrieNode | null
   segment: string
+}
+
+export const addOwn = (node: TrieNode, effect: Effect) => {
+  if (node.own === null) node.own = effect
+  else if (node.own !== effect) (node.ownMany ??= new Set()).add(effect)
+}
+
+export const addDeep = (node: TrieNode, effect: Effect) => {
+  if (node.deep === null) node.deep = effect
+  else if (node.deep !== effect) (node.deepMany ??= new Set()).add(effect)
+}
+
+// a node whose last effect leaves has to end up empty on both fields, or
+// isEmptyNode stops pruning it and the trie grows over the dead rows
+export const removeOwn = (node: TrieNode, effect: Effect) => {
+  if (node.own === effect) node.own = null
+  else if (node.ownMany?.delete(effect) && node.ownMany.size === 0) node.ownMany = null
+}
+
+export const removeDeep = (node: TrieNode, effect: Effect) => {
+  if (node.deep === effect) node.deep = null
+  else if (node.deepMany?.delete(effect) && node.deepMany.size === 0) node.deepMany = null
+}
+
+export const eachOwn = (node: TrieNode, visit: (effect: Effect) => void) => {
+  if (node.own !== null) visit(node.own)
+  node.ownMany?.forEach(visit)
+}
+
+export const eachDeep = (node: TrieNode, visit: (effect: Effect) => void) => {
+  if (node.deep !== null) visit(node.deep)
+  node.deepMany?.forEach(visit)
 }
 
 // the dep an `ownKeys` read records, as a reserved last segment on the
@@ -92,10 +141,10 @@ const LENGTH_SUFFIX = ".length"
 
 
 const createTrieNode = (parent: TrieNode | null, segment: string): TrieNode =>
-  ({ children: null, own: null, deep: null, parent, segment })
+  ({ children: null, own: null, ownMany: null, deep: null, deepMany: null, parent, segment })
 
 const isEmptyNode = (node: TrieNode): boolean =>
-  !node.own?.size && !node.deep?.size && !node.children?.size
+  node.own === null && node.deep === null && !node.ownMany?.size && !node.deepMany?.size && !node.children?.size
 
 // reads the raw object behind a store proxy. Module-level (not per-store) so a
 // value that is already reactive - in this store or in another one - can be
@@ -144,7 +193,7 @@ export const untracked = <T>(fn: () => T): T => {
 // own, plus any it was attached to), each keeping that store's trie in step
 // with the deps of the last settled run. It lives on the effect rather than
 // in a per-store map because `run` has to reach it without a lookup
-type Effect = { deps: Set<string>; run: () => void; reindex: Set<(deps: Set<string>) => void>; deep: boolean; order: number }
+export type Effect = { deps: Set<string>; run: () => void; reindex: Set<(deps: Set<string>) => void>; deep: boolean; order: number }
 
 // creation order, module-wide. The flat `effects` set used to give this for
 // free - iterating it ran effects oldest-first, so a parent's bindings always
@@ -224,7 +273,8 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       }
       node = child
     })
-    ;((effect.deep ? (node.deep ??= new Set()) : (node.own ??= new Set()))).add(effect)
+    if (effect.deep) addDeep(node, effect)
+    else addOwn(node, effect)
     return node
   }
 
@@ -234,7 +284,8 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // table is 30,000 of these, and splitting each path again to find a node the
   // caller was already holding is most of what that used to cost
   const removeDep = (node: TrieNode, effect: Effect) => {
-    ;(effect.deep ? node.deep : node.own)?.delete(effect)
+    if (effect.deep) removeDeep(node, effect)
+    else removeOwn(node, effect)
     let current: TrieNode | null = node
     while (current?.parent && isEmptyNode(current)) {
       current.parent.children!.delete(current.segment)
@@ -272,8 +323,8 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       const pending = from.children ? [...from.children.values()] : []
       while (pending.length) {
         const next = pending.pop()!
-        next.own?.forEach(effect => matched.add(effect))
-        next.deep?.forEach(effect => matched.add(effect))
+        eachOwn(next, effect => matched.add(effect))
+        eachDeep(next, effect => matched.add(effect))
         next.children?.forEach(child => pending.push(child))
       }
     }
@@ -285,21 +336,21 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       node = node.children?.get(segments[depth])
       if (!node) return matched
       path = path ? `${path}.${segments[depth]}` : segments[depth]
-      node.deep?.forEach(effect => matched.add(effect))
+      eachDeep(node, effect => matched.add(effect))
       // a nested store sits here: an effect that read through it holds this
       // path and nothing below it, so its own set is the whole channel
-      if (bridges.has(path)) node.own?.forEach(effect => matched.add(effect))
+      if (bridges.has(path)) eachOwn(node, effect => matched.add(effect))
       // ...whereas an array's length stands for the array: everything that
       // read an element has to hear a truncation, and those deps are below
       if (depth === segments.length - 2 && segments[depth + 1] === "length") {
-        node.own?.forEach(effect => matched.add(effect))
+        eachOwn(node, effect => matched.add(effect))
         sweep(node)
       }
     }
     node = node.children?.get(segments[segments.length - 1])
     if (!node) return matched
-    node.own?.forEach(effect => matched.add(effect))
-    node.deep?.forEach(effect => matched.add(effect))
+    eachOwn(node, effect => matched.add(effect))
+    eachDeep(node, effect => matched.add(effect))
     sweep(node)
     return matched
   }
@@ -458,7 +509,12 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // holding the same elements (see notifyReplaced)
   const wakeExactly = (dep: string) => {
     const node = nodeAt(dep)
-    if (node) runMatched(new Set([...(node.own ?? []), ...(node.deep ?? [])]))
+    if (node) {
+      const matched = new Set<Effect>()
+      eachOwn(node, effect => matched.add(effect))
+      eachDeep(node, effect => matched.add(effect))
+      runMatched(matched)
+    }
   }
 
   // an object's key set changed. Effects only - a key set isn't a value, so
@@ -605,8 +661,10 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     const matched = new Set<Effect>()
     const collectExact = (dep: string) => {
       const node = nodeAt(dep)
-      node?.own?.forEach(effect => matched.add(effect))
-      node?.deep?.forEach(effect => matched.add(effect))
+      if (node) {
+        eachOwn(node, effect => matched.add(effect))
+        eachDeep(node, effect => matched.add(effect))
+      }
     }
 
     const difference = whatChanged(previous, next)

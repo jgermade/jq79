@@ -76,7 +76,7 @@
       <div
         :each="row in rows"
         :key="$index"
-        :attrs="{ class: `row ${row.type}` }"
+        :class="`row ${row.type}`"
         :html="row.html"
       ></div>
     </div>
