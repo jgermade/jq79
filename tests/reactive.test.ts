@@ -1,6 +1,10 @@
 
 import { describe, it, expect, vi } from "vitest"
 import { $reactive, $toRaw } from "../src/jq79"
+// the trie node's effect slot, from the module rather than the package: these
+// are internals, and nothing re-exports them from src/jq79.ts
+import { addEffect, removeEffect, eachEffect, hasEffects } from "../src/reactive"
+import type { Effect } from "../src/reactive"
 
 describe("$reactive", () => {
   it("keeps deep sets on the raw properties working like plain objects", () => {
@@ -816,5 +820,67 @@ describe("a splice announced as the shift it is", () => {
     store.data = next
 
     expect(rowRuns).toBe(2)
+  })
+})
+
+// The slot a trie node keeps its effects in: one effect held directly, a Set
+// allocated only when a second arrives (RECORD/2026-08-27.one-effect-per-node.md).
+// Unit-tested because the thing that can go wrong is invisible from outside -
+// a removed effect left in its slot still never runs (runMatched checks
+// liveness), it just keeps the node un-prunable and the trie growing over dead
+// rows. Exported from src/reactive for this; nothing re-exports it from the
+// package entry
+describe("a trie node's effect slot", () => {
+  const effect = (order: number): Effect =>
+    ({ deps: new Set(), run: () => {}, reindex: new Set(), deep: false, order })
+
+  it("holds one effect directly", () => {
+    const a = effect(1)
+    expect(addEffect(null, a)).toBe(a)
+  })
+
+  it("allocates a Set for the second, and keeps both", () => {
+    const [a, b] = [effect(1), effect(2)]
+    const slot = addEffect(addEffect(null, a), b)
+
+    expect(slot).toBeInstanceOf(Set)
+    const seen: Effect[] = []
+    eachEffect(slot, e => seen.push(e))
+    expect(seen).toEqual([a, b])
+  })
+
+  it("adds the same effect once", () => {
+    const a = effect(1)
+    expect(addEffect(addEffect(null, a), a)).toBe(a)
+  })
+
+  it("empties the slot when its only effect goes - what keeps the node prunable", () => {
+    const a = effect(1)
+    const slot = removeEffect(addEffect(null, a), a)
+
+    expect(slot).toBeNull()
+    expect(hasEffects(slot)).toBe(false)
+  })
+
+  it("leaves a different effect alone", () => {
+    const [a, b] = [effect(1), effect(2)]
+    expect(removeEffect(a, b)).toBe(a)
+  })
+
+  it("empties a Set that loses its last effect, so the node is prunable too", () => {
+    const [a, b] = [effect(1), effect(2)]
+    let slot = addEffect(addEffect(null, a), b)
+    slot = removeEffect(slot, a)
+    expect(hasEffects(slot)).toBe(true)
+
+    slot = removeEffect(slot, b)
+    expect(hasEffects(slot)).toBe(false)
+    expect(slot).toBeNull()
+  })
+
+  it("visits nothing for an empty slot", () => {
+    const seen: Effect[] = []
+    eachEffect(null, e => seen.push(e))
+    expect(seen).toEqual([])
   })
 })
