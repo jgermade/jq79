@@ -146,7 +146,7 @@
       <button
         :each="file in files"
         :key="file.name"
-        :attrs="{ class: $index === active ? 'tab active' : 'tab' }"
+        :class="$index === active ? 'tab active' : 'tab'"
         @click="active = $index"
       >{{ file.name }}</button>
       <span class="spacer"></span>

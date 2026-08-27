@@ -11,9 +11,9 @@
 <section class="text">
   <div class="readme" :html="content"></div>
   <nav class="steps">
-    <button :attrs="{ disabled: index === 0 }" @click="go(index - 1)">← previous</button>
+    <button :disabled="index === 0" @click="go(index - 1)">← previous</button>
     <span>{{ index + 1 }} / {{ total }}</span>
-    <button :attrs="{ disabled: index === total - 1 }" @click="go(index + 1)">next →</button>
+    <button :disabled="index === total - 1" @click="go(index + 1)">next →</button>
   </nav>
 </section>
 

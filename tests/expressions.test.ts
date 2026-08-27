@@ -400,3 +400,47 @@ describe("a component used inside an <svg>", () => {
     jq79.destroy()
   })
 })
+
+// :attrs was retired in favour of the single-attribute form
+// (RECORD/2026-08-27.retiring-attrs.md). Removing it silently would have been
+// the worst version of that: it is an ordinary `:name` now, so it would write
+// attrs="[object Object]" and pass a prop nobody declared
+describe("a retired directive", () => {
+  let host: HTMLDivElement
+  let warn: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    host = document.createElement("div")
+    document.body.appendChild(host)
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    warn.mockRestore()
+    host.remove()
+  })
+
+  it("says :attrs was removed, and what to write instead", () => {
+    new Component79(`<button :attrs="{ disabled: busy }">go</button>`)
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":attrs was removed"))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`:disabled="x"`))
+  })
+
+  it("binds one attribute called attrs, which is what any other `:name` does", () => {
+    const jq79 = new Component79(`<button class="go" :attrs="label">go</button>`)
+      .render({ label: "x" }).mount(host)
+
+    expect($(host, ".go")!.getAttribute("attrs")).toBe("x")
+    expect($(host, ".go")!.hasAttribute("disabled")).toBe(false)
+    jq79.destroy()
+  })
+
+  it("is silent for every directive that still exists", () => {
+    new Component79(`<div :class="theme" :text="msg"></div>`)
+    new Component79(`<input :value="v" :checked="on" />`)
+    new Component79(`<ul><li :each="x in xs" :key="x">{{ x }}</li></ul>`)
+
+    expect(warn).not.toHaveBeenCalled()
+  })
+})

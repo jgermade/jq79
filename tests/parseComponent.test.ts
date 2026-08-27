@@ -8,7 +8,7 @@ describe("parseComponent", () => {
       const fullName = \`\${fname} \${lname}\`
     </script>
 
-    <div :attrs="{ fullName }"></div>
+    <div :title="fullName"></div>
     <div class="full-name">
       {{ fullName }}
     </div>
@@ -43,7 +43,7 @@ describe("parseComponent", () => {
 
     expect(template[0]).toEqual({
       tag: "div",
-      attrs: { ":attrs": "{ fullName }" },
+      attrs: { ":title": "fullName" },
       children: [],
     })
 

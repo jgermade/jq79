@@ -18,7 +18,7 @@
     <button
       :each="exercise in section.exercises"
       :key="exercise.path"
-      :attrs="{ class: exercise.path === path ? 'link active' : 'link' }"
+      :class="exercise.path === path ? 'link active' : 'link'"
       @click="go(exercise.index)"
     >{{ exercise.title }}</button>
   </div>

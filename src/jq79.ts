@@ -421,7 +421,7 @@ const renderText = (parts: TextPart[], scope: Record<string, any>): string => {
 }
 
 
-const CONTROL_ATTRS = new Set([":attrs", ":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed", ":props"])
+const CONTROL_ATTRS = new Set([":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed", ":props"])
 
 // a control attribute is one the static-attr loop and nested-component prop
 // collection must skip. The set holds the fixed names; `:class.<name>` (the
@@ -1392,8 +1392,9 @@ const BOOLEAN_ATTRS = new Set([
   "playsinline", "readonly", "required", "reversed", "selected",
 ])
 
-// the one value rule, shared by `:attr="expr"` and `:attrs` so the two forms
-// can never disagree:
+// the value rule for `:attr="expr"`. It was shared with `:attrs` until that
+// directive was retired (RECORD/2026-08-27.retiring-attrs.md), which is why it
+// reads like a contract rather than an implementation detail:
 //
 // - a boolean attribute is removed by ANY falsy value and set to "" when
 //   truthy, so `:disabled="items.length"` enables the button on an empty list
@@ -1492,8 +1493,8 @@ const applyAttr = (el: Element, name: string, value: any) => {
   else el.setAttribute(name, boolean ? "" : String(value))
 }
 
-// renders a single element node: static attrs, @event listeners, a reactive
-// :attrs object, and its content - :text/:html override the element's own
+// renders a single element node: static attrs, @event listeners, `:name`
+// attribute bindings, and its content - :text/:html override the element's own
 // children with a reactive textContent/innerHTML, otherwise children render
 // normally. :if/:elseif/:else/:each are handled by renderNodes, which decides
 // *whether*/*how many times* a node is rendered before calling this. Tags
@@ -1575,7 +1576,7 @@ export type DebugFlags = {
 // control attr, and a dotted name), so an element carrying one is never planned
 // and renderNode stays the only place that warning can fire from - once per
 // render, as before. See RECORD/2026-08-25.html-in-the-cloner.md
-const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":attrs", ":value", ":checked", ":selected"])
+const PLANNABLE_CONTROL_ATTRS = new Set([":text", ":html", ":value", ":checked", ":selected"])
 
 // What a hole can be, in the order renderNode registers them.
 // A `:` attribute with a dot in it is rejected wholesale except `:class.`:
@@ -1625,7 +1626,6 @@ type SkeletonOp =
   | { kind: "text"; path: number[]; parts: TextPart[] }
   | { kind: "event"; path: number[]; attr: string; expr: string }
   | { kind: "attr"; path: number[]; name: string; expr: string }
-  | { kind: "attrs"; path: number[]; expr: string }
   | { kind: "class"; path: number[]; classExpr?: string; toggles: [string, string][] | null; staticClasses: Set<string> }
   | { kind: "textContent"; path: number[]; expr: string }
   | { kind: "html"; path: number[]; expr: string }
@@ -1660,9 +1660,6 @@ const buildSkeleton = (node: TemplateNode, path: number[], ops: SkeletonOp[]): E
       ops.push({ kind: "attr", path, name: foreignAttrName(el, name), expr: value || kebabToCamel(name) })
     } else el.setAttribute(key, value)
   }
-  const attrsExpr = node.attrs[":attrs"]
-  if (attrsExpr !== undefined) ops.push({ kind: "attrs", path, expr: attrsExpr })
-
   if (classExpr !== undefined || toggles) {
     ops.push({ kind: "class", path, classExpr, toggles, staticClasses: new Set(classNames(node.attrs.class ?? "")) })
   }
@@ -1802,16 +1799,6 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
         el.classList.add(...next)
         bound = next
       })
-    } else if (op.kind === "attrs") {
-      const el = target as Element
-      const { expr } = op
-      let boundKeys: string[] = []
-      fx.effect(() => {
-        boundKeys.forEach(key => el.removeAttribute(key))
-        const bound = evalExpr(expr, scope)
-        boundKeys = bound && typeof bound === "object" ? Object.keys(bound) : []
-        boundKeys.forEach(key => applyAttr(el, key, bound[key]))
-      })
     } else if (op.kind === "textContent") {
       const el = target as Element
       const { expr } = op
@@ -1867,7 +1854,7 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
 }
 
 const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
-  // :with applies to the element's own bindings (@events, :attrs) and its
+  // :with applies to the element's own bindings (@events, :name) and its
   // whole subtree. On a :each element the item scope is already in place, so
   // :with="item" works
   const withExpr = node.attrs[":with"]
@@ -2003,18 +1990,6 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
         fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
       }
     } else el.setAttribute(key, value)
-  }
-
-  const bindExpr = node.attrs[":attrs"]
-  if (bindExpr !== undefined) {
-    let boundKeys: string[] = []
-
-    fx.effect(() => {
-      boundKeys.forEach(key => el.removeAttribute(key))
-      const bound = evalExpr(bindExpr, scope)
-      boundKeys = bound && typeof bound === "object" ? Object.keys(bound) : []
-      boundKeys.forEach(key => applyAttr(el, key, bound[key]))
-    })
   }
 
   // :class="expr" adds classes on top of the static `class` attribute, and
@@ -2634,6 +2609,22 @@ const DIRECTIVE_NAMES = [...CONTROL_ATTRS, ":model", ":slot"].map(attr => attr.s
 //
 // A prefix, deliberately, and not an edit distance: the rule is derived from the
 // directive list itself, so nothing here is a table of near-misses to maintain
+// A name that WAS a directive and is not one any more. Bare removal would be
+// the silent kind: `:attrs` is now an ordinary binding, so it would write
+// attrs="[object Object]" on an element and pass a prop nobody declared to a
+// component. One entry, and the message carries the migration
+const RETIRED_DIRECTIVES: Record<string, string> = {
+  ":attrs": `:attrs was removed in 0.7 - it now binds an attribute called "attrs". ` +
+    `Bind them one at a time (:disabled="x", :title="y"), or :class for classes`,
+}
+
+const warnRetiredDirective = (node: TemplateNode) => {
+  for (const attr in node.attrs) {
+    const message = RETIRED_DIRECTIVES[attr]
+    if (message !== undefined) console.warn(`jq79: ${message}`)
+  }
+}
+
 const warnDirectiveTypo = (node: TemplateNode) => {
   // on a component tag every `:name` is a prop by design, and on a tag that may
   // still become one it is a parameter waiting for a definition
@@ -2671,6 +2662,7 @@ const validateChains = (nodes: (TemplateNode | string)[], parent?: TemplateNode)
     // with it because a <template :slot> means one thing under a component tag
     // and something else anywhere else
     warnTemplateDirective(node, parent)
+    warnRetiredDirective(node)
     warnDirectiveTypo(node)
     validateChains(node.children, node)
   })

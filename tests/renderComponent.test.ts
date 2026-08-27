@@ -23,8 +23,8 @@ describe("renderComponent", () => {
     expect(container.querySelector(".full-name")?.textContent).toBe("Grace Hopper")
   })
 
-  it("applies :attrs attributes and keeps them in sync", () => {
-    const component = parseComponent(`<div :attrs="{ title, disabled }"></div>`)
+  it("applies :name attributes and keeps them in sync", () => {
+    const component = parseComponent(`<div :title :disabled></div>`)
     const data = $reactive({ title: "hi", disabled: false })
 
     container.appendChild(renderComponent(component, data))
@@ -283,9 +283,9 @@ describe("renderComponent", () => {
       expect($(container, ".out")?.textContent).toBe("adios")
     })
 
-    it("evaluates multi-line :if and :attrs expressions", () => {
+    it("evaluates multi-line :if and :name expressions", () => {
       const component = parseComponent(
-        `<div class="box" :if="items\n  .filter(n => n > 1)\n  .length > 0" :attrs="{\n  'data-count': items.length,\n}"></div>`
+        `<div class="box" :if="items\n  .filter(n => n > 1)\n  .length > 0" :data-count="items\n  .length"></div>`
       )
       const data = $reactive({ items: [1, 2, 3] })
 
@@ -501,7 +501,7 @@ describe("renderComponent", () => {
   })
 
   it("does not touch unrelated bindings when an unrelated property changes", () => {
-    const component = parseComponent(`<div>{{ title }}</div><div :attrs="{ label }"></div>`)
+    const component = parseComponent(`<div>{{ title }}</div><div :label></div>`)
     const data = $reactive({ title: "hi", label: "x", unrelated: 1 })
 
     container.appendChild(renderComponent(component, data))
@@ -556,7 +556,7 @@ describe("renderComponent", () => {
   })
 
   it("keeps unchanged keyed items' DOM/state stable when the list is reordered", () => {
-    const component = parseComponent(`<li :each="user in users" :key="user.id"><input :attrs="{ value: user.name }"></li>`)
+    const component = parseComponent(`<li :each="user in users" :key="user.id"><input :value="user.name"></li>`)
     const data = $reactive({
       users: [{ id: 1, name: "Ada" }, { id: 2, name: "Grace" }, { id: 3, name: "Katherine" }],
     })
@@ -1014,7 +1014,7 @@ describe("renderComponent", () => {
 
     it("applies to the element's own bindings, and assignments write through to the object", () => {
       const component = parseComponent(
-        `<button :with="user" :attrs="{ title: name }" @click="name = 'Grace'">go</button>` +
+        `<button :with="user" :title="name" @click="name = 'Grace'">go</button>` +
         `<span class="outside">{{ user.name }}</span>`
       )
       const data = $reactive({ user: { name: "Ada" } })
@@ -1159,12 +1159,11 @@ describe("renderComponent", () => {
   })
 })
 
-// sharp edges of attribute binding, pinned: what :attrs does with falsy
+// sharp edges of attribute binding, pinned: what `:name` does with falsy
 // non-false values, and where the attribute/property split of form elements
-// shows through
-// `:name="expr"` binds one attribute reactively - the single-key case
-// :attrs="{ name: expr }" was carrying. Same value rule as :attrs, because two
-// similar-but-different rules would be worse than either.
+// shows through. It is the only attribute form there is since :attrs was
+// retired (RECORD/2026-08-27.retiring-attrs.md), and it kept that directive's
+// value rule wholesale - which is why the cases below read the way they do.
 describe(":attr - the single-attribute form", () => {
   let container: HTMLDivElement
 
@@ -1274,11 +1273,11 @@ describe("attribute binding edges", () => {
     document.body.appendChild(container)
   })
 
-  it(":attrs removes a boolean attribute for any falsy value, 0 and \"\" included", () => {
+  it(":name removes a boolean attribute for any falsy value, 0 and \"\" included", () => {
     // presence is the whole message for a boolean attribute, so the value is
     // never worth writing: `disabled: items.length` enables the button on an
     // empty list, which is what it reads like
-    const component = parseComponent(`<button :attrs="{ disabled: n }">x</button>`)
+    const component = parseComponent(`<button :disabled="n">x</button>`)
     const data = $reactive({ n: 0 as any })
 
     container.appendChild(renderComponent(component, data))
@@ -1297,10 +1296,10 @@ describe("attribute binding edges", () => {
     expect(button.disabled).toBe(true)
   })
 
-  it(":attrs writes false and 0 for an attribute that is not a boolean one", () => {
+  it(":name writes false and 0 for an attribute that is not a boolean one", () => {
     // absent and "false" are different things to a screen reader, so the rule
     // that removes a falsy boolean attribute must not reach aria-* or data-*
-    const component = parseComponent(`<div :attrs="{ 'aria-expanded': open, 'data-count': n, title: t }"></div>`)
+    const component = parseComponent(`<div :aria-expanded="open" :data-count="n" :title="t"></div>`)
     const data = $reactive({ open: false, n: 0, t: null as any })
 
     container.appendChild(renderComponent(component, data))
@@ -1314,25 +1313,11 @@ describe("attribute binding edges", () => {
     expect(el.getAttribute("aria-expanded")).toBe("true")
   })
 
-  it(":attrs value writes the attribute, which stops driving an input the user has typed in", () => {
-    const component = parseComponent(`<input :attrs="{ value: name }">`)
-    const data = $reactive({ name: "Ada" })
-
-    container.appendChild(renderComponent(component, data))
-    const input = container.querySelector("input") as HTMLInputElement
-
-    // before any user interaction the attribute is also the visible value
-    expect(input.value).toBe("Ada")
-
-    // once the user types, value (the property) detaches from the attribute:
-    // later store writes update the attribute but not what the user sees -
-    // which is what :value (the property directive) exists for
-    input.value = "typed by user"
-    data.name = "Grace"
-
-    expect(input.getAttribute("value")).toBe("Grace")
-    expect(input.value).toBe("typed by user")
-  })
+  // What used to sit here: ":attrs value writes the attribute, which stops
+  // driving an input the user has typed in". The `value` ATTRIBUTE cannot be
+  // bound any more - `:value` is the property directive and `:attrs` is gone -
+  // so the sharp edge it pinned no longer exists to be cut on. The property
+  // half of the pair is below, and it is the one anybody wanted
 
   it(":value writes the property, so it keeps driving an input the user has typed in", () => {
     const component = parseComponent(`<input :value="name">`)
@@ -1411,24 +1396,10 @@ describe("attribute binding edges", () => {
     expect(select.value).toBe("en")
   })
 
-  it(":class and a class key inside :attrs degrade predictably when combined", () => {
-    // the documented "don't": :attrs rewrites the whole attribute on each of
-    // its runs, wiping what :class added until :class happens to re-run
-    const component = parseComponent(`<div :attrs="{ class: base }" :class="{ active: on }"></div>`)
-    const data = $reactive({ base: "box", on: true })
-
-    container.appendChild(renderComponent(component, data))
-    const el = container.querySelector("div")!
-
-    expect(el.className).toBe("box active")
-
-    data.base = "box2"
-    expect(el.className).toBe("box2")
-
-    data.on = false
-    data.on = true
-    expect(el.className).toBe("box2 active")
-  })
+  // and the same for ":class and a class key inside :attrs degrade predictably
+  // when combined" - the documented "don't". The `class` attribute has no
+  // binding of its own now, so :class is the only writer and there is nothing
+  // left to race with it
 })
 
 // how :each identity behaves under the two ways of sorting a list - pinned
