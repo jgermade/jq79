@@ -994,6 +994,34 @@ const componentBox = (key: string, node: TemplateNode, shadow: boolean): Documen
 // <style> has to go in there with it - document.head can't reach into a shadow
 // tree, and a style that never applies to its own component would still be
 // restyling the page around it
+// once per usage site, not per instance: a :each of 1,000 rows shares one AST
+// node, and the message is about the position rather than the row
+const warnedForeignRoots = new WeakSet<TemplateNode>()
+
+// A namespace is a PARSE-time fact and a usage site is a RENDER-time one, and a
+// nested component is the first thing that separates them: a definition's
+// template is parsed on its own, so a template rooted at a bare <circle> comes
+// out of the parser in HTML - it lands inside the <svg> and never draws, in
+// every engine. Nothing about that is visible: no error, no gap, an element in
+// the DOM with nothing on the screen.
+//
+// A component's template decides its own namespace, which is the answer this
+// project chose (RECORD/2026-08-26.the-namespace-of-a-component.md): a component
+// used inside an <svg> roots its template at <svg>. This is what says so when it
+// does not, instead of leaving a blank diagram
+const warnForeignRoot = (node: TemplateNode, definition: Component79) => {
+  if (node.ns === undefined || warnedForeignRoots.has(node)) return
+  const root = definition.template.find(child => typeof child === "object") as TemplateNode | undefined
+  if (root === undefined || root.ns !== undefined) return
+  warnedForeignRoots.add(node)
+  const wrapper = node.ns === "http://www.w3.org/1998/Math/MathML" ? "<math>" : "<svg>"
+  console.warn(
+    `jq79: <${tagLabel(node)}> is used inside ${wrapper} and its template starts with <${root.tag.toLowerCase()}>, ` +
+    `which is parsed as HTML - it renders and never draws. A component's template decides its own namespace, ` +
+    `so root it at ${wrapper}`
+  )
+}
+
 const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   // What this usage site ever renders needs stable bounds: the instance's DOM
   // is dynamic (the definition can resolve late or be swapped), so a caller
@@ -1149,6 +1177,8 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     current = null
     currentDef = nextDef
     if (!nextDef) return
+
+    warnForeignRoot(node, nextDef)
 
     // a fresh instance per usage site: the definition's parsed parts (and
     // pre-resolved modules) are shared, but store/effects/DOM are per instance
@@ -2590,6 +2620,38 @@ const warnTemplateDirective = (node: TemplateNode, parent: TemplateNode | undefi
   )
 }
 
+// The directive names a `:` attribute can be a misspelling OF. Derived from
+// CONTROL_ATTRS rather than written out, plus the two families that are not in
+// it (`:model`, `:slot`) - so there is no second list to keep in step.
+const DIRECTIVE_NAMES = [...CONTROL_ATTRS, ":model", ":slot"].map(attr => attr.slice(1))
+
+// `:iff="ready"` renders the element unconditionally and writes iff="true", and
+// until now said nothing - because since RECORD/2026-08-07.attribute-directive.md
+// an unrecognized `:name` is not an error at all: it BINDS that attribute, which
+// is what makes `:src`, `:disabled` and `:aria-expanded` work. So there is no
+// "unknown directive" to report in general, and the only typo worth a word is
+// one that starts with a directive's own name: `:iff`, `:eachh`, `:classs`.
+//
+// A prefix, deliberately, and not an edit distance: the rule is derived from the
+// directive list itself, so nothing here is a table of near-misses to maintain
+const warnDirectiveTypo = (node: TemplateNode) => {
+  // on a component tag every `:name` is a prop by design, and on a tag that may
+  // still become one it is a parameter waiting for a definition
+  if (node.component !== undefined || node.tag.includes("-")) return
+
+  for (const attr in node.attrs) {
+    if (!attr.startsWith(":") || isControlAttr(attr) || attr === ":model" || attr.startsWith(":model.")) continue
+    const name = attr.slice(1)
+    const directive = DIRECTIVE_NAMES.find(known => name !== known && name.startsWith(known))
+    if (directive === undefined) continue
+    console.warn(
+      `jq79: ${attr} is not a directive - it bound an attribute named "${name}". ` +
+      `A ":name" jq79 does not recognize binds that attribute (which is what :src and :disabled are). ` +
+      `If you meant :${directive}, that is the spelling`
+    )
+  }
+}
+
 // Checks one node list's chains, and every list below it, against that grammar.
 // Run once per definition from componentPartsFrom, not per render: a template
 // says what it says before any data exists, so a stray :else is reported when
@@ -2609,6 +2671,7 @@ const validateChains = (nodes: (TemplateNode | string)[], parent?: TemplateNode)
     // with it because a <template :slot> means one thing under a component tag
     // and something else anywhere else
     warnTemplateDirective(node, parent)
+    warnDirectiveTypo(node)
     validateChains(node.children, node)
   })
 

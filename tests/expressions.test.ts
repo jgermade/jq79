@@ -280,3 +280,123 @@ describe("`with` and the const prologue agree", () => {
     expect(rendered).toEqual(["", "resolved"])
   })
 })
+
+// `:iff="ready"` binds an attribute named iff and renders the element
+// unconditionally. There is no "unknown directive" to report in general - an
+// unrecognized `:name` IS the attribute-binding feature - so the only signal
+// left is a name that starts with a directive's own name
+describe("a `:` name that looks like a directive", () => {
+  let host: HTMLDivElement
+  let warn: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    host = document.createElement("div")
+    document.body.appendChild(host)
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    warn.mockRestore()
+    host.remove()
+  })
+
+  const parse = (source: string) => new Component79(source)
+
+  it("warns for a misspelt directive, and says what it did instead", () => {
+    parse(`<p :iff="ready">hola</p>`)
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":iff is not a directive"))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`bound an attribute named "iff"`))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("If you meant :if"))
+  })
+
+  it("catches the other spellings of the same mistake", () => {
+    parse(`<ul><li :eachh="x in xs">a</li></ul>`)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":eachh"))
+
+    warn.mockClear()
+    parse(`<p :texts="msg"></p>`)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":texts"))
+  })
+
+  it("says nothing about an ordinary attribute binding, which is the feature", () => {
+    parse(`<img :src="url" /><button :disabled="busy">b</button><div :aria-expanded="open"></div>`)
+    parse(`<svg :width="w" :viewBox="box"><circle :stroke-width="sw" /></svg>`)
+    parse(`<input :value="v" :checked="on" /><p :class="theme" :class.warn="hot">x</p>`)
+
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("says nothing on a component tag, where every `:name` is a prop", () => {
+    parse(`<Chip :iff="ready" :ifLabel="x" />`)
+    parse(`<my-chip :iff="ready" />`)
+
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("still renders the element and writes the attribute", () => {
+    const jq79 = parse(`<p class="out" :iff="ready">hola</p>`).render({ ready: false }).mount(host)
+
+    const p = $(host, ".out")!
+    expect(p.textContent).toBe("hola")       // :iff is not :if - the element renders
+    expect(p.getAttribute("iff")).toBe("false")
+    jq79.destroy()
+  })
+})
+
+// A component's template decides its own namespace: parsed on its own, a
+// template rooted at a bare <circle> is an HTML element with an SVG name, so it
+// lands inside the <svg> and never draws. That is the answer this project chose
+// (RECORD/2026-08-26.the-namespace-of-a-component.md) - and the failure was
+// invisible until this said so
+describe("a component used inside an <svg>", () => {
+  let host: HTMLDivElement
+  let warn: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    host = document.createElement("div")
+    document.body.appendChild(host)
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    warn.mockRestore()
+    host.remove()
+  })
+
+  const BARE = `<template name="Bare"><circle cx="8" cy="8" r="8" /></template>`
+  const ROOTED = `<template name="Rooted"><svg x="10"><circle cx="8" cy="8" r="8" /></svg></template>`
+
+  it("warns when its template starts with a bare SVG element", () => {
+    const jq79 = new Component79(`<svg viewBox="0 0 100 100"><Bare /></svg>${BARE}`).render().mount(host)
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("<Bare>"))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("never draws"))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("root it at <svg>"))
+    jq79.destroy()
+  })
+
+  it("says nothing when the template roots at <svg>, which is the fix", () => {
+    const jq79 = new Component79(`<svg viewBox="0 0 100 100"><Rooted /></svg>${ROOTED}`).render().mount(host)
+
+    expect(warn).not.toHaveBeenCalled()
+    jq79.destroy()
+  })
+
+  it("says nothing outside a foreign namespace, where an HTML root is the point", () => {
+    const jq79 = new Component79(`<div><Chip /></div><template name="Chip"><b>hola</b></template>`)
+      .render().mount(host)
+
+    expect(warn).not.toHaveBeenCalled()
+    jq79.destroy()
+  })
+
+  it("warns once for a usage site, however many instances it renders", () => {
+    const jq79 = new Component79(
+      `<svg viewBox="0 0 100 100"><Bare :each="n in [1, 2, 3]" :key="n" /></svg>${BARE}`
+    ).render().mount(host)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    jq79.destroy()
+  })
+})

@@ -38,6 +38,7 @@ The one exception is the indentation *between* the branches of an `:if`/`:elseif
 - `:name` alone is shorthand for `:name="name"`, like props and `:model.<name>`. The attribute keeps its written (kebab) name while the expression reads the camelCase variable, so `:aria-expanded` binds `ariaExpanded` — `aria-expanded` as an expression would be a subtraction.
 - Every name listed on this page is reserved and keeps its own meaning: `:if`, `:each`, `:class`, `:text`, `:attrs`, `:model`, `:value`/`:checked`/`:selected`, and the rest. So `:value` is the form-state directive (the DOM *property*), never the `value` attribute.
 - On a **component tag** `:name` is a prop, not an attribute — a jq79 component has no single root for one to land on. See [nested components](#nested-components).
+- Because *any* unrecognized `:name` is a legal attribute binding, a misspelt directive is not an error — `:iff="ready"` binds an attribute called `iff` and the element renders unconditionally. So jq79 warns for a `:name` that **starts with a directive's name** and is not one (`:iff`, `:eachh`, `:classs`), naming the attribute it bound and the directive it looks like. A name that resembles nothing reserved stays silent: it is the feature.
 
 ### The value rule
 
@@ -363,7 +364,8 @@ A component used inside an `<svg>` has to **root its own template at `<svg>`**:
 
 A component's template is parsed on its own, so a bare `<circle>` at its root is
 an HTML element with an SVG name — it lands in the tree and never draws, wherever
-the tag was written. A root of its own `<svg>` is a foreign context of its own,
+the tag was written. **jq79 says so** — once per usage site, naming the component
+and the fix — rather than leaving you a blank diagram. A root of its own `<svg>` is a foreign context of its own,
 and everything inside it is in the SVG namespace as usual.
 
 What it costs: a child or sibling combinator in **global** CSS stops crossing the
