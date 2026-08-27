@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from "vitest"
 import { $reactive, $toRaw } from "../src/jq79"
 // the trie node's effect slot, from the module rather than the package: these
 // are internals, and nothing re-exports them from src/jq79.ts
-import { addEffect, removeEffect, eachEffect, hasEffects } from "../src/reactive"
+import { addOwn, addDeep, removeOwn, removeDeep, eachOwn, eachDeep } from "../src/reactive"
 import type { Effect } from "../src/reactive"
 
 describe("$reactive", () => {
@@ -830,57 +830,91 @@ describe("a splice announced as the shift it is", () => {
 // liveness), it just keeps the node un-prunable and the trie growing over dead
 // rows. Exported from src/reactive for this; nothing re-exports it from the
 // package entry
-describe("a trie node's effect slot", () => {
+describe("a trie node's effect slots", () => {
   const effect = (order: number): Effect =>
     ({ deps: new Set(), run: () => {}, reindex: new Set(), deep: false, order })
+  const node = () =>
+    ({ children: null, own: null, ownMany: null, deep: null, deepMany: null, parent: null, segment: "x" })
+  const owners = (n: any) => { const seen: Effect[] = []; eachOwn(n, e => seen.push(e)); return seen }
+  const deepOwners = (n: any) => { const seen: Effect[] = []; eachDeep(n, e => seen.push(e)); return seen }
 
-  it("holds one effect directly", () => {
-    const a = effect(1)
-    expect(addEffect(null, a)).toBe(a)
+  it("holds the first effect in a field of its own", () => {
+    const [n, a] = [node(), effect(1)]
+    addOwn(n as any, a)
+
+    expect(n.own).toBe(a)
+    expect(n.ownMany).toBeNull() // no Set for the case that is almost every case
+    expect(owners(n)).toEqual([a])
   })
 
-  it("allocates a Set for the second, and keeps both", () => {
-    const [a, b] = [effect(1), effect(2)]
-    const slot = addEffect(addEffect(null, a), b)
+  it("allocates a Set for the rest, and visits them all", () => {
+    const [n, a, b, c] = [node(), effect(1), effect(2), effect(3)]
+    addOwn(n as any, a); addOwn(n as any, b); addOwn(n as any, c)
 
-    expect(slot).toBeInstanceOf(Set)
-    const seen: Effect[] = []
-    eachEffect(slot, e => seen.push(e))
-    expect(seen).toEqual([a, b])
+    expect(owners(n)).toEqual([a, b, c])
   })
 
   it("adds the same effect once", () => {
-    const a = effect(1)
-    expect(addEffect(addEffect(null, a), a)).toBe(a)
+    const [n, a] = [node(), effect(1)]
+    addOwn(n as any, a); addOwn(n as any, a)
+
+    expect(owners(n)).toEqual([a])
+    expect(n.ownMany).toBeNull()
   })
 
-  it("empties the slot when its only effect goes - what keeps the node prunable", () => {
-    const a = effect(1)
-    const slot = removeEffect(addEffect(null, a), a)
+  it("empties the field when its effect goes - what keeps the node prunable", () => {
+    const [n, a] = [node(), effect(1)]
+    addOwn(n as any, a)
+    removeOwn(n as any, a)
 
-    expect(slot).toBeNull()
-    expect(hasEffects(slot)).toBe(false)
+    expect(n.own).toBeNull()
+    expect(owners(n)).toEqual([])
+  })
+
+  it("drops the Set when its last effect goes, too", () => {
+    const [n, a, b] = [node(), effect(1), effect(2)]
+    addOwn(n as any, a); addOwn(n as any, b)
+    removeOwn(n as any, b)
+
+    expect(n.ownMany).toBeNull()
+    expect(owners(n)).toEqual([a])
+  })
+
+  it("removes from the Set while the first effect stays put", () => {
+    const [n, a, b, c] = [node(), effect(1), effect(2), effect(3)]
+    addOwn(n as any, a); addOwn(n as any, b); addOwn(n as any, c)
+    removeOwn(n as any, b)
+
+    expect(n.own).toBe(a)
+    expect(owners(n)).toEqual([a, c])
+  })
+
+  it("goes on visiting the Set after the first effect leaves", () => {
+    const [n, a, b] = [node(), effect(1), effect(2)]
+    addOwn(n as any, a); addOwn(n as any, b)
+    removeOwn(n as any, a)
+
+    expect(n.own).toBeNull()
+    expect(owners(n)).toEqual([b])
   })
 
   it("leaves a different effect alone", () => {
-    const [a, b] = [effect(1), effect(2)]
-    expect(removeEffect(a, b)).toBe(a)
+    const [n, a, b] = [node(), effect(1), effect(2)]
+    addOwn(n as any, a)
+    removeOwn(n as any, b)
+
+    expect(owners(n)).toEqual([a])
   })
 
-  it("empties a Set that loses its last effect, so the node is prunable too", () => {
-    const [a, b] = [effect(1), effect(2)]
-    let slot = addEffect(addEffect(null, a), b)
-    slot = removeEffect(slot, a)
-    expect(hasEffects(slot)).toBe(true)
+  it("keeps the deep channel apart from the own one", () => {
+    const [n, a, b] = [node(), effect(1), effect(2)]
+    addOwn(n as any, a); addDeep(n as any, b)
 
-    slot = removeEffect(slot, b)
-    expect(hasEffects(slot)).toBe(false)
-    expect(slot).toBeNull()
-  })
+    expect(owners(n)).toEqual([a])
+    expect(deepOwners(n)).toEqual([b])
 
-  it("visits nothing for an empty slot", () => {
-    const seen: Effect[] = []
-    eachEffect(null, e => seen.push(e))
-    expect(seen).toEqual([])
+    removeDeep(n as any, b)
+    expect(owners(n)).toEqual([a])
+    expect(deepOwners(n)).toEqual([])
   })
 })
