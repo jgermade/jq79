@@ -104,11 +104,12 @@ const elementToAST = (el: Element): TemplateNode => {
 // expression compiled with and without $event is two different functions. A
 // syntactically invalid expression caches its failure (null) so it isn't
 // recompiled, and rethrown as undefined, exactly as before
-const compiled = new Map<string, Function | null>()
+// One entry per (extras, expression). `scoped` says which form `fn` is, so the
+// evaluation path never rebuilds the key to ask - it is a string concatenation
+// per evaluation, and this is the hottest loop in the library
+type CompiledExpr = { fn: Function | null; scoped: boolean }
 
-// the keys whose compiled function is the `const` form below rather than the
-// `with` one - the only ones a ReferenceError can be worth retrying for
-const scopedKeys = new Set<string>()
+const compiled = new Map<string, CompiledExpr>()
 
 // Resolves a name the `const` prologue could not: its fast read came back
 // undefined, which means one of three different things. `with` told them apart
@@ -175,17 +176,20 @@ const compileScoped = (expr: string, params: string[]): Function | null => {
   }
 }
 
-const compileExpr = (expr: string, params: string[]): Function | null => {
-  const key = `${params.join(",")}|${expr}`
-  let fn = compiled.get(key)
-  if (fn === undefined) {
-    fn = compileScoped(expr, params)
-    if (fn) scopedKeys.add(key)
-    else fn = compileWith(expr, params)
-    compiled.set(key, fn)
+const entryFor = (key: string, expr: string, params: string[]): CompiledExpr => {
+  let entry = compiled.get(key)
+  if (entry === undefined) {
+    const scoped = compileScoped(expr, params)
+    entry = scoped ? { fn: scoped, scoped: true } : { fn: compileWith(expr, params), scoped: false }
+    compiled.set(key, entry)
   }
-  return fn
+  return entry
 }
+
+const exprKey = (expr: string, params: string[]): string => `${params.join(",")}|${expr}`
+
+const compileExpr = (expr: string, params: string[]): Function | null =>
+  entryFor(exprKey(expr, params), expr, params).fn
 
 // The safety net under the extractor. A free name it fails to collect is not
 // declared by the prologue, so the expression reaches for it against globalThis
@@ -199,8 +203,7 @@ const compileExpr = (expr: string, params: string[]): Function | null => {
 // once per expression and never for the `with` form
 const demoteToWith = (key: string, expr: string, params: string[]): Function | null => {
   const fallback = compileWith(expr, params)
-  compiled.set(key, fallback)
-  scopedKeys.delete(key)
+  compiled.set(key, { fn: fallback, scoped: false })
   return fallback
 }
 
@@ -321,11 +324,11 @@ const reportExprError = (expr: string, scope: Record<string, any>, error: unknow
 
 const runExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
   const params = extras ? Object.keys(extras) : []
-  const fn = compileExpr(expr, params)
-  if (!fn) return undefined // a syntax error: compileExpr cached the failure, and it stays undefined
+  const key = exprKey(expr, params)
+  const { fn, scoped } = entryFor(key, expr, params)
+  if (!fn) return undefined // a syntax error: the failure is cached, and it stays undefined
   const args = extras ? Object.values(extras) : []
-  const key = `${params.join(",")}|${expr}`
-  if (!scopedKeys.has(key)) return fn(scope, resolveName, ...args)
+  if (!scoped) return fn(scope, resolveName, ...args)
   try {
     return fn(scope, resolveName, ...args)
   } catch (error) {
@@ -3985,10 +3988,7 @@ export class Component79 {
         } else if (typeof value === "boolean") debugFlags[key as keyof DebugFlags] = value
         else console.warn(`jq79: Component79.debug ignored "${key}" - the flags are booleans, and the ones it knows are: ${Object.keys(debugFlags).join(", ")}`)
       }
-      if (debugFlags.scopedNames !== scopedBefore) {
-        compiled.clear()
-        scopedKeys.clear()
-      }
+      if (debugFlags.scopedNames !== scopedBefore) compiled.clear()
     }
     return { ...debugFlags }
   }

@@ -146,6 +146,24 @@ and a component inside `<svg>` or `<math>` gets **no** box, because SVG renders
 neither an unknown element nor its children. See
 [RECORD/2026-08-25.the-wrapper-and-the-css-rename.md](../RECORD/2026-08-25.the-wrapper-and-the-css-rename.md).
 
+**A template expression is compiled twice over, and the fallback is the point.**
+An expression whose free names `freeIdentifiers` can extract is compiled with
+those names as `const` declarations in front of it - one proxy read each, no
+`with` - and everything else keeps `with ($scope)`. Three of the extractor's
+refusals look arbitrary and are each a defect that was found by reading rather
+than by a test: a **called** free name keeps `with`, because `add()` inside
+`with ($scope)` runs with `this === $scope` and a factory component's methods
+rely on it; a **short-circuit with more than one name** keeps `with`, because the
+`const` prologue is eager and would track a branch that was not taken; and
+anything that **assigns** keeps `with`, which is where the handlers are. Under
+all three, the first `ReferenceError` out of a compiled prologue demotes that
+expression to `with` for good and evaluates it again. What that net does *not*
+catch is a name the extractor misses that the page also has as a global
+(`name`, `status`, `length`, `top`): nothing throws, and the global is read
+instead of the store. `tests/expressions.test.ts` runs both forms over one
+corpus; `Component79.debug({ scopedNames: false })` is what switches them.
+See [RECORD/2026-08-27.name-resolution-without-with.md](../RECORD/2026-08-27.name-resolution-without-with.md).
+
 **Setup scripts have two traps** that no test can catch for you, both written up in
 [setup-scripts.md](setup-scripts.md): an effect that reads *and* writes the same
 scope variable wakes itself on repeat — but only from the **second** pass, since an
