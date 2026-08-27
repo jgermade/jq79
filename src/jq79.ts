@@ -1970,7 +1970,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
       // a directive of its own, bound further down (or by renderNodes)
     } else if (key.startsWith(":")) {
       // :name="expr" binds that one attribute, reactively - the single-key
-      // case :attrs="{ name: expr }" was carrying. `:name` alone is shorthand
+      // case :attrs="{ name: expr }" used to carry. `:name` alone is shorthand
       // for `:name="name"`, like props and :model.<name>, and the shorthand
       // reads the camelCase variable while the attribute keeps its written
       // (kebab) name: `:aria-expanded` binds `ariaExpanded`, because
@@ -2063,8 +2063,8 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
 
   // :value / :checked / :selected write the DOM *property*, not the
   // attribute - the attribute is only a form control's default, and detaches
-  // the moment the user interacts (which is why :attrs="{ value }" stops
-  // driving a typed-in input). One-way, store -> DOM: the way back stays an
+  // the moment the user interacts (which is why writing the value ATTRIBUTE
+  // stops driving a typed-in input). One-way, store -> DOM: the way back stays an
   // explicit @input/@change. :value skips the write when the property
   // already holds the string, so an unrelated re-run can't move the caret of
   // the input the user is typing into. Registered after the children render:
@@ -3195,7 +3195,7 @@ const parseComponentString = (component: string): ComponentParts => {
   //   const fullName = `${fname} ${lname}`
   // </script>
   //
-  // <div :attrs="{ fullName }"></div>
+  // <div :title="fullName"></div>
   // <div class="full-name">
   //  {{ fullName }}
   // </div>
