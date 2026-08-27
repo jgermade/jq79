@@ -15,7 +15,8 @@
 //   node scripts/run-ab.mjs --base none            # the same, said out loud
 //   node scripts/run-ab.mjs --base main            # this checkout vs main
 //   node scripts/run-ab.mjs --base v0.6.1 --rounds 4 --samples 12
-//   node scripts/run-ab.mjs --flags                # cloneSkeletons on vs off
+//   node scripts/run-ab.mjs --flags                # cloneSkeletons off vs on
+//   node scripts/run-ab.mjs --flags scopedNames    # any Component79.debug flag
 //
 // Writes <out>/benchmark-report.md and <out>/benchmark-report.json, and prints
 // the markdown to stdout so it survives in a CI log with no artifact download.
@@ -44,11 +45,18 @@ const BASE = (() => {
   const value = (arg("base", "") || "").trim()
   return !value || value === "none" ? null : value
 })()
-// --flags measures THIS checkout against itself with the skeleton clone path
-// off, which is a pairing no ref can express: one build, one dist, two URLs.
-// The benchmark app reads ?clone=0 and calls Component79.debug (see its
-// src/main.js), so nothing about the bundle differs between the two sides
+// --flags measures THIS checkout against itself with one debug flag off, which
+// is a pairing no ref can express: one build, one dist, two URLs. The benchmark
+// app switches any flag the query names and calls Component79.debug (see its
+// src/main.js), so nothing about the bundle differs between the two sides.
+// `--flags` alone means cloneSkeletons, the flag it was written for;
+// `--flags scopedNames` prices the const prologue against `with`
 const FLAGS = process.argv.includes("--flags")
+const FLAG = (() => {
+  if (!FLAGS) return null
+  const next = process.argv[process.argv.indexOf("--flags") + 1]
+  return next && !next.startsWith("--") ? next : "cloneSkeletons"
+})()
 if (FLAGS && BASE) throw new Error("--flags measures one build against itself; drop --base")
 const SAMPLES = Number(arg("samples", 10))
 const ROUNDS = Number(arg("rounds", 3))
@@ -158,21 +166,21 @@ if (FLAGS) {
   // same direction every other run of this script reports
   builds.push({
     id: "base",
-    label: `${shortSha("HEAD")}, cloneSkeletons off`,
+    label: `${shortSha("HEAD")}, ${FLAG} off`,
     ref: capture("git", ["rev-parse", "HEAD"]),
     dist: headDist,
-    query: "?clone=0",
+    query: `?${FLAG}=0`,
   })
 }
 
 builds.push({
   id: "head",
   label: FLAGS
-    ? `${shortSha("HEAD")}, cloneSkeletons on`
+    ? `${shortSha("HEAD")}, ${FLAG} on`
     : BASE ? `this checkout (${shortSha("HEAD")})` : `jq79 ${shortSha("HEAD")}`,
   ref: capture("git", ["rev-parse", "HEAD"]),
   dist: headDist,
-  query: FLAGS ? "?clone=1" : "",
+  query: FLAGS ? `?${FLAG}=1` : "",
 })
 
 let worktree = null
