@@ -17,6 +17,7 @@
 //   node scripts/run-ab.mjs --base v0.6.1 --rounds 4 --samples 12
 //   node scripts/run-ab.mjs --flags                # cloneSkeletons off vs on
 //   node scripts/run-ab.mjs --flags scopedNames    # any Component79.debug flag
+//   node scripts/run-ab.mjs --flags scopedNames --only partialUpdate --samples 40
 //
 // Writes <out>/benchmark-report.md and <out>/benchmark-report.json, and prints
 // the markdown to stdout so it survives in a CI log with no artifact download.
@@ -66,6 +67,19 @@ const ROUNDS = Number(arg("rounds", 3))
 // against head's 35.5, and it was base that opened the session. So one full
 // round is run and thrown away
 const WARMUP = Number(arg("warmup", 1))
+// --only create1k,partialUpdate narrows every round to those operations, which
+// is how a small one gets the samples it needs: partialUpdate is ~1.5ms and the
+// harness resolves it in 0.05ms steps, so one step is 3% and a whole suite's
+// worth of rounds says less than a focused one does
+const ONLY = (() => {
+  const value = (arg("only", "") || "").trim()
+  if (!value) return null
+  const ids = value.split(",").map(id => id.trim()).filter(Boolean)
+  const known = new Set(OPERATIONS.map(op => op.id))
+  const unknown = ids.filter(id => !known.has(id))
+  if (unknown.length) throw new Error(`--only: no such operation: ${unknown.join(", ")} (have: ${[...known].join(", ")})`)
+  return ids
+})()
 const OUT = arg("out", ROOT)
 // The regression gate: fail the process when head is at least this much slower
 // than base. 0 turns it off, which is the default - a gate belongs where
@@ -278,6 +292,9 @@ const operations = () =>
     }
     return entry
   })
+  // --only leaves the rest unmeasured, and an operation with no rounds behind
+  // it has nothing to say: reporting it would print a row of NaN
+  .filter(entry => entry.roundsMeasured > 0)
 
 // What the gate is willing to call a regression, and every clause is there to
 // keep a busy runner from blocking a merge on nothing:
@@ -335,7 +352,7 @@ try {
   for (let round = 0; round < WARMUP + ROUNDS; round++) {
     const warming = round < WARMUP
     const name = warming ? `warm-up ${round + 1}/${WARMUP}` : `round ${round + 1 - WARMUP}/${ROUNDS}`
-    const measured = await measureRound(name, round, null)
+    const measured = await measureRound(name, round, ONLY)
     if (!warming) rounds.push(measured)
   }
 
