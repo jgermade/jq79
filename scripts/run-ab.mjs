@@ -17,7 +17,7 @@
 //   node scripts/run-ab.mjs --base v0.6.1 --rounds 4 --samples 12
 //   node scripts/run-ab.mjs --flags                # cloneSkeletons off vs on
 //   node scripts/run-ab.mjs --flags scopedNames    # any Component79.debug flag
-//   node scripts/run-ab.mjs --flags scopedNames --only partialUpdate --samples 40
+//   node scripts/run-ab.mjs --flags scopedNames --only update1k_x16 --samples 40
 //
 // Writes <out>/benchmark-report.md and <out>/benchmark-report.json, and prints
 // the markdown to stdout so it survives in a CI log with no artifact download.
@@ -67,10 +67,10 @@ const ROUNDS = Number(arg("rounds", 3))
 // against head's 35.5, and it was base that opened the session. So one full
 // round is run and thrown away
 const WARMUP = Number(arg("warmup", 1))
-// --only create1k,partialUpdate narrows every round to those operations, which
-// is how a small one gets the samples it needs: partialUpdate is ~1.5ms and the
-// harness resolves it in 0.05ms steps, so one step is 3% and a whole suite's
-// worth of rounds says less than a focused one does
+// --only create1k,update1k_x16 narrows every round to those operations, which
+// is how one that needs more samples gets them without paying for the other
+// nine: a focused round says more about a single operation than a whole
+// suite's worth of unfocused ones
 const ONLY = (() => {
   const value = (arg("only", "") || "").trim()
   if (!value) return null
@@ -86,9 +86,11 @@ const OUT = arg("out", ROOT)
 // somebody chose to put one (see .github/workflows/benchmark.yml), not on every
 // exploratory run
 const GATE = Number(arg("gate", 0))
-// and never on an operation this small. partialUpdate is ~1ms and the clock
-// quantises it to 0.05: two steps of that is "+10%", and no amount of rounds
-// makes it mean anything
+// and never on an operation this small: the clock quantises to 0.05ms, so two
+// steps of that on a 1ms operation is "+10%" and no amount of rounds makes it
+// mean anything. Every operation in the suite now clears this - the four that
+// did not are measured as a batch of 16 clicks (see lib/benchmark-ops.mjs) -
+// and the clause stays as the guard that made them get fixed
 const GATE_MIN_MS = Number(arg("gate-min-ms", 5))
 
 const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: "inherit" })

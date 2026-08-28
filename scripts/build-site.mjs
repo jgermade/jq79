@@ -377,9 +377,9 @@ const BENCHMARK_DIR = "frameworks/keyed/jq79"
 
 const fmtMs = ms => (ms >= 100 ? `${Math.round(ms)} ms` : `${ms.toFixed(1)} ms`)
 
-// horizontal bars, log-scaled: the operations span ~3ms (select a row) to
-// ~700ms (create 10,000 rows), and a linear scale would flatten everything
-// but the two biggest bars to invisible slivers
+// horizontal bars, log-scaled: the operations span ~5ms (remove a row) to
+// ~250ms (create 10,000 rows), and a linear scale would flatten everything
+// but the biggest bars to invisible slivers
 const benchmarkChart = operations => {
   const width = 780
   const barHeight = 26
@@ -563,16 +563,31 @@ ${comparisonChart(summary)}
 ${comparisonTable(results.frameworks)}
 </div>
 
+<h2>Where the interpreter collects</h2>
+<p><strong>Updating data in an existing list is what jq79 is fastest at, and it is
+the same design as the row below.</strong> Sixteen updates of every 10th row in a
+10,000-row table put it around a fifth of Vue's time and within about 1.7&times;
+Svelte - against 3&times; Svelte on <code>create1k</code>. A write reaches the
+effects that read the path it changed and nothing else, so an update costs what
+the changed rows cost rather than what the list costs. There is no diff to run and
+no component to re-invoke.</p>
+
+<p>Four of these operations are a batch of 16 clicks timed as one measurement,
+which is the shape the official benchmark writes <code>_x16</code>. A single click
+on any of them lands under a few milliseconds, and a browser clock that ticks in
+0.05ms steps cannot report that honestly.</p>
+
 <h2>Where the distance is</h2>
 <p>jq79 parses and mounts at runtime - no compiler, no virtual DOM - and this table
-is where that costs something. The four numbers behind it have different causes,
+is where that costs something. The numbers behind it have different causes,
 though, and only one of them is the design.</p>
 
-<p><strong>Building elements is about 6&times; Svelte, and that is the price of the
-design, not a defect in it.</strong> A devtools trace of <code>create1k</code>
-charges 77% of the measured window to JavaScript and finds no layout, no style
-recalculation and no HTML parsing: jq79 simply executes about six times more
-JavaScript to build the same thousand rows. It is not one hot spot. Four rounds of
+<p><strong>Building elements is about 3&times; Svelte at a thousand rows and
+4.6&times; at ten thousand, and that is the price of the design, not a defect in
+it.</strong> A devtools trace of <code>create1k</code> charges 77% of the measured
+window to JavaScript and finds no layout, no style recalculation and no HTML
+parsing: jq79 simply executes several times more JavaScript to build the same
+thousand rows. It is not one hot spot. Four rounds of
 profiling found one - memoizing the component-name scan, worth about a third - and
 nothing else above a few percent. The rest is the sum of what a runtime interpreter
 does per element that compiled straight-line code does not do at all: classify
@@ -587,9 +602,10 @@ a path (<code>rows.4.label</code>) and a removal changes the path of every row
 behind it. Swapping two rows runs the whole diff twice - once per write - because
 jq79 patches the DOM synchronously instead of batching a handler's writes.
 Selecting a row re-runs 1,000 class bindings, which Svelte does too; there the
-distance is the cost of one binding, around 4&micro;s against 1.25&micro;s, most of
-it <code>with</code> resolving free identifiers through a proxy. None of those three
-is the price of having no compiler.</p>
+distance is the cost of one binding - lower since 0.6.5, which resolves a template
+expression's free identifiers through a declared prologue instead of
+<code>with</code>, but still an evaluation against a store proxy where Svelte has a
+compiled read. None of those three is the price of having no compiler.</p>
 
 <p><small>generated ${date} · ${results.cpu}</small></p>
 `
