@@ -39,6 +39,7 @@ The one exception is the indentation *between* the branches of an `:if`/`:elseif
 - Every name listed on this page is reserved and keeps its own meaning: `:if`, `:each`, `:class`, `:text`, `:html`, `:model`, `:value`/`:checked`/`:selected`, and the rest. So `:value` is the form-state directive (the DOM *property*), never the `value` attribute.
 - On a **component tag** `:name` is a prop, not an attribute — a jq79 component has no single root for one to land on. See [nested components](#nested-components).
 - Because *any* unrecognized `:name` is a legal attribute binding, a misspelt directive is not an error — `:iff="ready"` binds an attribute called `iff` and the element renders unconditionally. So jq79 warns for a `:name` that **starts with a directive's name** and is not one (`:iff`, `:eachh`, `:classs`), naming the attribute it bound and the directive it looks like. A name that resembles nothing reserved stays silent: it is the feature.
+- A `:name` with a **dot** in it warns too, for the same reason and a different signal: every dotted `:` name that means something is a family (`:class.`, `:model.`, `:props.`, `:slot.`, `:html.allowed`), so anything else is an event written with the wrong sigil — `:submit.prevent="go"` binds an attribute called `submit.prevent` holding the handler's source text, and the form still submits natively. The message names `@submit.prevent`.
 
 ### The value rule
 
