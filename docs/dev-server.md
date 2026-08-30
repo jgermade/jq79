@@ -242,6 +242,40 @@ behaviour no matter what a pattern says about it: `.html` is hot-swapped,
 anything else reloads, and any matching `fn` runs as well. A pattern is a claim
 on a file, not a veto.
 
+**But what a handler writes is watched like anything else.** A build step that
+rewrites files it didn't need to turns one edit into a burst of changes, and a
+single `.js` or `.css` anywhere in that burst reloads the page — whatever was
+hot-swapped beside it. `rm -rf dist/x && cp -R src/x dist/x` is the shape that
+bites: 22 files copied, 22 changes, one reload. (`rsync -a --delete` is not the
+escape hatch it looks like — it re-applies times and permissions, and the watcher
+sees every file even when nothing transferred.)
+
+`files` is there so it doesn't have to. Copy what you were handed:
+
+```js
+import { cp, mkdir, rm, stat } from "node:fs/promises"
+import { dirname, join, relative, resolve } from "node:path"
+
+const mirror = (from, to) => async files => {
+  for (const file of files) {
+    const destination = join(to, relative(resolve(from), file))
+    try { await stat(file) } catch {
+      await rm(destination, { force: true, recursive: true })   // deleted or renamed
+      continue
+    }
+    await mkdir(dirname(destination), { recursive: true })
+    await cp(file, destination)
+  }
+}
+
+devServer({
+  rootDir: "dist",
+  watch: [{ pattern: "src/**", fn: mirror("src", "dist") }],
+})
+```
+
+One change per edit, and the `.html` swap lands.
+
 **Outside the root, the handler is the answer.** There is no url out there for
 the runtime to swap into, so a matched file runs its `fn` and stops — and
 whatever the `fn` writes *into* the served directory comes back round as a change
