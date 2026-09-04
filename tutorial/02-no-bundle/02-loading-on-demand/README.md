@@ -3,6 +3,8 @@
 If a component is fetched when its `import()` runs, then an `import()` that runs
 later is a component that arrives later. That's code splitting, and there is
 nothing to configure: the chunk is the file, and it's already sitting on the host.
+No bundler, no dynamic-import syntax transform, no config — the file system *is*
+the chunk graph.
 
 ```html
 <script :setup>

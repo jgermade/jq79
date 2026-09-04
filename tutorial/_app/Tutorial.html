@@ -178,24 +178,45 @@
 </div>
 
 <style>
+  /* --- mobile-first layout ------------------------------------------------
+     On narrow screens the four panes stack vertically: toc, lesson, then the
+     work column (tabs + editor + preview). The toc is collapsible so the user
+     can get to the editor without scrolling past it. On wider screens the toc
+     pins to the left and the lesson sits beside the work column. */
+
   .tutorial-container {
     display: grid;
-    grid-template-columns: 15rem 1fr 1fr;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
     gap: 1px;
     background: var(--line);
-    /* the shell page makes #app the flex-grown remainder below the header */
     height: calc(100vh - 2.5rem);
     height: calc(100dvh - 2.5rem);
   }
 
-  /* the panes: <Toc>, <Lesson> and the .work column (a component renders its
-     content between two comment markers, which are no grid items of their own).
-     They are fetched, so each lands whenever its request comes back and used to
-     pop onto the page as it did - the fade is the same 250ms the preview takes,
-     so a loading tutorial arrives rather than flashing into place */
   .tutorial-container > * {
     background: var(--bg);
     overflow-y: auto;
+  }
+
+  /* the work column fills the remaining height on mobile */
+  .work { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+
+  /* tablet: lesson and work sit side by side, toc stays on top */
+  @media (min-width: 48rem) {
+    .tutorial-container {
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto 1fr;
+    }
+    .tutorial-container > .toc  { grid-column: 1 / -1; }
+  }
+
+  /* desktop: three-column layout, toc pinned to the left */
+  @media (min-width: 72rem) {
+    .tutorial-container {
+      grid-template-columns: 15rem 1fr 1fr;
+      grid-template-rows: 1fr;
+    }
   }
 
   /* the work column renders with the template, but the three panes it holds are
@@ -220,8 +241,6 @@
   }
 
   /* the work column: tabs, the editor pane, the preview under it */
-
-  .work { display: flex; flex-direction: column; overflow: hidden; }
 
   .tabs {
     display: flex;
@@ -272,8 +291,9 @@
     border-bottom: 1px solid var(--line);
   }
 
-  @media (max-width: 60rem) {
-    .tutorial-container { grid-template-columns: 1fr; height: auto; }
+  /* mobile: the toc is collapsible so the editor stays reachable */
+  @media (max-width: 47.99rem) {
+    .tutorial-container { height: auto; }
     .work { height: 80vh; }
   }
 </style>

@@ -6,13 +6,17 @@
 <script :setup="{ sections, path }">
   const go = index => $emit("tutorial:go", index)
 
-  let collapsed = false
+  let collapsed = true
 </script>
 
 <aside class="toc" :class="{ collapsed }">
-  <!-- <div class="collapsed-menu">
-    <button @click="collapsed = !collapsed">Table of contents</button>
-  </div> -->
+  <div class="collapse-toggle">
+    <button @click="collapsed = !collapsed">
+      <span :if="collapsed">☰</span>
+      <span :else>✕</span>
+      Table of contents
+    </button>
+  </div>
   <div class="chapter" :each="section in sections" :key="section.slug">
     <h3>{{ section.title }}</h3>
     <button
@@ -26,8 +30,30 @@
 
 <style>
   .toc { padding: 1.2rem 0.8rem; }
-  @media (max-width: 960px) {
-    .toc { padding: 0.8rem 0.6rem; }
+
+  /* collapse toggle: only visible on narrow screens */
+  .collapse-toggle { display: none; }
+  .collapse-toggle button {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    width: 100%;
+    padding: 0.4em 0.6rem;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .collapse-toggle button:hover { background: var(--code-bg); }
+
+  @media (max-width: 47.99rem) {
+    .collapse-toggle { display: block; }
+    .toc.collapsed .chapter { display: none; }
+    .toc { padding: 0; }
   }
 
   .chapter h3 {

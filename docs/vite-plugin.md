@@ -1,5 +1,11 @@
 # Vite plugin
 
+> **The plugin is optional.** jq79 works without any build tool — components are
+> `.html` files the browser already knows how to fetch. The plugin is only needed
+> when you want bundled imports, HMR through Vite's dev server, or CSS
+> preprocessing (`<style lang="scss">`). The same `.html` file works in all three
+> delivery modes: bundled, fetched at runtime, or served by the dev server.
+
 `jq79/vite` lets you import `.html` single-file components as modules, so they
 travel inside your bundle instead of being fetched at runtime.
 

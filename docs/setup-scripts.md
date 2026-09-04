@@ -1,5 +1,11 @@
 # Setup scripts
 
+> **No compiler, no bundler.** The setup script is transformed at runtime by a
+> lightweight scanner — not a full JS parser. It only touches top-level
+> declarations and `$:` labels; everything else (callbacks, nested functions,
+> closures) passes through unchanged. The same `.html` file works bundled or
+> fetched at runtime, with no intermediate build step.
+
 `<script :setup>` blocks run against the component's reactive scope, Svelte-style:
 
 ```html
@@ -310,6 +316,8 @@ The context is everything the library provides — the `$` is what says so:
   disposed with the component.
 - `$emit`, `$updateModel`, `$mounted`, `$self`, `$$self` — same as in setup scripts. `$`,
   `$$`, `$create`, `$reactive` and `$toRaw` are available lexically in the module body.
+- `$slots` — a static map of the slot names the usage site filled, so a wrapper
+  can be dropped when nothing filled it (`<footer :if="$slots.footer">`).
 - The **returned object is merged into the store**, making its entries
   visible to the template — that's how imported components and methods are
   exposed (`return { UserCard, inc }`).

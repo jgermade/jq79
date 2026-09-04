@@ -10,11 +10,35 @@
 [![esm](https://jgermade.github.io/jq79/badges/esm-size.svg)](#cdn)
 [![cdn](https://jgermade.github.io/jq79/badges/cjs-size.svg)](#cdn)
 
-A independent reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking
+A independent reactive component library that ships as a single file. Svelte-style reactive scripts, fine-grained DOM updates via proxy-based dependency tracking.
 
-> no compiler required, no virtual DOM, no dependencies.
+**No compiler, no bundler, no dependencies.** A component is a `.html` file — the browser already knows how to fetch one. Drop the library from a CDN, serve your components from any static host, and the page works. No `npm install`, no build step, no config.
 
 **[Take the tutorial →](https://jgermade.github.io/jq79/tutorial/)** — a handful of exercises you edit in the browser, with a live preview. Because there's no compiler, the tutorial runs the real library: the component you write is the component that mounts.
+
+## No build step
+
+A component is a `.html` file. The browser already knows how to fetch one — so
+nothing has to happen to your components between writing them and serving them:
+
+```html
+<!doctype html>
+<div id="app"></div>
+
+<script type="module">
+  import { C79 } from "https://esm.sh/jq79"
+
+  C79.fetch("./app.html").mount("#app", { title: "Today" })
+</script>
+```
+
+That is the whole deployment. The library from a CDN, the component from your
+own host, no build step in between. `C79` is `Component79` under a shorter name
+— the same class, the same API.
+
+While you're writing them, `npx jq79 dev` serves that folder and hot-reloads the
+components you edit, keeping their state — no build step there either. See the
+[dev server](docs/dev-server.md).
 
 ## Installation
 
@@ -25,7 +49,7 @@ npm install jq79
 ```
 
 ```js
-import { Component79, $, $$ } from "jq79"
+import { Component79, C79, $, $$, $reactive, $toRaw, parseComponent } from "jq79"
 ```
 
 ### Vite
@@ -73,11 +97,11 @@ Once published to npm, the package is automatically served by every major CDN �
 Pin a version in production: `https://cdn.jsdelivr.net/npm/jq79@0.1.0/...` (the GitHub Pages copy always tracks the latest release).
 
 Which is enough for a whole page: the library from a CDN, the component from your
-own host, no build step in between. `Component79.fetch` (or `C79`, the same class
-under a shorter name) hands back a pending component you can mount right away:
+own host, no build step in between. `C79` (short for `Component79`, the same class)
+hands back a pending component you can mount right away:
 
 ```html
-<main></main>
+<main id="app"></main>
 
 <script type="module">
   import { C79 } from "https://jgermade.github.io/jq79/jq79.js"
@@ -91,9 +115,30 @@ under a shorter name) hands back a pending component you can mount right away:
 `fetchAll([...])` fetches several at once instead. See
 [loading remote components](docs/components.md#loading-remote-components).
 
+The library also exports `parseComponent(source)` as a shorthand for
+`new Component79(source)`, and `enableHotReload()` / `hotUpdate(filename, src)`
+for custom dev setups — see the [dev server](docs/dev-server.md).
+
 The source is small enough to read in a sitting: the core (parsing, rendering, components) lives in [`src/jq79.ts`](src/jq79.ts), with three leaf helpers — [`dom.ts`](src/dom.ts), [`reactive.ts`](src/reactive.ts) and [`transform.ts`](src/transform.ts). The published build is a single dependency-free file.
 
 ## Quick start
+
+### From a CDN (no build step)
+
+```html
+<!doctype html>
+<div id="app"></div>
+
+<script type="module">
+  import { C79 } from "https://esm.sh/jq79"
+
+  C79.fetch("./app.html").mount("#app", { title: "Today" })
+</script>
+```
+
+The component file is served as-is from your host — no bundler, no config.
+
+### From npm
 
 ```js
 import { Component79 } from "jq79"

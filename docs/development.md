@@ -19,6 +19,13 @@ npm run site
 npm run site.dev
 ```
 
+> **The no-bundle path is the primary delivery mode.** jq79 is designed to work
+> without any build step. The library ships as a single dependency-free file;
+> components are `.html` files the browser already knows how to fetch. The Vite
+> plugin and the dev server are optional — they add bundled imports, HMR, and
+> CSS preprocessing, but the same `.html` file works unchanged in all three
+> delivery modes.
+
 ## The no-bundle path
 
 Every other test imports from `src/`, so nothing would notice if the artifacts a

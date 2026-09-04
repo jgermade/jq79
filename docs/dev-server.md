@@ -1,5 +1,10 @@
 # Dev server
 
+> **No build step required.** The dev server serves files as they are on disk —
+> no transforms, no bundling, no module graph. What you develop against is what
+> a static host would serve. It exists for the case where the whole point was
+> not having a toolchain.
+
 `jq79 dev` serves a directory of components over HTTP and hot-reloads them as you
 edit. It is for the no-bundle path: a project with no build step, whose `.html`
 files are fetched at runtime.
