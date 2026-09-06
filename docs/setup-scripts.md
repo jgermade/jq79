@@ -4,7 +4,8 @@
 > lightweight scanner — not a full JS parser. It only touches top-level
 > declarations and `$:` labels; everything else (callbacks, nested functions,
 > closures) passes through unchanged. The same `.html` file works bundled or
-> fetched at runtime, with no intermediate build step.
+> fetched at runtime, with no intermediate build step. The one exception is
+> [TypeScript](#typescript), which needs the bundler.
 
 `<script :setup>` blocks run against the component's reactive scope, Svelte-style:
 
@@ -258,6 +259,45 @@ would quietly turn it into a path.
 Under the [Vite plugin](vite-plugin.md), literal specifiers are hoisted into
 real module imports at build time and never reach any of this — the bundler
 resolves them, so an npm package works whether or not the page has an import map.
+
+## TypeScript
+
+A script block written in TypeScript is marked with `lang="ts"` and compiled by
+the [Vite plugin](vite-plugin.md#script-langts--typescript) — the same deal
+`<style lang="scss">` gets. Both kinds of script take it, and the prop signature
+in `:setup` is untouched:
+
+```html
+<script :setup="{ step = 1 }: Props" lang="ts">
+  import type { User, Props } from "./types"
+
+  let count: number = 0
+
+  $: doubled = count * step
+</script>
+```
+
+The [prop signature](components.md#props) is compiled along with the body, even
+though it sits in the attribute: `:setup="{ step = 1 }: Props"` reaches the
+runtime as `:setup="{ step = 1 }"`, and the permissive `:setup="_: Props"` as
+`:setup="_"`.
+
+**`lang="ts"` is bundler-only.** The runtime has no type-stripper — that would
+mean shipping a parser to the browser, which is the thing this library doesn't
+do — so a component fetched from `public/`, served off a CDN or built from an
+inline string reaches the runtime with its types intact. It won't work, and the
+way it fails is worth knowing: `interface`, `as` and generics throw when the
+script is compiled, but `let count: number = 0` is a valid *labeled statement*,
+so it runs, assigns to `number` and leaves `count` undeclared and non-reactive
+in silence. That's why the runtime warns about any `<script>` still carrying a
+`lang` when it parses one. If a component must work unbundled, write plain JS.
+
+Stripping is not checking: there is no type-checker for `.html` components, and
+editors won't read these blocks as TypeScript without an extension. If you want
+a component your tooling really understands, a
+[factory script](#factory-scripts-export-default) is plain lexical JS with no
+`with` and no rewriting — `lang="ts"` on one of those is the closest this gets
+to an ordinary typed module.
 
 ## Debugging a script
 

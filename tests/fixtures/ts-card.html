@@ -1,0 +1,21 @@
+<script :setup="{ label = 'Ada', step = 1 as number }: Props" lang="ts">
+  import type { User } from "./ts-types"
+
+  interface Label {
+    text: string
+  }
+
+  const UserCard = await import("./user-card.html")
+
+  const twice = (n: number): number => n * 2
+  const user: User = { name: label, age: 36 }
+
+  let count: number = 2
+
+  $: shown = { text: `${user.name} ${twice(count) * step}` } as Label
+</script>
+
+<div class="ts-card">
+  <p class="label">{{ shown.text }}</p>
+  <UserCard></UserCard>
+</div>

@@ -1,0 +1,15 @@
+<script lang="ts">
+import UserCard from "./user-card.html"
+import type { User, Props } from "./ts-types"
+
+export default ({ label = "Grace", step = 1 }: Props, { $data }: { $data: Record<string, unknown> }) => {
+  const user: User = { name: label, age: 45 }
+  $data.count = 3 * step
+  return { UserCard, title: user.name as string }
+}
+</script>
+
+<section class="ts-factory">
+  <h2>{{ title }} {{ count }}</h2>
+  <UserCard></UserCard>
+</section>

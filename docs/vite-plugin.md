@@ -2,9 +2,10 @@
 
 > **The plugin is optional.** jq79 works without any build tool — components are
 > `.html` files the browser already knows how to fetch. The plugin is only needed
-> when you want bundled imports, HMR through Vite's dev server, or CSS
-> preprocessing (`<style lang="scss">`). The same `.html` file works in all three
-> delivery modes: bundled, fetched at runtime, or served by the dev server.
+> when you want bundled imports, HMR through Vite's dev server, CSS
+> preprocessing (`<style lang="scss">`) or TypeScript (`<script lang="ts">`). A
+> file without a `lang` works unchanged in all three delivery modes: bundled,
+> fetched at runtime, or served by the dev server.
 
 `jq79/vite` lets you import `.html` single-file components as modules, so they
 travel inside your bundle instead of being fetched at runtime.
@@ -33,8 +34,9 @@ network request.
 ## A loader, not a compiler
 
 The plugin inlines the file's source verbatim; nothing inside the component is
-transformed — with the single exception of `<style lang>` below. The same
-`.html` file works unchanged in all three delivery modes:
+transformed — with the single exception of `lang`, on either kind of block
+(`<style lang="scss">`, `<script lang="ts">`). Without one, the same `.html`
+file works unchanged in all three delivery modes:
 
 - **Bundled** — placed in `src/`, imported as a module (this plugin).
 - **Fetched** — placed in `public/`, loaded with `Component79.fetch(url)` or
@@ -74,6 +76,68 @@ stylesheet it can't parse. So the runtime doesn't stay quiet: parsing a
 component whose `<style>` still carries a `lang` logs a warning saying the
 plugin never compiled it. If a component must work in both delivery modes,
 write plain CSS.
+
+## `<script lang="ts">` — TypeScript
+
+A script block with `lang="ts"` is compiled to plain JS by the plugin, through
+Vite's own transform. It works on both kinds of script — setup and
+[factory](setup-scripts.md#factory-scripts-export-default) — and `lang` is the
+only thing that changes about the block; `:setup` and its prop signature are
+left exactly as written:
+
+```html
+<script :setup="{ step = 1 }" lang="ts">
+  import type { User } from "./types"
+
+  interface Row { id: number; label: string }
+
+  const rows: Row[] = []
+  let count: number = 0
+
+  $: doubled = twice(count)
+
+  const twice = (n: number): number => n * step
+</script>
+```
+
+The types are erased, nothing else moves: top-level `let`/`const` still become
+reactive store variables, `$:` is still a reactive declaration, and
+`import(…)` specifiers are still hoisted into the bundle. `import type` is
+erased with the rest, so a types-only module never reaches the bundle.
+
+**The prop signature is compiled too.** It lives in the `:setup` *attribute*,
+which the body's transform never sees, so `lang` reaches it separately — a
+typed signature is stripped back to the pattern the runtime reads:
+
+```html
+<script :setup="{ label = 'Total', step = 1 }: Props" lang="ts">   →   :setup="{ label = &quot;Total&quot;, step = 1 }"
+<script :setup="_: Props" lang="ts">                               →   :setup="_"
+```
+
+Without that, `{ … }: Props` would leave TypeScript inside a component the
+plugin just called JS, and `_: Props` would stop reading as the permissive
+signature at all and warn. A [factory script](setup-scripts.md#factory-scripts-export-default)
+declares its props in its first parameter, which is in the body, so it is
+already covered by the body's own transform.
+
+**It strips types; it does not check them.** There is no `.html`-aware
+type-checker, and editors won't treat these blocks as TypeScript without an
+extension. What you get is annotations that survive the runtime, not a checked
+component.
+
+**`lang="ts"` ties a component to the bundler**, exactly as `lang="scss"` does —
+and the runtime says so, for a sharper reason than it does with styles. A
+missing type-strip is not always a loud failure: `interface`, `as` and generics
+throw when the script is compiled, but `let count: number = 0` is a valid
+labeled statement, so it *runs*, assigns to `number`, and leaves `count`
+undeclared and non-reactive without a word. So parsing a component whose
+`<script>` still carries a `lang` logs a warning naming the plugin. If a
+component must work unbundled too, write plain JS.
+
+One known limitation: the script devtools shows is the compiled one, so for a
+typed block the [line numbers](setup-scripts.md#debugging-a-script) drift from
+the `.html`'s — a multi-line annotation collapses. The plugin doesn't emit a
+source map for the inlined source today.
 
 ## Using an imported component
 

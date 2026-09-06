@@ -200,6 +200,86 @@ describe("jq79 vite plugin", () => {
       expect(code).not.toContain('from "./Plain.html"')
       expect(code).not.toContain('"./Plain.html": __jq79')
     })
+
+    it("strips the types out of <script lang=\"ts\"> and drops the lang", async () => {
+      const file = fixture("ts-card.html")
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // the tag the runtime parses is a plain setup script: `lang` is gone,
+      // every other attribute survives (the signature keeps its own section
+      // below)
+      expect(code).toContain("<script :setup=")
+      expect(code).not.toContain("lang=")
+
+      // no TypeScript survives into the inlined source
+      expect(code).not.toContain("interface Label")
+      expect(code).not.toContain("import type")
+      expect(code).not.toContain(": number")
+      expect(code).not.toContain("as Label")
+
+      // and what the runtime scanner needs did survive
+      expect(code).toContain("let count = 2")
+      expect(code).toContain("$: shown =")
+    })
+
+    it("keeps a value import hoistable and leaves `import type` out of the bundle", async () => {
+      const file = fixture("ts-factory-card.html")
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // erasing `import type` is the point - hoisting it would pull a
+      // types-only module into the bundle
+      expect(code).not.toContain("./ts-types")
+      // the value import is still there for hoistableImports to find. Both
+      // transforms drop unused value imports unless told not to, and a
+      // component silently losing its child is exactly what that looks like
+      expect(code).toContain('import __jq79_0 from "./user-card.html"')
+      expect(code).toContain('"./user-card.html": __jq79_0')
+    })
+
+    it("strips the types out of the :setup signature too, and re-quotes it", async () => {
+      const file = fixture("ts-card.html")
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // the signature lives in the attribute, which the body's transform never
+      // sees - so `lang` has to reach it separately or TypeScript survives into
+      // a component the plugin just promised was JS
+      expect(code).not.toContain(": Props")
+      expect(code).not.toContain("as number")
+      // the pattern itself is intact, defaults included. The transforms
+      // normalize 'Ada' to "Ada", which would end the attribute early
+      expect(code).toContain(':setup=\\"{ label = &quot;Ada&quot;, step = 1 }\\"')
+    })
+
+    it("strips the annotation off the permissive `_` signature", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "open-signature.html")
+      await writeFile(file, `<script :setup="_: Props" lang="ts">let n: number = 1</script><p>{{ n }}</p>`)
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // `_` is the opt-out the runtime recognises by value: annotated, it stops
+      // reading as one and warns instead of staying open
+      expect(code).toContain(':setup=\\"_\\"')
+    })
+
+    it("leaves the signature of a block without a lang untouched", async () => {
+      const file = fixture("user-card.html")
+      const source = await readFile(file, "utf8")
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain(JSON.stringify(source)) // byte-for-byte, as before
+    })
+
+    it("leaves a lang it doesn't compile alone, for the runtime to warn about", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "coffee.html")
+      await writeFile(file, `<script :setup lang="coffee">x = 1</script><p>{{ x }}</p>`)
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain('lang=\\"coffee\\"')
+    })
+
   })
 
   describe("modules resolution map (runtime)", () => {
@@ -426,6 +506,98 @@ describe("jq79 vite plugin", () => {
 
       warn.mockRestore()
       SassCard.destroy()
+    })
+
+    it("compiles <script lang=\"ts\"> - types stripped, the annotated `let` still reactive", async () => {
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        plugins: [jq79()],
+        resolve: { alias: { jq79: runtimePath } },
+        build: {
+          write: false,
+          minify: false,
+          lib: { entry: fixture("ts-app.js"), formats: ["es"], fileName: "ts-app" },
+        },
+      })
+      const { code } = (Array.isArray(result) ? result[0] : result).output[0]
+
+      expect(code).not.toContain("interface Label")
+      expect(code).not.toContain("import type")
+
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const bundlePath = join(dir, "ts-app.mjs")
+      await writeFile(bundlePath, code)
+      const { TsCard } = await import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const fetchSpy = vi.fn(() => { throw new Error("no fetch expected") })
+      vi.stubGlobal("fetch", fetchSpy)
+      try {
+        const container = document.createElement("div")
+        TsCard.mount(container)
+        await new Promise(resolve => setTimeout(resolve))
+
+        // "Ada" and the ×1 are the signature's own defaults: they only land if
+        // `{ label = 'Ada', step = 1 as number }: Props` still parsed as a
+        // props pattern after the plugin was done with it
+        expect(container.querySelector(".ts-card .label")?.textContent).toBe("Ada 4")
+        // the child came out of the bundle, not the network
+        expect(container.querySelector(".ts-card .greeting")?.textContent).toBe("Hello, Ada!")
+        expect(fetchSpy).not.toHaveBeenCalled()
+
+        // the whole point: `let count: number = 2` is a store variable, not a
+        // labeled statement that assigned to `number` and declared nothing
+        TsCard.data.count = 5
+        expect(container.querySelector(".ts-card .label")?.textContent).toBe("Ada 10")
+
+        expect(warn).not.toHaveBeenCalled() // it went through the plugin
+        TsCard.destroy()
+      } finally {
+        vi.unstubAllGlobals()
+        warn.mockRestore()
+      }
+    })
+
+    it("compiles a typed factory script, keeping its static child import", async () => {
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        plugins: [jq79()],
+        resolve: { alias: { jq79: runtimePath } },
+        build: {
+          write: false,
+          minify: false,
+          lib: { entry: fixture("ts-factory-app.js"), formats: ["es"], fileName: "ts-factory-app" },
+        },
+      })
+      const { code } = (Array.isArray(result) ? result[0] : result).output[0]
+
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const bundlePath = join(dir, "ts-factory-app.mjs")
+      await writeFile(bundlePath, code)
+      const { TsFactoryCard } = await import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+
+      const fetchSpy = vi.fn(() => { throw new Error("no fetch expected") })
+      vi.stubGlobal("fetch", fetchSpy)
+      try {
+        const container = document.createElement("div")
+        TsFactoryCard.mount(container)
+        await new Promise(resolve => setTimeout(resolve))
+
+        // a factory declares its props in its *first parameter*, which sits in
+        // the body - so the body's own transform is what makes a typed one
+        // readable. Both defaults of `({ label = "Grace", step = 1 }: Props)`
+        // landing is the proof it still parsed as a props pattern
+        expect(container.querySelector(".ts-factory h2")?.textContent).toBe("Grace 3")
+        expect(container.querySelector(".ts-factory .greeting")?.textContent).toBe("Hello, Ada!")
+        expect(fetchSpy).not.toHaveBeenCalled()
+        TsFactoryCard.destroy()
+      } finally {
+        vi.unstubAllGlobals()
+      }
     })
 
     it("bundles a factory-script component with a static child import", async () => {

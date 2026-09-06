@@ -207,7 +207,7 @@ Notes:
 - **`mountShadow` ignores `scoped`.** A shadow root already scopes, so it gets the CSS as written — which is also what lets `:host { … }` keep working (the host element is outside the template, so it never carries the stamp, and a scoped `:host[data-jq79="…"]` would match nothing). The same component can be mounted both ways: head-mounted instances get the scoped rewrite, shadow-mounted ones get the source.
 - **`mountShadow` covers the whole tree.** Nested components render inside their parent's shadow root, so their `<style>` goes in there with them (inline, next to the DOM it styles) rather than into `document.head` — which couldn't style them anyway, and would leak their CSS onto the page around the host. The trade-off is that a shadow tree's styles aren't refcounted: N instances of the same child inject N `<style>` tags inside the root, and they go away with them.
 - `mountShadow` remains the stronger option overall: a shadow root also blocks outside CSS from coming *in*, which `scoped` deliberately doesn't.
-- `<style lang="scss">` (and `less`/`stylus`) is compiled by the [Vite plugin](vite-plugin.md#style-lang--css-preprocessors) and composes with `scoped` — but it only works for components that go through the bundler, unlike everything else here.
+- `<style lang="scss">` (and `less`/`stylus`) is compiled by the [Vite plugin](vite-plugin.md#style-lang--css-preprocessors) and composes with `scoped` — but, like [`<script lang="ts">`](vite-plugin.md#script-langts--typescript), it only works for components that go through the bundler, unlike everything else here.
 
 ## Several components in one file
 

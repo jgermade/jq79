@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { relative } from "node:path"
-import { preprocessCSS } from "vite"
+import { preprocessCSS, transformWithEsbuild } from "vite"
 import type { Plugin, ResolvedConfig } from "vite"
 
 // Vite plugin: import .html single-file components as modules.
@@ -12,10 +12,11 @@ import type { Plugin, ResolvedConfig } from "vite"
 // thing `await Component79.fetch(url)` resolves to, but bundled at build time
 // instead of fetched at runtime. The component source is inlined verbatim, so
 // a file keeps working unchanged if it's ever served from public/ and loaded
-// with fetch instead - with one deliberate exception: <style lang="scss"> (or
-// less/stylus/sass) is compiled to plain CSS here. A component using `lang`
-// therefore only works through the bundler; loaded with fetch() it would
-// reach the runtime uncompiled, which the runtime warns about.
+// with fetch instead - with one deliberate exception, `lang`: <style lang="scss">
+// (or less/stylus/sass) is compiled to plain CSS here, and <script lang="ts"> to
+// plain JS. A component using `lang` therefore only works through the bundler;
+// loaded with fetch() it would reach the runtime uncompiled, which the runtime
+// warns about.
 //
 // Only .html files imported from other modules are claimed; entry points
 // (index.html) have no importer and imports carrying an explicit query
@@ -32,7 +33,10 @@ export interface Jq79PluginOptions {
 // Vite's own html handling (entries, asset pipeline) leaves them alone
 const COMPONENT_QUERY = "?jq79"
 
-const SCRIPT_BLOCK_RE = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi
+// a <script> block with its attribute string, so `lang` can be read and the
+// body replaced - the same shape as STYLE_BLOCK_RE below, quote-aware so a
+// ">" inside an attribute value (`:setup="{ n = a > 1 }"`) doesn't end the tag
+const SCRIPT_BLOCK_RE = /<script((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]*?)<\/script\s*>/gi
 // import("...") with a literal specifier, tried at word boundaries the
 // scanner below reaches (which is what skips $__import and foo.import(...))
 const IMPORT_CALL_RE = /import\s*\(\s*(["'])([^"'\n]+?)\1\s*\)/y
@@ -95,7 +99,7 @@ const isExternalUrl = (spec: string) => /^[a-z][a-z0-9+.-]*:/i.test(spec) || spe
 // are .html specifiers the plugin wouldn't claim as components
 const hoistableImports = (source: string, include: RegExp): string[] => {
   const specifiers = new Set<string>()
-  for (const [, script] of source.matchAll(SCRIPT_BLOCK_RE)) {
+  for (const [, , script] of source.matchAll(SCRIPT_BLOCK_RE)) {
     for (const spec of importSpecifiers(script)) {
       if (isExternalUrl(spec)) continue
       if (isHtmlUrl(spec) && !include.test(spec)) continue // html left to runtime fetch
@@ -181,6 +185,116 @@ const compileStyleBlocks = async (
     const done = compiled[i]
     if (!done) return
     out += source.slice(last, block.index) + `<style${done.attrs}>${done.css}</style>`
+    last = block.index + block[0].length
+  })
+  return out + source.slice(last)
+}
+
+// languages a <script lang> is compiled from. Anything else is left as written
+// for the runtime to warn about, rather than guessed at
+const TS_LANGS = new Set(["ts", "typescript"])
+
+type ViteTransform = (code: string, id: string, options?: unknown) => Promise<{ code: string }>
+
+// what strips the types: vite's own transform, so the plugin carries no
+// compiler of its own. *Which* transform is a version question, and neither
+// answer covers the peer range (vite >= 5) alone - transformWithOxc is the one
+// vite is moving to but only exists from vite 7, while transformWithEsbuild is
+// deprecated under vite 8 and throws there unless esbuild is installed
+// separately. So it is looked up at call time: oxc where it exists, esbuild on
+// the older versions that ship it.
+//
+// Both drop unused value imports by default, because a TS transform can't tell
+// a type-only import from an unused one. That would be silent damage here: a
+// factory script's `import Row from "./row.html"` would vanish, taking with it
+// the specifier hoistableImports needs to pull the child into the bundle. The
+// flags below are what keep it - only `import type` is erased
+const stripTypes = async (ts: string, file: string): Promise<string> => {
+  const vite = (await import("vite")) as unknown as { transformWithOxc?: ViteTransform }
+  const { code } = vite.transformWithOxc
+    ? await vite.transformWithOxc(ts, file, { lang: "ts", typescript: { onlyRemoveTypeImports: true } })
+    : await transformWithEsbuild(ts, file, {
+      loader: "ts",
+      tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } },
+    })
+  // a script whose only imports were `import type` comes back marked as a
+  // module. `export {}` exports nothing, and it is a SyntaxError inside the
+  // Function body the runtime compiles a script into
+  return code.replace(/^[ \t]*export\s*\{\s*\}\s*;?[ \t]*$/m, "")
+}
+
+// the `:setup` attribute, when it carries a value (a bare `:setup` is the
+// closed signature and can't be typed)
+const SETUP_ATTR_RE = /(:setup\s*=\s*)(?:"([^"]*)"|'([^']*)')/i
+// the arrow body the signature is wrapped in, so the parameter list can be
+// found again in the output without matching brackets
+const SIGNATURE_MARKER = "__jq79_signature__"
+
+// a component's props signature lives in the `:setup` *attribute*, not in the
+// script body, so the body's transform never sees it - and `lang="ts"` has to
+// mean the same thing on both halves of the block, or a typed signature either
+// survives into a component the plugin just promised was JS or, for `_: Props`,
+// stops reading as a signature at all.
+//
+// It goes through the same transform as everything else, wrapped as a
+// parameter list, rather than being cut with a scanner of its own: the
+// annotation can sit on the pattern (`{ a }: Props`), on the permissive `_`, or
+// inside a default (`{ step = 1 as number }`, which the runtime would evaluate
+// and silently drop), and telling those apart is a parser's job. Both transforms
+// hand back `(<params>) => <marker>` on one line, parens intact
+const stripSignatureTypes = async (value: string, file: string): Promise<string> => {
+  const compiled = await stripTypes(`(${value}) => ${SIGNATURE_MARKER}`, file)
+  const marker = compiled.indexOf(SIGNATURE_MARKER)
+  if (marker === -1) return value // not the shape expected: leave it as written
+  const head = compiled.slice(0, marker).trimEnd()
+  const params = (head.endsWith("=>") ? head.slice(0, -2) : head).trim()
+  return params.startsWith("(") && params.endsWith(")") ? params.slice(1, -1).trim() : params
+}
+
+// the signature back into a double-quoted attribute. Only `"` needs escaping:
+// the transforms normalize string literals to double quotes, so a default the
+// author wrote as `'x'` comes back as `"x"` and would end the attribute early.
+// `&` is deliberately left alone - `&&` in a default is not an entity and
+// survives the parse, while escaping it would double-encode a source that
+// already wrote `&quot;`
+const quoteAttrValue = (value: string) => value.replace(/"/g, "&quot;")
+
+// compiles <script lang="ts"> blocks to plain JS, so the runtime only ever sees
+// JS - the same deal <style lang="scss"> gets, for a sharper reason. The setup
+// scanner is not a parser: `let count: number = 0` reaching it is not a syntax
+// error but a labeled statement that assigns to `number`, so it runs and leaves
+// `count` undeclared. `lang` is dropped from the emitted tag and every other
+// attribute (`:setup`, `:mounted`) is left as written.
+//
+// This runs before hoistableImports reads the source, so an `import type`
+// specifier is already gone by the time the plugin decides what to bundle
+const compileScriptBlocks = async (source: string, file: string): Promise<string> => {
+  const blocks = [...source.matchAll(SCRIPT_BLOCK_RE)]
+  const compiled = await Promise.all(
+    blocks.map(async ([, attrs, content]) => {
+      const lang = attrs.match(LANG_ATTR_RE)
+      const name = (lang?.[1] ?? lang?.[2] ?? lang?.[3])?.toLowerCase()
+      if (!name || !TS_LANGS.has(name)) return null
+
+      let rest = attrs.replace(LANG_ATTR_RE, "").trimEnd()
+      const setup = rest.match(SETUP_ATTR_RE)
+      if (setup) {
+        const signature = await stripSignatureTypes(setup[2] ?? setup[3], `${file}.signature.ts`)
+        // a function replacement, not a string: `$&` and friends are live in a
+        // replacement string and a default value is arbitrary source
+        rest = rest.replace(SETUP_ATTR_RE, () => `${setup[1]}"${quoteAttrValue(signature)}"`)
+      }
+
+      return { attrs: rest, js: await stripTypes(content, `${file}.ts`) }
+    })
+  )
+
+  let out = ""
+  let last = 0
+  blocks.forEach((block, i) => {
+    const done = compiled[i]
+    if (!done) return
+    out += source.slice(last, block.index) + `<script${done.attrs}>${done.js}</script>`
     last = block.index + block[0].length
   })
   return out + source.slice(last)
@@ -284,6 +398,7 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
       const file = id.slice(0, -COMPONENT_QUERY.length)
 
       let source = await readFile(file, "utf8")
+      source = await compileScriptBlocks(source, file)
       if (config) source = await compileStyleBlocks(source, file, config, dep => this.addWatchFile(dep))
 
       // the runtime names the component's setup scripts after this, so devtools

@@ -2417,6 +2417,24 @@ describe("Component79", () => {
       warn.mockRestore()
     })
 
+    it("warns when an uncompiled <script lang> reaches the runtime", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+      // a fetched (unbundled) component with TypeScript in it: nothing
+      // stripped the annotation, and `let count: number = 2` is not a syntax
+      // error - it is a labeled statement that assigns to `number`, so the
+      // script runs, declares nothing, and would say nothing either
+      const jq79 = new Component79(
+        `<script :setup lang="ts">let count: number = 2</script><p class="a">{{ count }}</p>`
+      )
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('<script lang="ts">'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("jq79/vite plugin"))
+      expect(jq79.scripts[0].content).toContain("let count: number = 2") // left as written
+
+      warn.mockRestore()
+    })
+
     it("warns about :deep(), which browsers would silently drop", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 

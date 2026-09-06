@@ -3296,6 +3296,22 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
     else template.push(elementToAST(el))
   })
 
+  // <script lang="ts"> is compiled by the jq79/vite plugin, like <style lang>
+  // below, and a `lang` still here means the same thing: this component never
+  // went through the bundler. It matters more on a script, because the failure
+  // is not always loud - `interface`/`as`/generics throw at compile time, but
+  // `let x: T = v` is a valid labeled statement, so it runs and leaves x
+  // undeclared and non-reactive with nothing in the console
+  scripts.forEach(script => {
+    if ("lang" in script.attrs) {
+      console.warn(
+        `jq79: <script lang="${script.attrs.lang}"> needs the jq79/vite plugin to compile it. ` +
+        "This component didn't go through the bundler, so its types were never stripped: the script " +
+        "will throw, or - for a plain `let x: T = ...` - silently fail to declare x."
+      )
+    }
+  })
+
   // <style lang="scss"> is compiled by the jq79/vite plugin, so a `lang` still
   // here means this component never went through it - it was fetched, loaded
   // from a URL, or built from an inline string. The browser would drop the
