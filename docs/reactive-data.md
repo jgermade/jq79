@@ -1,5 +1,9 @@
 # Reactive data
 
+> **No compiler, no bundler.** The reactive store is a plain JavaScript proxy —
+> no code generation, no AST transforms, no virtual DOM. It works the same
+> whether the component was bundled by Vite or fetched at runtime from a CDN.
+
 The store used by components is available standalone:
 
 ```js

@@ -1,5 +1,11 @@
 # Template syntax
 
+> **No compiler, no bundler.** The template is parsed at runtime by the browser's
+> own HTML parser — the same one that parses the page. What you write is what
+> the component sees. Every directive (`:if`, `:each`, `@click`, …) is a real
+> HTML attribute, and every `{{ }}` is plain text until the library evaluates it.
+> There is no build step, no transform, no intermediate representation.
+
 ## Interpolation
 
 Any JS expression between `{{ }}`:

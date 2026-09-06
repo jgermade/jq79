@@ -2,7 +2,8 @@
 
 A jq79 component is a single `.html` file: markup, an optional `<script>` and an
 optional `<style>`, in any order. There's no build step — the file *is* the
-component.
+component. The browser parses it at runtime, the same way it parses the page
+itself.
 
 Anything between `{{ }}` is a JavaScript expression, evaluated against the
 component's scope and kept up to date automatically.

@@ -1,10 +1,19 @@
 # Components
 
+> **No compiler, no bundler, no dependencies.** A component is a `.html` file
+> parsed at runtime by the browser's own HTML parser. The library ships as a
+> single file — drop it from a CDN, serve your components from any static host,
+> and the page works. The Vite plugin is optional and only adds bundled imports
+> and HMR; the same `.html` file works in all three delivery modes.
+
 ## Lifecycle
 
 ```js
 // src: string, or { template, scripts, styles }
 const jq79 = new Component79(src)
+
+// same thing, shorter name
+const jq79 = parseComponent(src)
 
 // subscribe to the component's $emit events
 jq79.on("submit", (e, payload) => {})  
@@ -296,8 +305,8 @@ live component that came from it, each with its own new parts.
 
 ## Loading remote components
 
-`Component79.fetch(url)` downloads a component and mounts it, no build step in
-sight — a whole page in one expression:
+`Component79.fetch(url)` (or `C79.fetch(url)`) downloads a component and mounts
+it, no build step in sight — a whole page in one expression:
 
 ```js
 import { C79 } from "https://jgermade.github.io/jq79/jq79.js"
@@ -305,10 +314,13 @@ import { C79 } from "https://jgermade.github.io/jq79/jq79.js"
 C79.fetch("./app.html").mount(document.querySelector("main"))
 ```
 
-What it hands back is a *pending* component: `mount`, `mountShadow`, `render`,
-`renderShadow`, `on`, `off`, `detach` and `destroy` all queue onto the download
-and run in the order they were written, so a listener registered before `mount`
-is in place by the time the component renders:
+`C79` is `Component79` under a shorter name — the same class, the same API.
+Both are exported from the library.
+
+What `fetch` hands back is a *pending* component: `mount`, `mountShadow`,
+`render`, `renderShadow`, `on`, `off`, `detach` and `destroy` all queue onto the
+download and run in the order they were written, so a listener registered before
+`mount` is in place by the time the component renders:
 
 ```js
 C79.fetch("/components/user-card.html")
@@ -358,6 +370,21 @@ It's a plain promise, not a chainable handle: mounting a *list* of components
 has no single meaning. Like `Promise.all`, the first failure rejects the whole
 call — fetch the URLs separately if you want one 404 to leave the rest usable.
 
+### Parsing from a string
+
+`parseComponent(source)` is a shorthand for `new Component79(source)`:
+
+```js
+import { parseComponent } from "jq79"
+
+const jq79 = parseComponent(`<h1>{{ title }}</h1>`)
+jq79.mount("#app", { title: "Hello" })
+```
+
+It does exactly what the constructor does — parse the source, build the AST,
+prepare the definition. Useful when you want to be explicit about what the
+expression does, or when the name `Component79` feels heavy for inline use.
+
 ## Which build am I running?
 
 `Component79.version` is the version of the package the class came from:
@@ -376,8 +403,9 @@ says which release the page pulled. Running the library straight from `src/`
 Reads the renderer's debug flags, and sets the ones you pass:
 
 ```js
-Component79.debug()                            // { cloneSkeletons: true }
-Component79.debug({ cloneSkeletons: false })   // turn it off, get the flags back
+Component79.debug()                                       // { cloneSkeletons: true, scopedNames: true }
+Component79.debug({ cloneSkeletons: false })              // turn one off, get the flags back
+Component79.debug({ cloneSkeletons: false, scopedNames: false })  // both off
 ```
 
 Global to the page, not per component — these change how the renderer works,
@@ -403,3 +431,21 @@ Component79.debug({ cloneSkeletons: false })
 
 that is a bug in jq79 and a very good bug report — say so in the issue, because
 it names the file.
+
+### `scopedNames`
+
+**On by default.** Resolves template expressions by extracting their free
+identifiers and reading them from the store with a `const` prologue, instead of
+using JavaScript's `with ($scope)` statement. Worth about 63% of a one-name
+evaluation and 72% of a two-name one.
+
+It is meant to be invisible: the same expressions, the same dependencies, the
+same results. If you ever see a page where a template expression reads the wrong
+value and comes right with
+
+```js
+Component79.debug({ scopedNames: false })
+```
+
+that is a bug in the name extractor, and the flag exists to find it. Please
+[report it](https://github.com/jgermade/jq79/issues).

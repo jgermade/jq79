@@ -1,7 +1,7 @@
 {
   "name": "jq79",
   "version": "0.7.0",
-  "description": "Mini reactive component library: single-file components, Svelte-style setup scripts, fine-grained proxy reactivity. Single-file build, zero dependencies.",
+  "description": "Mini reactive component library: single-file .html components, Svelte-style setup scripts, fine-grained proxy reactivity. No compiler, no bundler, no dependencies — works from any static host.",
   "keywords": [
     "reactive",
     "components",

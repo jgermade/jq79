@@ -1,5 +1,10 @@
 # DOM helpers
 
+> **No compiler, no bundler.** These are tiny wrappers around the browser's own
+> DOM methods — `querySelector`, `querySelectorAll`, `createElement`. They ship
+> as part of the single-file library and work identically whether the component
+> was bundled or fetched at runtime.
+
 ```js
 import { $, $$, $create } from "jq79"
 
