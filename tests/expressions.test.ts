@@ -319,6 +319,35 @@ describe("a `:` name that looks like a directive", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(":texts"))
   })
 
+  // `@submit.prevent` with the wrong sigil: it binds an attribute called
+  // "submit.prevent" holding the handler's source text, and the form goes on
+  // submitting natively. RECORD/2026-08-30.a-dotted-colon-name.md
+  it("warns for a dotted `:` name, which is an event written with the wrong sigil", () => {
+    parse(`<form :submit.prevent="go"><button>ok</button></form>`)
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(":submit.prevent is not a directive"))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`bound an attribute named "submit.prevent"`))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("if you meant @submit.prevent"))
+  })
+
+  it("says nothing for the dotted families, which all mean something", () => {
+    parse(`<p :class.warn="hot" :html.allowed="md"></p>`)
+    parse(`<input :model.uname /><Table><template :slot.row="row"><b>x</b></template></Table>`)
+    // on a plain tag too, which is where this loop actually runs - a component
+    // tag is skipped whole by the guard at the top of it
+    parse(`<div :props.rest="extra" :slot.row="r"></div>`)
+
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("still binds the dotted attribute it warned about", () => {
+    const jq79 = parse(`<form class="f" :submit.prevent="go"></form>`)
+      .render({ go: () => {} }).mount(host)
+
+    expect($(host, ".f")!.getAttribute("submit.prevent")).toBe("() => {}")
+    jq79.destroy()
+  })
+
   it("says nothing about an ordinary attribute binding, which is the feature", () => {
     parse(`<img :src="url" /><button :disabled="busy">b</button><div :aria-expanded="open"></div>`)
     parse(`<svg :width="w" :viewBox="box"><circle :stroke-width="sw" /></svg>`)
