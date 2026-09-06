@@ -40,9 +40,10 @@ not having a toolchain.
 It is a static file server. It serves the files as they are on disk, so **what
 you develop against is what a static host would serve** — no transforms, no
 bundling, no module graph, no rewritten imports. A `<style lang="scss">` is *not*
-compiled, and neither is a `<script lang="ts">` — `lang` is the one thing only
-the [bundler](vite-plugin.md#style-lang--css-preprocessors) does. Nor is
-anything else.
+compiled, and neither is a `<script lang="ts">` (or its `type="text/typescript"`
+spelling) — compiling a block written in something else is the one thing only the
+[bundler](vite-plugin.md#style-lang--css-preprocessors) does. Nor is anything
+else.
 
 If you do need a build step, [`watch`](#watch) is where you hang it: the server
 calls your function and serves whatever it writes. It stays your build, and the

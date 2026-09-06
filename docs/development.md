@@ -102,10 +102,11 @@ waits for the setup scripts, but only when one of them is actually pending — a
 component whose scripts finished (or yielded) on this stack renders on this
 stack, through code written out inline rather than shared with the deferred path.
 That duplication is deliberate. A component that nests itself recurses through
-`renderWith` once per level, and the depth guard at `MAX_NESTING_DEPTH` is
-calibrated against the real stack: routing the synchronous render through one
-extra closure was enough to overflow *underneath* the guard, turning a named
-`console.error` back into a `RangeError` at around 200 levels.
+`renderWith` once per level, so a frame added there is a frame per level, and
+the depth guard at `MAX_NESTING_DEPTH` has to fire before the stack does:
+routing the synchronous render through one extra closure was once enough to
+overflow *underneath* the guard, turning a named `console.error` back into a
+`RangeError`.
 
 It is not only extra *frames*. `renderWith` and `renderNode` are both on the
 stack for the whole of the subtree below them, so a local added to either is a
@@ -114,10 +115,16 @@ enough to overflow the same guard. Both functions read the pending-script count
 back out of the object that holds it rather than keeping it in a variable, for
 exactly this reason.
 
-If you refactor the render, run the cyclic-data test in
+The guard itself no longer sits near the ceiling: it was 200 against a real
+ceiling of ~196 on macOS arm64, which is how three separate commits managed to
+break it, and it is now 100 — half of the one ceiling anyone has measured. That
+buys margin for this rule being bent; it does not repeal it, because the ceiling
+is a property of the host and the rule is what keeps the distance from shrinking
+again. If you refactor the render, run the cyclic-data test in
 [`tests/multiTemplate.test.ts`](../tests/multiTemplate.test.ts) **on its own** —
-it is the only thing standing between that guard and the stack, and it passes in
-a full-suite run at depths where it fails alone.
+it is the only thing standing between that guard and the stack, and it has
+passed in a full-suite run at depths where it failed alone. The measurements are
+in [RECORD/2026-09-06.the-depth-guard-lost-its-margin.md](../RECORD/2026-09-06.the-depth-guard-lost-its-margin.md).
 
 **A component tag is renamed before the parse, and resolution reads the stamp.**
 `<Circle />` reaches the HTML parser as `<c79-circle :jq79-component="Circle">`,

@@ -12,11 +12,12 @@ import type { Plugin, ResolvedConfig } from "vite"
 // thing `await Component79.fetch(url)` resolves to, but bundled at build time
 // instead of fetched at runtime. The component source is inlined verbatim, so
 // a file keeps working unchanged if it's ever served from public/ and loaded
-// with fetch instead - with one deliberate exception, `lang`: <style lang="scss">
-// (or less/stylus/sass) is compiled to plain CSS here, and <script lang="ts"> to
-// plain JS. A component using `lang` therefore only works through the bundler;
-// loaded with fetch() it would reach the runtime uncompiled, which the runtime
-// warns about.
+// with fetch instead - with one deliberate exception, a block that says it is
+// written in something else: <style lang="scss"> (or less/stylus/sass) is
+// compiled to plain CSS here, and a TypeScript script - <script lang="ts">, or
+// the <script type="text/typescript"> editors read as one - to plain JS. Such a
+// component only works through the bundler; loaded with fetch() it would reach
+// the runtime uncompiled, which the runtime warns about.
 //
 // Only .html files imported from other modules are claimed; entry points
 // (index.html) have no importer and imports carrying an explicit query
@@ -152,6 +153,14 @@ const declaredComponents = (source: string): string[] => {
 // inside one doesn't end the tag early
 const STYLE_BLOCK_RE = /<style((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]*?)<\/style\s*>/gi
 const LANG_ATTR_RE = /\blang\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+const TYPE_ATTR_RE = /\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+
+// one attribute's value out of a tag's attribute string, whichever way it was
+// quoted - null when the attribute isn't there at all
+const attrValue = (attrs: string, re: RegExp): string | null => {
+  const found = attrs.match(re)
+  return found ? found[1] ?? found[2] ?? found[3] : null
+}
 
 // compiles <style lang="scss|less|styl|sass"> blocks to plain CSS with Vite's
 // own preprocessing (the same call @vitejs/plugin-vue makes), so the runtime
@@ -170,9 +179,8 @@ const compileStyleBlocks = async (
   const blocks = [...source.matchAll(STYLE_BLOCK_RE)]
   const compiled = await Promise.all(
     blocks.map(async ([, attrs, content]) => {
-      const lang = attrs.match(LANG_ATTR_RE)
-      if (!lang) return null
-      const extension = lang[1] ?? lang[2] ?? lang[3]
+      const extension = attrValue(attrs, LANG_ATTR_RE)
+      if (extension === null) return null
       const result = await preprocessCSS(content, `${file}.${extension}`, config)
       result.deps?.forEach(addWatchFile)
       return { attrs: attrs.replace(LANG_ATTR_RE, "").trimEnd(), css: result.code }
@@ -193,6 +201,24 @@ const compileStyleBlocks = async (
 // languages a <script lang> is compiled from. Anything else is left as written
 // for the runtime to warn about, rather than guessed at
 const TS_LANGS = new Set(["ts", "typescript"])
+// the other spelling of the same mark, and the one editors read: a component is
+// a plain .html file, not an SFC, so nothing in an IDE knows what `lang` means
+// there - embedded-script tooling picks a language from `type`, and a typed
+// block without one is linted as JavaScript. The `x-` forms are the historical
+// spelling of the same two media types
+const TS_TYPE_RE = /^(?:text|application)\/(?:x-)?typescript$/
+
+// what marks a script block as TypeScript, given back as the attribute to drop
+// from the emitted tag - the block is compiled to JS, so the mark goes with the
+// types whichever one carried it. A `lang` answers on its own: `lang="coffee"`
+// is a language this plugin doesn't compile, and reading `type` past it would
+// compile a block the author said was something else
+const typescriptAttr = (attrs: string): RegExp | null => {
+  const lang = attrValue(attrs, LANG_ATTR_RE)
+  if (lang !== null) return TS_LANGS.has(lang.trim().toLowerCase()) ? LANG_ATTR_RE : null
+  const type = attrValue(attrs, TYPE_ATTR_RE)
+  return type !== null && TS_TYPE_RE.test(type.trim().toLowerCase()) ? TYPE_ATTR_RE : null
+}
 
 type ViteTransform = (code: string, id: string, options?: unknown) => Promise<{ code: string }>
 
@@ -231,10 +257,10 @@ const SETUP_ATTR_RE = /(:setup\s*=\s*)(?:"([^"]*)"|'([^']*)')/i
 const SIGNATURE_MARKER = "__jq79_signature__"
 
 // a component's props signature lives in the `:setup` *attribute*, not in the
-// script body, so the body's transform never sees it - and `lang="ts"` has to
-// mean the same thing on both halves of the block, or a typed signature either
-// survives into a component the plugin just promised was JS or, for `_: Props`,
-// stops reading as a signature at all.
+// script body, so the body's transform never sees it - and the TypeScript mark
+// has to mean the same thing on both halves of the block, or a typed signature
+// either survives into a component the plugin just promised was JS or, for
+// `_: Props`, stops reading as a signature at all.
 //
 // It goes through the same transform as everything else, wrapped as a
 // parameter list, rather than being cut with a scanner of its own: the
@@ -259,12 +285,13 @@ const stripSignatureTypes = async (value: string, file: string): Promise<string>
 // already wrote `&quot;`
 const quoteAttrValue = (value: string) => value.replace(/"/g, "&quot;")
 
-// compiles <script lang="ts"> blocks to plain JS, so the runtime only ever sees
+// compiles TypeScript script blocks to plain JS, so the runtime only ever sees
 // JS - the same deal <style lang="scss"> gets, for a sharper reason. The setup
 // scanner is not a parser: `let count: number = 0` reaching it is not a syntax
 // error but a labeled statement that assigns to `number`, so it runs and leaves
-// `count` undeclared. `lang` is dropped from the emitted tag and every other
-// attribute (`:setup`, `:mounted`) is left as written.
+// `count` undeclared. Whichever attribute marked the block (`lang="ts"` or
+// `type="text/typescript"`) is dropped from the emitted tag and every other one
+// (`:setup`, `:mounted`) is left as written.
 //
 // This runs before hoistableImports reads the source, so an `import type`
 // specifier is already gone by the time the plugin decides what to bundle
@@ -272,11 +299,10 @@ const compileScriptBlocks = async (source: string, file: string): Promise<string
   const blocks = [...source.matchAll(SCRIPT_BLOCK_RE)]
   const compiled = await Promise.all(
     blocks.map(async ([, attrs, content]) => {
-      const lang = attrs.match(LANG_ATTR_RE)
-      const name = (lang?.[1] ?? lang?.[2] ?? lang?.[3])?.toLowerCase()
-      if (!name || !TS_LANGS.has(name)) return null
+      const marker = typescriptAttr(attrs)
+      if (!marker) return null
 
-      let rest = attrs.replace(LANG_ATTR_RE, "").trimEnd()
+      let rest = attrs.replace(marker, "").trimEnd()
       const setup = rest.match(SETUP_ATTR_RE)
       if (setup) {
         const signature = await stripSignatureTypes(setup[2] ?? setup[3], `${file}.signature.ts`)

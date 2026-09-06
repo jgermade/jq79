@@ -262,10 +262,12 @@ resolves them, so an npm package works whether or not the page has an import map
 
 ## TypeScript
 
-A script block written in TypeScript is marked with `lang="ts"` and compiled by
-the [Vite plugin](vite-plugin.md#script-langts--typescript) — the same deal
-`<style lang="scss">` gets. Both kinds of script take it, and the prop signature
-in `:setup` is untouched:
+A script block written in TypeScript is marked with `lang="ts"` — or with
+`type="text/typescript"`, which is the same mark and the one editors read, since
+a component is a plain `.html` file where no IDE knows what `lang` means — and
+compiled by the [Vite plugin](vite-plugin.md#script-langts--typescript), the same
+deal `<style lang="scss">` gets. Both kinds of script take it, and the prop
+signature in `:setup` is compiled with the body:
 
 ```html
 <script :setup="{ step = 1 }: Props" lang="ts">
@@ -282,21 +284,21 @@ though it sits in the attribute: `:setup="{ step = 1 }: Props"` reaches the
 runtime as `:setup="{ step = 1 }"`, and the permissive `:setup="_: Props"` as
 `:setup="_"`.
 
-**`lang="ts"` is bundler-only.** The runtime has no type-stripper — that would
+**TypeScript is bundler-only.** The runtime has no type-stripper — that would
 mean shipping a parser to the browser, which is the thing this library doesn't
 do — so a component fetched from `public/`, served off a CDN or built from an
 inline string reaches the runtime with its types intact. It won't work, and the
 way it fails is worth knowing: `interface`, `as` and generics throw when the
 script is compiled, but `let count: number = 0` is a valid *labeled statement*,
 so it runs, assigns to `number` and leaves `count` undeclared and non-reactive
-in silence. That's why the runtime warns about any `<script>` still carrying a
-`lang` when it parses one. If a component must work unbundled, write plain JS.
+in silence. That's why the runtime warns about any `<script>` still carrying
+either mark when it parses one. If a component must work unbundled, write plain JS.
 
 Stripping is not checking: there is no type-checker for `.html` components, and
 editors won't read these blocks as TypeScript without an extension. If you want
 a component your tooling really understands, a
 [factory script](#factory-scripts-export-default) is plain lexical JS with no
-`with` and no rewriting — `lang="ts"` on one of those is the closest this gets
+`with` and no rewriting — TypeScript on one of those is the closest this gets
 to an ordinary typed module.
 
 ## Debugging a script

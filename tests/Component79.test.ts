@@ -2435,6 +2435,26 @@ describe("Component79", () => {
       warn.mockRestore()
     })
 
+    it("warns when an uncompiled <script type=\"text/typescript\"> reaches the runtime", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+      // the same failure as `lang="ts"` above, marked the way an editor reads:
+      // a component is a plain .html file, where `lang` highlights nothing
+      new Component79(
+        `<script :setup type="text/typescript">let count: number = 2</script><p class="a">{{ count }}</p>`
+      )
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('<script type="text/typescript">'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("jq79/vite plugin"))
+
+      // a `type` that isn't TypeScript is somebody else's attribute
+      warn.mockClear()
+      new Component79(`<script type="module">export default () => ({ a: 1 })</script><p>{{ a }}</p>`)
+      expect(warn).not.toHaveBeenCalled()
+
+      warn.mockRestore()
+    })
+
     it("warns about :deep(), which browsers would silently drop", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 

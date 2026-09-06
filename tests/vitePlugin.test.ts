@@ -226,6 +226,9 @@ describe("jq79 vite plugin", () => {
       const file = fixture("ts-factory-card.html")
       const { code } = await plugin.load.call({}, `${file}?jq79`)
 
+      // this fixture carries the other spelling of the mark
+      // (`type="text/typescript"`), so both go through a real build below
+
       // erasing `import type` is the point - hoisting it would pull a
       // types-only module into the bundle
       expect(code).not.toContain("./ts-types")
@@ -268,6 +271,36 @@ describe("jq79 vite plugin", () => {
       const { code } = await plugin.load.call({}, `${file}?jq79`)
 
       expect(code).toContain(JSON.stringify(source)) // byte-for-byte, as before
+    })
+
+    it("takes `type=\"text/typescript\"` as the same mark, and drops the type", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "typed-by-type.html")
+      await writeFile(
+        file,
+        `<script :setup="{ step = 1 }: Props" type="text/typescript">let count: number = 2 * step</script><p>{{ count }}</p>`
+      )
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // `type` is the mark an IDE reads in a plain .html file, where `lang`
+      // means nothing to it - so the plugin takes either, and drops whichever
+      // one it found: what it emits is JS
+      expect(code).not.toContain("type=")
+      expect(code).toContain("let count = 2 * step")
+      expect(code).toContain(':setup=\\"{ step = 1 }\\"')
+    })
+
+    it("leaves a script `type` that isn't TypeScript alone", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "module-type.html")
+      const source = `<script type="module">export default () => ({ n: 1 })</script><p>{{ n }}</p>`
+      await writeFile(file, source)
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // `type="module"` is real HTML with real meaning, and not this plugin's
+      expect(code).toContain(JSON.stringify(source)) // byte-for-byte
     })
 
     it("leaves a lang it doesn't compile alone, for the runtime to warn about", async () => {
@@ -560,7 +593,7 @@ describe("jq79 vite plugin", () => {
       }
     })
 
-    it("compiles a typed factory script, keeping its static child import", async () => {
+    it("compiles a typed factory script marked with `type`, keeping its static child import", async () => {
       const result: any = await build({
         configFile: false,
         logLevel: "silent",
@@ -590,7 +623,9 @@ describe("jq79 vite plugin", () => {
         // a factory declares its props in its *first parameter*, which sits in
         // the body - so the body's own transform is what makes a typed one
         // readable. Both defaults of `({ label = "Grace", step = 1 }: Props)`
-        // landing is the proof it still parsed as a props pattern
+        // landing is the proof it still parsed as a props pattern. The block is
+        // marked `type="text/typescript"` rather than `lang="ts"`: the mark an
+        // editor reads, through a real build
         expect(container.querySelector(".ts-factory h2")?.textContent).toBe("Grace 3")
         expect(container.querySelector(".ts-factory .greeting")?.textContent).toBe("Hello, Ada!")
         expect(fetchSpy).not.toHaveBeenCalled()

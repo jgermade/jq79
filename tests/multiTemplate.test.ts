@@ -166,8 +166,14 @@ describe("multi-template files", () => {
         `).render({ node }).mount(host)
       }).not.toThrow()
 
-      expect($$(host, ".node").length).toBe(200)
-      expect(error.mock.calls.map(([message]) => message).join("\n")).toMatch(/200 levels deep inside itself/)
+      // what the guard promises: it stopped the render itself, and it stopped
+      // it exactly where it says it did. The depth is read back out of the
+      // message rather than written here - it is a number picked to clear the
+      // JS stack on every host, and the stack is the thing that moves
+      const message = error.mock.calls.map(([text]) => text).join("\n")
+      const cut = Number(message.match(/is (\d+) levels deep inside itself/)?.[1])
+      expect(cut).toBeGreaterThan(0)
+      expect($$(host, ".node").length).toBe(cut)
     })
   })
 

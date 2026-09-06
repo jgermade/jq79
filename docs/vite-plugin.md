@@ -4,7 +4,7 @@
 > `.html` files the browser already knows how to fetch. The plugin is only needed
 > when you want bundled imports, HMR through Vite's dev server, CSS
 > preprocessing (`<style lang="scss">`) or TypeScript (`<script lang="ts">`). A
-> file without a `lang` works unchanged in all three delivery modes: bundled,
+> file with neither works unchanged in all three delivery modes: bundled,
 > fetched at runtime, or served by the dev server.
 
 `jq79/vite` lets you import `.html` single-file components as modules, so they
@@ -34,9 +34,9 @@ network request.
 ## A loader, not a compiler
 
 The plugin inlines the file's source verbatim; nothing inside the component is
-transformed — with the single exception of `lang`, on either kind of block
-(`<style lang="scss">`, `<script lang="ts">`). Without one, the same `.html`
-file works unchanged in all three delivery modes:
+transformed — with the single exception of a block that says it is written in
+something else (`<style lang="scss">`, `<script lang="ts">`). Without one, the
+same `.html` file works unchanged in all three delivery modes:
 
 - **Bundled** — placed in `src/`, imported as a module (this plugin).
 - **Fetched** — placed in `public/`, loaded with `Component79.fetch(url)` or
@@ -81,9 +81,9 @@ write plain CSS.
 
 A script block with `lang="ts"` is compiled to plain JS by the plugin, through
 Vite's own transform. It works on both kinds of script — setup and
-[factory](setup-scripts.md#factory-scripts-export-default) — and `lang` is the
-only thing that changes about the block; `:setup` and its prop signature are
-left exactly as written:
+[factory](setup-scripts.md#factory-scripts-export-default) — and the mark is the
+only attribute that changes; `:setup`, `:mounted` and the rest are left as
+written (the prop signature has its own section below):
 
 ```html
 <script :setup="{ step = 1 }" lang="ts">
@@ -99,6 +99,23 @@ left exactly as written:
   const twice = (n: number): number => n * step
 </script>
 ```
+
+**`type="text/typescript"` is the same mark, and the one editors read.** A
+component is a plain `.html` file, not a `.vue`/`.svelte` SFC, so no IDE knows
+what `lang` means inside one: HTML tooling picks an embedded script's language
+from `type`, and a `lang="ts"` block gets linted as JavaScript — a red line under
+every annotation. Write whichever your editor is happiest with; the plugin
+compiles both, and drops whichever attribute carried the mark:
+
+```html
+<script :setup="{ step = 1 }: Props" type="text/typescript">
+  let count: number = 0
+</script>
+```
+
+`text/typescript`, `application/typescript` and their `x-` spellings all count.
+Any other `type` is somebody else's attribute and is left alone — `module`
+included, which is real HTML the plugin has no business rewriting.
 
 The types are erased, nothing else moves: top-level `let`/`const` still become
 reactive store variables, `$:` is still a reactive declaration, and
@@ -131,7 +148,7 @@ missing type-strip is not always a loud failure: `interface`, `as` and generics
 throw when the script is compiled, but `let count: number = 0` is a valid
 labeled statement, so it *runs*, assigns to `number`, and leaves `count`
 undeclared and non-reactive without a word. So parsing a component whose
-`<script>` still carries a `lang` logs a warning naming the plugin. If a
+`<script>` still carries either mark logs a warning naming the plugin. If a
 component must work unbundled too, write plain JS.
 
 One known limitation: the script devtools shows is the compiled one, so for a

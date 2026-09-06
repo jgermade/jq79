@@ -267,8 +267,9 @@ can recurse — which a component in a file of its own can't do:
 ```
 
 Recursion stops where the data stops. A **cycle** in that data would recurse until
-the JS stack gave out, so the runtime cuts it at 200 levels with a console error
-naming the tag: a truncated tree, not a dead page.
+the JS stack gave out, so the runtime cuts it at 100 levels with a console error
+naming the tag: a truncated tree, not a dead page. A real tree never reaches
+that depth; the limit is there to beat the stack to the punch.
 
 ### The signature decides where a name comes from
 

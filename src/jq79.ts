@@ -626,9 +626,9 @@ const plainScopes = new WeakSet<object>()
 // opened and closed by hand rather than by a wrapper taking a callback: a
 // component that renders itself through :each stacks one renderEach per level,
 // and a callback would add a frame to each of them. The cyclic-component test
-// cuts off at 200 levels, and on a CI runner that extra frame per level was the
-// difference between cutting off and a RangeError - the same reason $effect
-// keeps its own shape (see reactive.ts)
+// cuts off at MAX_NESTING_DEPTH levels, and on a CI runner that frame per level
+// was the difference between cutting off and a RangeError - the same reason
+// $effect keeps its own shape (see reactive.ts)
 type RenderPass = { memo: Map<string, string | null> | null; base: object | null }
 
 const openRenderPass = (base: Record<string, any>): RenderPass => {
@@ -714,8 +714,15 @@ const unresolvedComponent = (tag: string, scope: Record<string, any>): Error => 
 
 // how deep a component may nest inside itself before the runtime calls it a
 // cycle. Deeper than any real tree, shallower than the JS stack: a truncated
-// render with an error on the console beats a stack overflow with none
-const MAX_NESTING_DEPTH = 200
+// render with an error on the console beats a stack overflow with none.
+//
+// It was 200, which is roughly where the stack actually gives out - measured at
+// ~196 levels for the cyclic-data test on macOS arm64 - so the guard lost to the
+// stack whenever a frame on the render path grew, and it did, three times. The
+// ceiling is a property of the host (arm64 vs x64, worker vs main thread), so no
+// number near it can be right everywhere; this one is half of the one ceiling
+// that was measured. See RECORD/2026-09-06.the-depth-guard-lost-its-margin.md
+const MAX_NESTING_DEPTH = 100
 let nestingDepth = 0
 
 // ---------------------------------------------------------------------------
@@ -3279,6 +3286,19 @@ const parseComponentString = (component: string): ComponentParts => {
   return parts
 }
 
+// the media types an editor reads as TypeScript. A component is a plain .html
+// file, not an SFC, so no IDE knows what `lang` means inside one - embedded
+// script tooling picks a language from `type` - and the plugin compiles a block
+// marked either way. Either mark still here means the same thing
+const TS_SCRIPT_TYPE_RE = /^(?:text|application)\/(?:x-)?typescript$/i
+
+// the mark a script is still carrying that says the plugin never compiled it,
+// spelled as the author spelled it
+const uncompiledScriptMark = (attrs: Record<string, string>): string | null =>
+  "lang" in attrs ? `lang="${attrs.lang}"`
+    : TS_SCRIPT_TYPE_RE.test(attrs.type?.trim() ?? "") ? `type="${attrs.type}"`
+      : null
+
 // the script/style/markup split of one component's top-level elements, with
 // <style scoped> resolved against the source those elements came from - the
 // whole file for its own component, a <template>'s contents for a named one,
@@ -3296,16 +3316,17 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
     else template.push(elementToAST(el))
   })
 
-  // <script lang="ts"> is compiled by the jq79/vite plugin, like <style lang>
-  // below, and a `lang` still here means the same thing: this component never
+  // a TypeScript script is compiled by the jq79/vite plugin, like <style lang>
+  // below, and a mark still here means the same thing: this component never
   // went through the bundler. It matters more on a script, because the failure
   // is not always loud - `interface`/`as`/generics throw at compile time, but
   // `let x: T = v` is a valid labeled statement, so it runs and leaves x
   // undeclared and non-reactive with nothing in the console
   scripts.forEach(script => {
-    if ("lang" in script.attrs) {
+    const mark = uncompiledScriptMark(script.attrs)
+    if (mark) {
       console.warn(
-        `jq79: <script lang="${script.attrs.lang}"> needs the jq79/vite plugin to compile it. ` +
+        `jq79: <script ${mark}> needs the jq79/vite plugin to compile it. ` +
         "This component didn't go through the bundler, so its types were never stripped: the script " +
         "will throw, or - for a plain `let x: T = ...` - silently fail to declare x."
       )
