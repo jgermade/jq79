@@ -2633,6 +2633,20 @@ const warnDirectiveTypo = (node: TemplateNode) => {
   for (const attr in node.attrs) {
     if (!attr.startsWith(":") || isControlAttr(attr) || attr === ":model" || attr.startsWith(":model.")) continue
     const name = attr.slice(1)
+    // every dotted `:` name that means something was claimed by the line above -
+    // :class. :props. :slot. :html.allowed :model. - so what reaches here with a
+    // dot in it is a modifier list on the wrong sigil: @submit.prevent written
+    // with a colon, which binds an attribute called "submit.prevent" holding the
+    // handler's source text and leaves the form submitting natively. The dot is
+    // structural, not a table of event names to keep in step with the platform;
+    // plannableAttr already computes it, for a different purpose
+    if (name.includes(".")) {
+      console.warn(
+        `jq79: ${attr} is not a directive - it bound an attribute named "${name}". ` +
+        `Dotted modifiers belong to an event: if you meant @${name}, that is the spelling`
+      )
+      continue
+    }
     const directive = DIRECTIVE_NAMES.find(known => name !== known && name.startsWith(known))
     if (directive === undefined) continue
     console.warn(
