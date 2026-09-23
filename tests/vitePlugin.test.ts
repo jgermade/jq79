@@ -673,4 +673,100 @@ describe("jq79 vite plugin", () => {
       }
     })
   })
+
+  // the plugin's side of Component79.safeEval - see tests/safeEval.test.ts for
+  // the runtime's, and scripts/check-csp.mjs for a real CSP in a real browser
+  describe("safeEval", () => {
+    it("takes { nonce: true }, and refuses the forms that need the precompiler", () => {
+      expect(() => jq79({ safeEval: { nonce: true } })).not.toThrow()
+      expect(() => jq79({ safeEval: false })).not.toThrow()
+      expect(() => jq79({ safeEval: true })).toThrow(/the precompiler that makes them isn't written yet/)
+      expect(() => jq79({ safeEval: {} })).toThrow(/safeEval: \{\} runs precompiled functions/)
+    })
+
+    it("turns nonce mode on from a module every component imports, and only when asked", async () => {
+      const file = fixture("user-card.html")
+      const on: any = jq79({ safeEval: { nonce: true } })
+      const { code } = await on.load.call({}, `${file}?jq79`)
+      expect(code).toContain('import { safeEval } from "virtual:jq79/safe-eval"')
+      expect(code).toContain("safeEval(Component79)")
+
+      const resolved = await on.resolveId.call({}, "virtual:jq79/safe-eval", `${file}?jq79`)
+      expect(await on.load.call({}, resolved)).toContain("Component79.safeEval({ nonce: true })")
+
+      const { code: off } = await plugin.load.call({}, `${file}?jq79`)
+      expect(off).not.toContain("safeEval")
+    })
+
+    // what a bundle does on a page: safe mode is on before the first component
+    // renders, and a miss is built as a <script> carrying the page's nonce
+    const buildNonceApp = async (name: string, entry = "app.js") => {
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        plugins: [jq79({ safeEval: { nonce: true } })],
+        resolve: { alias: { jq79: runtimePath } },
+        build: {
+          write: false,
+          minify: false,
+          lib: { entry: fixture(entry), formats: ["es"], fileName: "app" },
+        },
+      })
+      const { code } = (Array.isArray(result) ? result[0] : result).output[0]
+      await mkdir(BUNDLE_DIR, { recursive: true })
+      const bundlePath = join(BUNDLE_DIR, `${name}.mjs`)
+      await writeFile(bundlePath, code)
+      return () => import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`)
+    }
+
+    it("bundles an app that renders with eval blocked, building through the page's nonce", async () => {
+      const load = await buildNonceApp("nonce-app")
+      const pageScript = document.createElement("script")
+      pageScript.type = "application/json"
+      pageScript.setAttribute("nonce", "r4nd0m")
+      document.head.append(pageScript)
+      const records: MutationRecord[] = []
+      const observer = new MutationObserver(batch => { records.push(...batch) })
+      observer.observe(document.head, { childList: true })
+      const RealFunction = globalThis.Function
+      try {
+        const { UserCard } = await load()
+        globalThis.Function = new Proxy(RealFunction, {
+          construct() { throw new EvalError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed") },
+        })
+        const container = document.createElement("div")
+        UserCard.mount(container)
+        await new Promise(resolve => setTimeout(resolve))
+
+        expect(container.querySelector(".greeting")?.textContent).toBe("Hello, Ada!")
+        records.push(...observer.takeRecords())
+        const nonces = records
+          .flatMap(record => Array.from(record.addedNodes))
+          .filter((node): node is HTMLScriptElement => node instanceof HTMLScriptElement && node !== pageScript)
+          .map(script => script.getAttribute("nonce"))
+        expect(nonces.length).toBeGreaterThan(0)
+        expect(new Set(nonces)).toEqual(new Set(["r4nd0m"]))
+        UserCard.destroy()
+      } finally {
+        globalThis.Function = RealFunction
+        observer.disconnect()
+        pageScript.remove()
+      }
+    })
+
+    it("on a page with no nonce, says so once - however many components the app imports", async () => {
+      // parent.html imports user-card.html: two component modules, one call
+      const load = await buildNonceApp("nonce-missing-app", "parent-app.js")
+      const error = vi.spyOn(console, "error").mockImplementation(() => {})
+      try {
+        const bundle = await load()
+        expect(bundle.Parent).toBeDefined()
+        await new Promise(resolve => setTimeout(resolve))
+        const messages = error.mock.calls.map(args => String(args[0]))
+        expect(messages.filter(message => /found no nonce on this page/.test(message))).toHaveLength(1)
+      } finally {
+        error.mockRestore()
+      }
+    })
+  })
 })

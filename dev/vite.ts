@@ -28,11 +28,52 @@ export interface Jq79PluginOptions {
   include?: RegExp
   // resolved absolute paths to skip even when `include` matches
   exclude?: RegExp
+  // run the app without eval, for a CSP with no 'unsafe-eval' - the value
+  // Component79.safeEval() takes, and meaning the same thing
+  // (RECORD/2026-09-23.no-unsafe-eval.md). `{ nonce: true }`: whatever isn't
+  // precompiled is built as a <script> carrying the page's nonce. `true` -
+  // precompiled functions and nothing else - needs the precompiler, which
+  // isn't written yet, so it throws rather than build an app that can't run
+  safeEval?: boolean | { nonce?: boolean }
 }
 
 // claimed modules get this suffix so their id no longer ends in ".html" and
 // Vite's own html handling (entries, asset pipeline) leaves them alone
 const COMPONENT_QUERY = "?jq79"
+
+// safeEval turns the runtime's safe mode on from a module every component
+// module imports: modules evaluate once, so the call is made once per app,
+// however many components there are - and a page with no nonce is reported
+// once rather than once per component. Imports come first, so it runs before
+// any component module's body constructs a component, nested ones included.
+//
+// Component79 is passed in rather than imported, so this module resolves
+// nothing: a bare "jq79" from a virtual importer is the one resolution that
+// would depend on how the app is laid out.
+//
+// A component built from a string *before* any .html module is imported runs
+// in the default mode; such an app calls Component79.safeEval itself
+const SAFE_EVAL_ID = "virtual:jq79/safe-eval"
+const RESOLVED_SAFE_EVAL_ID = `\0${SAFE_EVAL_ID}`
+const SAFE_EVAL_MODULE = `
+let started = null
+export const safeEval = (Component79) => {
+  if (started) return
+  started = Component79.safeEval({ nonce: true }).catch(error => console.error(error))
+}
+`
+
+// the plugin's safeEval option, as what the modules need to know: whether to
+// turn nonce mode on. Only that form exists yet
+const nonceMode = (option: Jq79PluginOptions["safeEval"]): boolean => {
+  if (option === undefined || option === false) return false
+  if (typeof option === "object" && option !== null && option.nonce === true) return true
+  throw new Error(
+    `jq79: safeEval: ${JSON.stringify(option)} runs precompiled functions and nothing else, ` +
+    "and the precompiler that makes them isn't written yet. On a page whose server issues a nonce " +
+    "per response, safeEval: { nonce: true } works today."
+  )
+}
 
 // a <script> block with its attribute string, so `lang` can be read and the
 // body replaced - the same shape as STYLE_BLOCK_RE below, quote-aware so a
@@ -350,7 +391,7 @@ const compileScriptBlocks = async (source: string, file: string): Promise<string
 // component's markers. An instance only used as a definition has nothing to
 // re-render (nested clones can't be reached from this module), so it falls
 // back to a full reload.
-const componentModule = (source: string, include: RegExp, filename: string): string => {
+const componentModule = (source: string, include: RegExp, filename: string, safeEval = false): string => {
   const hoisted = hoistableImports(source, include)
   const imports = hoisted
     .map((spec, i) =>
@@ -361,9 +402,13 @@ const componentModule = (source: string, include: RegExp, filename: string): str
     .join("\n")
   const modulesMap = `{ ${hoisted.map((spec, i) => `${JSON.stringify(spec)}: __jq79_${i}`).join(", ")} }`
 
+  // without safeEval, the module is exactly what it always was
+  const safeEvalImport = safeEval ? `\nimport { safeEval } from "${SAFE_EVAL_ID}"` : ""
+  const safeEvalCall = safeEval ? "\nsafeEval(Component79)" : ""
+
   return `
-import { Component79 } from "jq79"
-${imports}
+import { Component79 } from "jq79"${safeEvalImport}
+${imports}${safeEvalCall}
 
 const src = ${JSON.stringify(source)}
 const modules = ${modulesMap}
@@ -397,6 +442,7 @@ ${declaredComponents(source).map(name => `export const ${name} = component.${nam
 export function jq79(options: Jq79PluginOptions = {}): Plugin {
   const include = options.include ?? /\.html$/
   const { exclude } = options
+  const safeEval = nonceMode(options.safeEval)
 
   let config: ResolvedConfig | null = null
 
@@ -409,6 +455,7 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
     },
 
     async resolveId(source, importer) {
+      if (source === SAFE_EVAL_ID) return RESOLVED_SAFE_EVAL_ID
       if (!importer) return null // entry points are never components
       if (source.includes("?")) return null // ?raw, ?url, ... keep their meaning
       if (!include.test(source)) return null
@@ -420,6 +467,7 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
     },
 
     async load(id) {
+      if (id === RESOLVED_SAFE_EVAL_ID) return SAFE_EVAL_MODULE
       if (!id.endsWith(COMPONENT_QUERY)) return null
       const file = id.slice(0, -COMPONENT_QUERY.length)
 
@@ -431,7 +479,7 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
       // shows a path the user recognizes instead of an anonymous VM script
       const filename = config ? relative(config.root, file) : file
 
-      return { code: componentModule(source, include, filename), map: null }
+      return { code: componentModule(source, include, filename, safeEval), map: null }
     },
   }
 }
