@@ -111,6 +111,78 @@ type CompiledExpr = { fn: Function | null; scoped: boolean }
 
 const compiled = new Map<string, CompiledExpr>()
 
+// ---------------------------------------------------------------------------
+// safe eval
+//
+// Every function the runtime builds out of a component's text - an expression,
+// a setup script, a factory script - is built by makeFunction. By default that
+// is `new Function`, exactly as it always was. Two things stand in front of it:
+//
+// - precompiled functions, which scripts the browser loaded *as code* push onto
+//   a global queue, keyed by the very (params, body) the runtime would have
+//   handed `new Function` - so a hit is the same function by construction. A
+//   global rather than a call, so such a script can load before the library or
+//   after it, and serve either build of it (the module, or the CDN global)
+// - safe mode (Component79.safeEval()), in which the runtime never builds a
+//   function itself. That is what a CSP without 'unsafe-eval' demands, and
+//   where one throws EvalError that compileWith would swallow as a syntax
+//   error, safe mode says what is missing instead of rendering empty in silence
+//
+// See RECORD/2026-09-23.no-unsafe-eval.md
+// ---------------------------------------------------------------------------
+
+// `fn: null` is a body that did not compile, cached as the syntax error it is
+type PrecompiledEntry = [params: string[], body: string, fn: Function | null]
+
+// (self.__jq79precompiled = self.__jq79precompiled || []).push([params, body, fn], ...)
+const PRECOMPILED_QUEUE = "__jq79precompiled"
+
+const precompiled = new Map<string, Function | null>()
+let safeEvalOn = false
+
+class SafeEvalMiss extends Error {}
+
+// a parameter name can't contain a newline, so the key is unambiguous
+const functionKey = (params: string[], body: string): string => `${params.join(",")}\n${body}`
+
+// drains the queue first: a precompiled script may have loaded since the last
+// lookup. With nothing registered - every page that never precompiled anything
+// - the answer is known without building a key
+const lookupPrecompiled = (params: string[], body: string): Function | null | undefined => {
+  const queue = (globalThis as any)[PRECOMPILED_QUEUE]
+  if (Array.isArray(queue) && queue.length > 0) {
+    for (const [entryParams, entryBody, fn] of queue.splice(0) as PrecompiledEntry[]) {
+      precompiled.set(functionKey(entryParams, entryBody), fn)
+    }
+  }
+  return precompiled.size === 0 ? undefined : precompiled.get(functionKey(params, body))
+}
+
+// `suffix` goes to `new Function` only and is not part of the key: it is the
+// //# sourceURL that names a script for devtools, which a precompiled script
+// has no use for (it has a URL of its own) and a generator couldn't spell the
+// way the runtime does - it depends on how the component was loaded
+const makeFunction = (params: string[], body: string, suffix = ""): Function => {
+  const hit = lookupPrecompiled(params, body)
+  if (hit === null) throw new SyntaxError("jq79: this code did not compile when it was precompiled")
+  if (hit !== undefined) return hit
+  if (safeEvalOn) throw new SafeEvalMiss()
+  return new Function(...params, body + suffix)
+}
+
+// once per expression, like reportFailedExpr: a :each over 1000 rows misses
+// 1000 times per render
+const reportedSafeEvalMisses = new Set<string>()
+
+const reportSafeEvalMiss = (expr: string) => {
+  if (reportedSafeEvalMisses.has(expr)) return
+  reportedSafeEvalMisses.add(expr)
+  console.error(
+    `jq79: safeEval() is on, and "${expr}" was not precompiled, so it rendered as nothing. ` +
+    "Safe mode never builds code at runtime: the component's precompiled functions did not reach the page."
+  )
+}
+
 // Resolves a name the `const` prologue could not: its fast read came back
 // undefined, which means one of three different things. `with` told them apart
 // by consulting [[HasProperty]] on every read of every name; this consults it
@@ -134,8 +206,11 @@ const resolveName = (scope: Record<string, any>, name: string): any => {
 // and the expression never compiles
 const compileWith = (expr: string, params: string[]): Function | null => {
   try {
-    return new Function("$scope", "$r", ...params, `with ($scope) { return (${expr}\n); }`)
-  } catch {
+    return makeFunction(["$scope", "$r", ...params], `with ($scope) { return (${expr}\n); }`)
+  } catch (error) {
+    // nothing precompiled, in a mode that won't compile: not a syntax error,
+    // though it is cached like one - it will not start compiling later either
+    if (error instanceof SafeEvalMiss) reportSafeEvalMiss(expr)
     return null // a syntax error: it will never compile, so don't try again
   }
 }
@@ -169,8 +244,11 @@ const compileScoped = (expr: string, params: string[]): Function | null => {
   const names = free.filter(name => !params.includes(name))
   const prologue = names.length === 0 ? "" : `let $t; ${names.map(name =>
     `const ${name} = ($t = $scope.${name}) !== undefined ? $t : $r($scope, ${JSON.stringify(name)});`).join(" ")}`
+  // a safe-mode miss lands here too, and stays quiet: the caller falls back to
+  // the `with` form, which may well be the one that was precompiled - and
+  // reports if it wasn't
   try {
-    return new Function("$scope", "$r", ...params, `${prologue} return (${expr}\n);`)
+    return makeFunction(["$scope", "$r", ...params], `${prologue} return (${expr}\n);`)
   } catch {
     return null
   }
@@ -3452,6 +3530,20 @@ type ScriptRun = { settled: Promise<unknown>; sync: boolean }
 const sourceUrlComment = (filename: string | undefined, index: number): string =>
   filename ? `\n//# sourceURL=${filename}?jq79-script=${index}` : ""
 
+// a script's function, named for devtools. A safe-mode miss throws, as a
+// script that doesn't compile always has - but saying which script, and why
+const compileScript = (params: string[], body: string, at: ScriptLocation): Function => {
+  try {
+    return makeFunction(params, body, sourceUrlComment(at.filename, at.index ?? 0))
+  } catch (error) {
+    if (!(error instanceof SafeEvalMiss)) throw error
+    throw new Error(
+      `jq79: safeEval() is on, and script ${at.index ?? 0} of ${at.filename ?? "a component built from a string"} ` +
+      "was not precompiled. Safe mode never builds code at runtime: the component's precompiled functions did not reach the page."
+    )
+  }
+}
+
 // what a <style> block injects into document.head: the scoped rewrite when it
 // has one, the source otherwise. A shadow root uses `content` directly instead
 // - scoping is what a shadow root already does, and doing both would break the
@@ -3540,9 +3632,10 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
       (Reflect.has(target, key) || !(key in globalThis) && !(key in helpers)),
   })
   const state: { done?: boolean } = {}
-  const result: Promise<void> = new Function(
-    "$scope", "$__effect", "$__import", "$__state", ...Object.keys(helpers),
-    `return (async () => { with ($scope) { ${code} }\n;$__state.done = true })()${sourceUrlComment(at.filename, at.index ?? 0)}`
+  const result: Promise<void> = compileScript(
+    ["$scope", "$__effect", "$__import", "$__state", ...Object.keys(helpers)],
+    `return (async () => { with ($scope) { ${code} }\n;$__state.done = true })()`,
+    at
   )(scriptScope, effect, importer, state, ...Object.values(helpers))
   result.catch(error => console.error("jq79: error in :setup script", error))
   trackScript(result)
@@ -3739,9 +3832,10 @@ const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.def
 const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}): ScriptRun => {
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
   const $__exports: { default?: (props: Record<string, any>, ctx: Record<string, any>) => any; done?: boolean } = {}
-  const result: Promise<void> = new Function(
-    "$__exports", "$__default", "$__import", ...Object.keys(helpers),
-    `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()${sourceUrlComment(at.filename, at.index ?? 0)}`
+  const result: Promise<void> = compileScript(
+    ["$__exports", "$__default", "$__import", ...Object.keys(helpers)],
+    `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()`,
+    at
   )($__exports, interopDefault, importer, ...Object.values(helpers))
 
   const logError = (error: any) => console.error("jq79: error in factory script", error)
@@ -4118,6 +4212,21 @@ export class Component79 {
       if (debugFlags.scopedNames !== scopedBefore) compiled.clear()
     }
     return { ...debugFlags }
+  }
+
+  // for a page whose CSP has no 'unsafe-eval': from here on the runtime never
+  // builds a function out of a component's text, and runs only the ones that
+  // were precompiled for it - a miss is reported, never evaluated. Opt-in, so
+  // a page that doesn't call it behaves exactly as before; global and one-way,
+  // like the CSP it exists for.
+  //
+  // Async for what it will wait on: the service worker that compiles a
+  // no-bundle page's components, which is not written yet. Until then, the
+  // precompiled functions have to reach the page some other way
+  // (RECORD/2026-09-23.no-unsafe-eval.md)
+  static safeEval(): Promise<void> {
+    safeEvalOn = true
+    return Promise.resolve()
   }
 
   static fetch(url: string): PendingComponent79 {
