@@ -4,6 +4,7 @@ import type { AllowUrl } from "./dom"
 import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, freeIdentifiers, type PropDecl } from "./transform"
+import { parseHTML, type HTMLNode, type HTMLElementNode } from "./html"
 
 export { $, $$, $create } from "./dom"
 export { $reactive, $toRaw } from "./reactive"
@@ -296,9 +297,16 @@ const resolveName = (scope: Record<string, any>, name: string): any => {
 // ({{ msg // greeting }}); ASI doesn't apply inside parens, so everything else
 // is untouched. Without it the comment eats the rest of this single-line body
 // and the expression never compiles
+// the text of the two forms an expression compiles to, and the parameters in
+// front of its extras - one place, because precompile has to produce exactly
+// what the runtime hands makeFunction, or its functions are never looked up
+const EXPR_PARAMS = ["$scope", "$r"]
+
+const withBody = (expr: string): string => `with ($scope) { return (${expr}\n); }`
+
 const compileWith = (expr: string, params: string[]): Function | null => {
   try {
-    return makeFunction(["$scope", "$r", ...params], `with ($scope) { return (${expr}\n); }`)
+    return makeFunction([...EXPR_PARAMS, ...params], withBody(expr))
   } catch (error) {
     // nothing precompiled, in a mode that won't compile: not a syntax error,
     // though it is cached like one - it will not start compiling later either
@@ -327,8 +335,8 @@ const compileWith = (expr: string, params: string[]): Function | null => {
 // the global instead of the store, and nothing throws. So the extractor's
 // misses are a correctness surface, not only a performance one, and the
 // differential in tests/expressions.test.ts is what stands behind it
-const compileScoped = (expr: string, params: string[]): Function | null => {
-  if (!debugFlags.scopedNames) return null
+// null where freeIdentifiers won't vouch for the names - the `with` form's case
+const scopedBody = (expr: string, params: string[]): string | null => {
   const free = freeIdentifiers(expr)
   if (free === null) return null
   // an extra is already a parameter of this function: declaring it again would
@@ -336,11 +344,18 @@ const compileScoped = (expr: string, params: string[]): Function | null => {
   const names = free.filter(name => !params.includes(name))
   const prologue = names.length === 0 ? "" : `let $t; ${names.map(name =>
     `const ${name} = ($t = $scope.${name}) !== undefined ? $t : $r($scope, ${JSON.stringify(name)});`).join(" ")}`
+  return `${prologue} return (${expr}\n);`
+}
+
+const compileScoped = (expr: string, params: string[]): Function | null => {
+  if (!debugFlags.scopedNames) return null
+  const body = scopedBody(expr, params)
+  if (body === null) return null
   // a safe-mode miss lands here too, and stays quiet: the caller falls back to
   // the `with` form, which may well be the one that was precompiled - and
   // reports if it wasn't
   try {
-    return makeFunction(["$scope", "$r", ...params], `${prologue} return (${expr}\n);`)
+    return makeFunction([...EXPR_PARAMS, ...params], body)
   } catch {
     return null
   }
@@ -606,6 +621,13 @@ const isControlAttr = (attr: string): boolean =>
 const EACH_PATTERN = /^\s*\(?\s*(\w+)\s*(?:,\s*(\w+))?\s*\)?\s+in\s+([\s\S]+)$/
 
 type ConditionalBranch = { expr?: string; node: TemplateNode }
+
+// a :model's way back up: its expression as an assignment target. The newline
+// keeps `= $value` out of a trailing line comment in the expression
+// (:model="uname // the username") - glued on the same line, the assignment
+// would vanish into the comment and compile as a bare read, dropping every
+// update without a word
+const assignment = (expr: string) => `${expr}\n= $value`
 
 
 // @event attributes: @click="onClick", @submit.prevent="$event => onSubmit($event)",
@@ -1271,11 +1293,6 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // initial value would never reach the child
   const modelAttr = (name: string) => (name === "default" ? ":model" : `:model.${name}`)
   const modelProp = (name: string) => (name === "default" ? "model" : name)
-  // the newline keeps `= $value` out of a trailing line comment in the
-  // expression (:model="uname // the username") - glued on the same line,
-  // the assignment would vanish into the comment and compile as a bare read,
-  // dropping every update without a word
-  const assignment = (expr: string) => `${expr}\n= $value`
   // the models whose expression will never take an update, decided here rather
   // than at update time: an assignment that landed and one that was dropped
   // both evaluate to the value assigned, so the result can't tell them apart -
@@ -3380,6 +3397,10 @@ const COMPONENT_NAME_RE = /^[A-Z][A-Za-z0-9]*$/
 // - template: the non-script/style top-level elements, as TemplateNodes
 // - scripts/styles: { attrs, content } blocks in source order
 // - siblings: the components its top-level <template name="..."> declared
+// all three pre-parse rewrites, in their load-bearing order (see
+// parseComponentString) - shared with precompile, which reads the same text
+const prepareSource = (component: string): string => expandSelfClosingTags(expandPropsSpread(expandNameCase(component)))
+
 const parseComponentString = (component: string): ComponentParts => {
   // example
   // <script :setup="{ fname, lname }">
@@ -3404,7 +3425,7 @@ const parseComponentString = (component: string): ComponentParts => {
   // self-closing tag is still one occurrence), then `...expr` -> :props.<n>
   // (which reads the raw camelCase before the parser can lowercase names),
   // then self-closing tags
-  const prepared = expandSelfClosingTags(expandPropsSpread(expandNameCase(component)))
+  const prepared = prepareSource(component)
   const parsedDOM = new DOMParser().parseFromString(`<template>${prepared}</template>`, "text/html")
   const root = parsedDOM.querySelector("template") as HTMLTemplateElement
 
@@ -3454,6 +3475,214 @@ const parseComponentString = (component: string): ComponentParts => {
   if (Object.keys(siblings).length) parts.siblings = siblings
 
   return parts
+}
+
+// ---------------------------------------------------------------------------
+// precompile
+//
+// Every function the runtime would build for a component, found without
+// rendering it: each expression in its template, each of its scripts, each
+// prop default - as the [params, body] pairs makeFunction would be handed, so
+// a table of them answers its lookups (see "safe eval", above). What renders
+// nothing still counts: a branch not taken, a handler never clicked, a :each
+// over an empty list are all here because each *could* run.
+//
+// It reads a file the way parseComponentString does - the same pre-parse
+// rewrites, the same split into the file's own component and its named
+// <template>s - with parseHTML standing in for DOMParser, which node and a
+// worker don't have. It reads a template the way the renderer does, directive
+// by directive, and builds each body with the same functions the runtime
+// compiles with (withBody, scopedBody, setupBody, factoryBody), so a key can
+// only match. Where the renderer's answer depends on the page - which scope
+// key a component tag resolves to - it takes every plausible one: an extra
+// function is an entry nobody looks up. What it can't see is a miss, and safe
+// mode reports a miss by name. tests/precompile.test.ts holds it against what
+// the runtime actually compiles
+// ---------------------------------------------------------------------------
+
+type Precompiled = [params: string[], body: string]
+
+const isElementNode = (node: HTMLNode): node is HTMLElementNode => typeof node !== "string"
+
+// mirrors elementToAST: the component stamp lifted off attrs into a field
+const toTemplateNode = (el: HTMLElementNode): TemplateNode => {
+  const { [COMPONENT_TAG_ATTR]: component, ...attrs } = el.attrs
+  return {
+    tag: el.tag,
+    attrs,
+    ...(component === undefined ? {} : { component }),
+    children: el.children.map(child => (typeof child === "string" ? child : toTemplateNode(child))),
+  }
+}
+
+const textOf = (el: HTMLElementNode): string => el.children.map(child => (typeof child === "string" ? child : textOf(child))).join("")
+
+// the scope keys a tag can resolve to. findComponentKey matches any
+// capitalized key that equals the tag once dashes and case are gone, so the
+// key itself comes from the page; these are the spellings the file offers -
+// the tag as written, its PascalCase, and every capitalized name the file
+// declares that matches
+const componentKeyCandidates = (node: TemplateNode, known: string[]): string[] => {
+  const tag = node.component ?? node.tag
+  const normalized = tag.replace(/-/g, "").toLowerCase()
+  const keys = new Set(known.filter(name => /^[A-Z]/.test(name) && name.replace(/-/g, "").toLowerCase() === normalized))
+  keys.add(node.component ?? kebabToCamel(node.tag).replace(/^./, c => c.toUpperCase()))
+  return [...keys]
+}
+
+type AddExpression = (expr: string, extras?: string[]) => void
+
+// every expression a template can evaluate, walked as renderNodes, renderNode,
+// renderEach, renderConditional, renderSlot and renderNestedComponent would
+// walk it - each clause names the one it follows
+const collectExpressions = (nodes: (TemplateNode | string)[], known: string[], add: AddExpression) => {
+  for (const node of nodes) {
+    // renderNodes: text with an interpolation in it
+    if (typeof node === "string") {
+      if (node.includes("{{")) splitText(node).forEach(part => { if (typeof part !== "string") add(part.expr) })
+      continue
+    }
+    const attrs = node.attrs
+    // renderConditional (chainOf), renderEach, and :with in renderNode - on any node
+    if (":if" in attrs) add(attrs[":if"])
+    if (":elseif" in attrs) add(attrs[":elseif"])
+    if (":each" in attrs) {
+      const match = attrs[":each"].match(EACH_PATTERN)
+      if (match) add(match[3])
+      if (":key" in attrs) add(attrs[":key"])
+    }
+    if (":with" in attrs) add(attrs[":with"])
+    // bindSlotProps: a :slot binder's defaults, on a component tag or its <template>
+    for (const attr in attrs) {
+      if (attr === ":slot" || attr.startsWith(":slot.")) {
+        parsePropsPattern(attrs[attr] || undefined)?.forEach(({ default: fallback }) => { if (fallback !== undefined) add(fallback) })
+      }
+    }
+
+    if (isSlotTag(node.tag)) {
+      // renderSlot: a <slot>'s props - read by name, not camelCased
+      for (const attr in attrs) {
+        if (isControlAttr(attr) || attr.startsWith("@") || !attr.startsWith(":")) continue
+        add(attrs[attr] || attr.slice(1))
+      }
+    } else {
+      // renderNestedComponent, for a tag that is or may become a component: the
+      // key it resolves through, its props, spreads, models and tag events
+      if (node.component !== undefined || node.tag.includes("-")) {
+        componentKeyCandidates(node, known).forEach(key => add(key))
+        for (const attr in attrs) {
+          const value = attrs[attr]
+          if (attr === ":props" || attr.startsWith(":props.")) add(value)
+          else if (isControlAttr(attr)) continue
+          else if (attr.startsWith("@")) add(value, ["$event"])
+          else if (attr === ":model" || attr.startsWith(":model.")) {
+            const expr = value || (attr === ":model" ? "model" : kebabToCamel(attr.slice(":model.".length)))
+            add(expr)
+            add(assignment(expr), ["$value"])
+          } else if (attr.startsWith(":")) add(value || kebabToCamel(attr.slice(1)))
+          else add(JSON.stringify(value))
+        }
+      }
+      // renderNode, for the element it renders as (and a component tag renders
+      // as, until it resolves): events, bindings, and the control directives
+      for (const attr in attrs) {
+        const value = attrs[attr]
+        if (attr.startsWith("@")) add(value, ["$event"])
+        else if (attr === ":model" || attr.startsWith(":model.")) continue
+        else if (attr === ":class" || attr.startsWith(":class.") || attr === ":text" || attr === ":html" ||
+          attr === ":html.allowed" || attr === ":value" || attr === ":checked" || attr === ":selected") add(value)
+        else if (isControlAttr(attr)) continue
+        else if (attr.startsWith(":")) add(value || kebabToCamel(attr.slice(1)))
+      }
+    }
+    collectExpressions(node.children, known, add)
+  }
+}
+
+// every function the runtime would build for the component in `source`, as
+// the [params, body] makeFunction would be handed - see the note above
+export const precompile = (source: string): Precompiled[] => {
+  const found = new Map<string, Precompiled>()
+  const add = (params: string[], body: string) => { found.set(functionKey(params, body), [params, body]) }
+  // an expression compiles to its scoped form first, and falls back to (or is
+  // demoted to) the `with` form - both, where the scoped one exists
+  const addExpression: AddExpression = (expr, extras = []) => {
+    const params = [...EXPR_PARAMS, ...extras]
+    const scoped = scopedBody(expr, extras)
+    if (scoped !== null) add(params, scoped)
+    add(params, withBody(expr))
+  }
+
+  // parseComponentString's split: a top-level <template> declares another
+  // component of the file (a valid name, first one wins), everything else is
+  // the file's own
+  const top = parseHTML(prepareSource(source)).filter(isElementNode)
+  const siblings: string[] = []
+  const components: HTMLElementNode[][] = [top.filter(el => el.tag !== "template")]
+  top.filter(el => el.tag === "template").forEach(el => {
+    const name = el.attrs.name
+    if (name === undefined || !COMPONENT_NAME_RE.test(name) || siblings.includes(name)) return
+    siblings.push(name)
+    components.push(el.children.filter(isElementNode))
+  })
+
+  components.forEach(elements => precompileComponent(elements, siblings, add, addExpression))
+
+  return [...found.values()]
+}
+
+const precompileComponent = (
+  elements: HTMLElementNode[],
+  siblings: string[],
+  add: (params: string[], body: string) => void,
+  addExpression: AddExpression
+) => {
+  const scripts: TagBlock[] = elements
+    .filter(el => el.tag === "script")
+    .map(el => ({ attrs: el.attrs, content: textOf(el) }))
+  const template = elements.filter(el => el.tag !== "script" && el.tag !== "style").map(toTemplateNode)
+
+  // the helper names a script is compiled with: renderWith's
+  // { ...SETUP_HELPERS, ...instanceHelpers }, where instanceHelpers is
+  // { $mounted, $self, $$self, ...injected, ...siblingScope } - key order
+  // included, because the parameters are positional
+  //
+  // Reading the signatures is also the first thing renderWith does, and where
+  // it refuses a component - a factory destructuring a ctx name out of props
+  // throws there, before anything compiles. Such a component has nothing to
+  // precompile, and returning here leaves its error to the runtime, which is
+  // where the page sees it, rather than failing the build (or the worker) on
+  // its behalf
+  let declared: Set<string>
+  try {
+    declared = declaredPropNames(scripts, readSetupSignature)
+  } catch {
+    return
+  }
+  const siblingScope = Object.fromEntries(siblings.filter(name => !declared.has(name)).map(name => [name, true]))
+  const helperNames = Object.keys({
+    ...SETUP_HELPERS,
+    ...{ $mounted: true, $self: true, $$self: true, $emit: true, $updateModel: true, $slots: true, ...siblingScope },
+  })
+
+  // the names the file declares, for the component tags that resolve to one
+  const known = [...siblings]
+  scripts.forEach(script => {
+    const deferred = ":mounted" in script.attrs
+    const factoryCode = transformFactoryScript(script.content)
+    if (factoryCode !== null) {
+      const props = parseFactoryProps(script.content)
+      props?.forEach(({ name, default: fallback }) => { known.push(name); if (fallback !== undefined) addExpression(fallback) })
+      add(factoryParams(helperNames), factoryBody(deferred ? defer(factoryCode) : factoryCode))
+    } else {
+      const { vars, code } = transformSetupScript(script.content)
+      known.push(...vars)
+      readSetupSignature(script)?.forEach(({ name, default: fallback }) => { known.push(name); if (fallback !== undefined) addExpression(fallback) })
+      add(setupParams(helperNames), setupBody(deferred ? defer(code) : code))
+    }
+  })
+
+  collectExpressions(template, known, addExpression)
 }
 
 // the media types an editor reads as TypeScript. A component is a plain .html
@@ -3622,6 +3851,17 @@ type ScriptRun = { settled: Promise<unknown>; sync: boolean }
 const sourceUrlComment = (filename: string | undefined, index: number): string =>
   filename ? `\n//# sourceURL=${filename}?jq79-script=${index}` : ""
 
+// a `:mounted` script is deferred by prepending the await on the code's own
+// first line, so deferring doesn't shift the lines devtools reports for it
+const defer = (code: string) => `await $mounted();${code}`
+
+// what the two kinds of script compile to, shared with precompile for the
+// reason the expression forms are
+const setupParams = (helperNames: string[]): string[] => ["$scope", "$__effect", "$__import", "$__state", ...helperNames]
+const setupBody = (code: string): string => `return (async () => { with ($scope) { ${code} }\n;$__state.done = true })()`
+const factoryParams = (helperNames: string[]): string[] => ["$__exports", "$__default", "$__import", ...helperNames]
+const factoryBody = (code: string): string => `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()`
+
 // a script's function, named for devtools. A safe-mode miss throws, as a
 // script that doesn't compile always has - but saying which script, and why
 const compileScript = (params: string[], body: string, at: ScriptLocation): Function => {
@@ -3724,11 +3964,9 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
       (Reflect.has(target, key) || !(key in globalThis) && !(key in helpers)),
   })
   const state: { done?: boolean } = {}
-  const result: Promise<void> = compileScript(
-    ["$scope", "$__effect", "$__import", "$__state", ...Object.keys(helpers)],
-    `return (async () => { with ($scope) { ${code} }\n;$__state.done = true })()`,
-    at
-  )(scriptScope, effect, importer, state, ...Object.values(helpers))
+  const result: Promise<void> = compileScript(setupParams(Object.keys(helpers)), setupBody(code), at)(
+    scriptScope, effect, importer, state, ...Object.values(helpers)
+  )
   result.catch(error => console.error("jq79: error in :setup script", error))
   trackScript(result)
   return { settled: result, sync: state.done === true }
@@ -3764,12 +4002,18 @@ const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
 // with no :setup at all) stays `null`, so its signature is still read from the
 // factory's first parameter
 const setupSignature = (script: TagBlock): PropDecl[] | null => {
+  const props = readSetupSignature(script)
+  if (!props && script.attrs[":setup"] !== undefined) warnUnreadableSignature(script, script.attrs[":setup"])
+  return props
+}
+
+// the same answer without the warning - what precompile reads, which has
+// nobody to warn and would otherwise say it once per build
+const readSetupSignature = (script: TagBlock): PropDecl[] | null => {
   const pattern = script.attrs[":setup"]
   if (pattern === undefined) return null
   if (pattern.trim() === "") return []
-  const props = parsePropsPattern(pattern)
-  if (!props) warnUnreadableSignature(script, pattern)
-  return props
+  return parsePropsPattern(pattern)
 }
 
 // script blocks already warned about, keyed by the block itself - parsed once
@@ -3802,10 +4046,10 @@ const warnUnreadableSignature = (script: TagBlock, pattern: string) => {
 // which of its file's sibling components it can still see: declaring a name
 // says it comes from the parent, so the file's own definition of that name is
 // deliberately not in this component's scope
-const declaredPropNames = (scripts: TagBlock[]): Set<string> => {
+const declaredPropNames = (scripts: TagBlock[], signature = setupSignature): Set<string> => {
   const names = new Set<string>()
   scripts.forEach(script => {
-    const declarations = parseFactoryProps(script.content) ?? setupSignature(script)
+    const declarations = parseFactoryProps(script.content) ?? signature(script)
     declarations?.forEach(({ name }) => names.add(name))
   })
   return names
@@ -3924,11 +4168,9 @@ const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.def
 const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}): ScriptRun => {
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
   const $__exports: { default?: (props: Record<string, any>, ctx: Record<string, any>) => any; done?: boolean } = {}
-  const result: Promise<void> = compileScript(
-    ["$__exports", "$__default", "$__import", ...Object.keys(helpers)],
-    `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()`,
-    at
-  )($__exports, interopDefault, importer, ...Object.values(helpers))
+  const result: Promise<void> = compileScript(factoryParams(Object.keys(helpers)), factoryBody(code), at)(
+    $__exports, interopDefault, importer, ...Object.values(helpers)
+  )
 
   const logError = (error: any) => console.error("jq79: error in factory script", error)
   let invoked = false
@@ -4519,11 +4761,9 @@ export class Component79 {
     })
 
     // scripts run before the template renders so `$:` values are initialized;
-    // a `:mounted` script defers entirely until mount() instead. A top-level
-    // `export default` switches the script to factory mode (plain lexical JS)
-    // a `:mounted` script is deferred by prepending the await on the code's own
-    // first line, so deferring doesn't shift the lines devtools reports for it
-    const defer = (code: string) => `await $mounted();${code}`
+    // a `:mounted` script defers entirely until mount() instead (see defer). A
+    // top-level `export default` switches the script to factory mode (plain
+    // lexical JS)
 
     // what the first render is still waiting for. A script holds the template
     // back until it returns or calls $mounted() - whichever comes first - so

@@ -71,6 +71,7 @@
     "check:svg-names": "node scripts/check-svg-attribute-names.mjs",
     "check:box": "node scripts/check-box-layout.mjs",
     "check:csp": "node scripts/check-csp.mjs",
+    "check:precompile": "vitest run --config vitest.precompile.config.ts",
     "prepublishOnly": "npm test && npm run build"
   },
   "peerDependencies": {
