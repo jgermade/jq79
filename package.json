@@ -70,6 +70,7 @@
     "benchmark:once": "node scripts/run-once-render.mjs",
     "check:svg-names": "node scripts/check-svg-attribute-names.mjs",
     "check:box": "node scripts/check-box-layout.mjs",
+    "check:csp": "node scripts/check-csp.mjs",
     "prepublishOnly": "npm test && npm run build"
   },
   "peerDependencies": {

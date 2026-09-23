@@ -198,3 +198,126 @@ describe("without safeEval()", () => {
     expect(error).not.toHaveBeenCalled()
   })
 })
+
+// jsdom runs an inserted <script> - but in a realm of its own, so a function it
+// builds throws that realm's errors and returns that realm's promises. These
+// cases stay clear of what that changes (an `instanceof ReferenceError`, an
+// async factory's promise); the end-to-end proof, under a real CSP in a real
+// browser, is scripts/check-csp.mjs
+describe("Component79.safeEval({ nonce: true })", () => {
+  let pageScript: HTMLScriptElement | null = null
+
+  // the script a nonce-based CSP names: the one that loaded the page
+  const givePageANonce = (nonce = "r4nd0m") => {
+    pageScript = document.createElement("script")
+    pageScript.type = "application/json" // present, and inert
+    pageScript.setAttribute("nonce", nonce)
+    document.head.append(pageScript)
+  }
+
+  afterEach(() => {
+    pageScript?.remove()
+    pageScript = null
+  })
+
+  // every <script> jq79 inserts, with the nonce it carried
+  const watchInsertedScripts = () => {
+    // records reach the callback at every microtask checkpoint, so they are
+    // kept there as well as taken at the end
+    const records: MutationRecord[] = []
+    const observer = new MutationObserver(batch => { records.push(...batch) })
+    observer.observe(document.head, { childList: true })
+    return () => {
+      records.push(...observer.takeRecords())
+      const nonces = records
+        .flatMap(record => Array.from(record.addedNodes))
+        .filter((node): node is HTMLScriptElement => node instanceof HTMLScriptElement)
+        .map(script => script.getAttribute("nonce"))
+      observer.disconnect()
+      return nonces
+    }
+  }
+
+  it("builds a miss as a <script> carrying the page's nonce - and renders as eval does, with eval blocked", async () => {
+    givePageANonce()
+    const library = await freshLibrary()
+    await library.Component79.safeEval({ nonce: true })
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    const inserted = watchInsertedScripts()
+
+    const got = await withEvalBlocked(() => renderCounter(library))
+
+    expect(got).toEqual({ before: "1/2++10ab", after: "12/24++10abbig" })
+    const nonces = inserted()
+    expect(nonces.length).toBeGreaterThan(0)
+    expect(new Set(nonces)).toEqual(new Set(["r4nd0m"]))
+    expect(document.head.querySelectorAll("script:not([type])")).toHaveLength(0) // none left behind
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it("builds each function once, however many instances run it", async () => {
+    givePageANonce()
+    const library = await freshLibrary()
+    await library.Component79.safeEval({ nonce: true })
+
+    await renderCounter(library)
+    const inserted = watchInsertedScripts()
+    const again = await renderCounter(library)
+
+    expect(again.after).toBe("12/24++10abbig")
+    expect(inserted()).toEqual([])
+  })
+
+  it("still prefers what was precompiled", async () => {
+    const calls = await recordCompiles(({ Component79 }) => {
+      new Component79(`<p>{{ msg }}</p>`).mount(document.createElement("div"), { msg: "hi" })
+    })
+    pushPrecompiled(calls.map(([params, body]) => [params, body, () => "precompiled"]))
+    givePageANonce()
+    const { Component79 } = await freshLibrary()
+    await Component79.safeEval({ nonce: true })
+    const inserted = watchInsertedScripts()
+
+    const host = document.createElement("div")
+    new Component79(`<p>{{ msg }}</p>`).mount(host, { msg: "hi" })
+    expect(host.textContent).toBe("precompiled")
+    expect(inserted()).toEqual([])
+  })
+
+  it("an expression that doesn't compile renders empty and silent, as under eval - its error event is taken", async () => {
+    givePageANonce()
+    const { Component79 } = await freshLibrary()
+    await Component79.safeEval({ nonce: true })
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    const host = document.createElement("div")
+    new Component79(`<p>{{ a b }}</p><b>{{ msg }}</b>`).mount(host, { msg: "hi" })
+    expect(host.textContent).toBe("hi")
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it("a script that doesn't compile throws its SyntaxError, where new Function threw it", async () => {
+    givePageANonce()
+    const { Component79 } = await freshLibrary()
+    await Component79.safeEval({ nonce: true })
+
+    let thrown: any
+    try {
+      new Component79(`<script>let = = 1</script><p>x</p>`).mount(document.createElement("div"))
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown?.name).toBe("SyntaxError")
+  })
+
+  it("rejects when no script on the page carries a nonce - and safe mode stays on", async () => {
+    const { Component79 } = await freshLibrary()
+    await expect(Component79.safeEval({ nonce: true })).rejects.toThrow(/found no nonce on this page/)
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    const host = document.createElement("div")
+    await withEvalBlocked(() => new Component79(`<p>{{ msg }}</p>`).mount(host, { msg: "hi" }))
+    expect(host.textContent).toBe("")
+    expect(String(error.mock.calls[0]?.[0])).toContain(`"msg" was not precompiled`)
+  })
+})

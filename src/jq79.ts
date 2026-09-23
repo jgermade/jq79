@@ -123,10 +123,12 @@ const compiled = new Map<string, CompiledExpr>()
 //   handed `new Function` - so a hit is the same function by construction. A
 //   global rather than a call, so such a script can load before the library or
 //   after it, and serve either build of it (the module, or the CDN global)
-// - safe mode (Component79.safeEval()), in which the runtime never builds a
-//   function itself. That is what a CSP without 'unsafe-eval' demands, and
+// - safe mode (Component79.safeEval()), in which the runtime never calls
+//   `new Function`. That is what a CSP without 'unsafe-eval' demands, and
 //   where one throws EvalError that compileWith would swallow as a syntax
-//   error, safe mode says what is missing instead of rendering empty in silence
+//   error, safe mode says what is missing instead of rendering empty in silence.
+//   With `{ nonce: true }` a miss is built anyway - as a <script> carrying the
+//   page's nonce, which the CSP admits where it refuses eval (buildWithNonce)
 //
 // See RECORD/2026-09-23.no-unsafe-eval.md
 // ---------------------------------------------------------------------------
@@ -139,8 +141,21 @@ const PRECOMPILED_QUEUE = "__jq79precompiled"
 
 const precompiled = new Map<string, Function | null>()
 let safeEvalOn = false
+// set by safeEval({ nonce: true }), and then never unset: safe mode is one-way
+let safeEvalNonce: string | undefined
 
-class SafeEvalMiss extends Error {}
+// what safe mode could not provide. `reason` completes "<the code> ..." and
+// `hint` says why, so an expression and a script report it the same way
+class SafeEvalMiss extends Error {
+  constructor(readonly reason: string, readonly hint: string) {
+    super(`${reason}. ${hint}`)
+  }
+}
+
+const notPrecompiled = () => new SafeEvalMiss(
+  "was not precompiled",
+  "Safe mode never builds code at runtime: the component's precompiled functions did not reach the page."
+)
 
 // a parameter name can't contain a newline, so the key is unambiguous
 const functionKey = (params: string[], body: string): string => `${params.join(",")}\n${body}`
@@ -166,21 +181,98 @@ const makeFunction = (params: string[], body: string, suffix = ""): Function => 
   const hit = lookupPrecompiled(params, body)
   if (hit === null) throw new SyntaxError("jq79: this code did not compile when it was precompiled")
   if (hit !== undefined) return hit
-  if (safeEvalOn) throw new SafeEvalMiss()
+  if (safeEvalNonce !== undefined) return buildWithNonce(params, body, suffix, safeEvalNonce)
+  if (safeEvalOn) throw notPrecompiled()
   return new Function(...params, body + suffix)
+}
+
+// the page's nonce, read off a script that carries one. The `.nonce` property
+// and not the attribute: once the element is in a document under a CSP header,
+// the browser blanks the attribute (so a stylesheet's attribute selector can't
+// leak it) and keeps the value on the property - checked in Chromium, where
+// getAttribute("nonce") read "" and .nonce the real value. The attribute is
+// the fallback for an environment with no such property (jsdom).
+//
+// Searched for, because the library may have no script of its own to read: a
+// module has no document.currentScript. A CSP that works by nonce always has
+// one - the script that loaded the page
+const pageNonce = (): string | undefined => {
+  if (typeof document === "undefined") return undefined
+  for (const script of Array.from(document.querySelectorAll<HTMLScriptElement>("script[nonce]"))) {
+    const nonce = script.nonce || script.getAttribute("nonce")
+    if (nonce) return nonce
+  }
+  return undefined
+}
+
+// builds what `new Function` would, as a classic <script> the CSP admits
+// because it carries the page's nonce. Classic scripts are sloppy, so `with`
+// compiles exactly as it does under `new Function`; the text is laid out as
+// `new Function` lays it out ("function anonymous(params\n) {\nbody\n}"), so
+// the function is named the same and devtools reports the same line numbers,
+// and the //# sourceURL suffix names the script as it names the function today.
+//
+// An inline script runs synchronously when it is inserted, so this is a
+// drop-in for the synchronous `new Function`. The function comes back on the
+// element itself (document.currentScript) rather than through a global: nothing
+// for the page to collide with, and nothing to clean up.
+//
+// Two ways it can fail, told apart by what the insertion left behind:
+// - a syntax error is reported to window's `error` event rather than thrown to
+//   the inserter. The listener takes it and cancels the report, and it is
+//   rethrown here - where `new Function` threw it, and where compileWith
+//   caches it as the syntax error it always has been;
+// - a nonce the CSP refuses leaves nothing at all: no function, no error
+//   event, only a violation the browser logs. That one says so.
+//
+// A body that closes the function's brace early (`a) } alert(1); { (`) is one
+// place this differs: `new Function` refuses it, and a script runs what comes
+// after the brace. The text is the component's own, which can hold a <script>
+// anyway, so this admits nothing a component couldn't already do.
+//
+// Built functions go into the precompiled map: they hold no state, and a
+// setup script - built once per *instance* - would otherwise insert a script
+// per instance
+const NONCE_BUILT = "__jq79built"
+
+const buildWithNonce = (params: string[], body: string, suffix: string, nonce: string): Function => {
+  const script = document.createElement("script")
+  script.setAttribute("nonce", nonce)
+  script.textContent =
+    `document.currentScript.${NONCE_BUILT} = function anonymous(${params.join(",")}\n) {\n${body}\n}${suffix}`
+  let syntaxError: unknown
+  const onError = (event: ErrorEvent) => {
+    syntaxError = event.error ?? new SyntaxError(event.message)
+    event.preventDefault()
+  }
+  window.addEventListener("error", onError)
+  try {
+    (document.head ?? document.documentElement).append(script)
+  } finally {
+    window.removeEventListener("error", onError)
+    script.remove()
+  }
+  const fn = (script as any)[NONCE_BUILT]
+  if (typeof fn === "function") {
+    precompiled.set(functionKey(params, body), fn)
+    return fn
+  }
+  if (syntaxError !== undefined) throw syntaxError
+  throw new SafeEvalMiss(
+    "could not be built",
+    // the value stays out of the message: a nonce has no business in a log
+    "The page's CSP refused a <script> carrying the nonce jq79 read from the page."
+  )
 }
 
 // once per expression, like reportFailedExpr: a :each over 1000 rows misses
 // 1000 times per render
 const reportedSafeEvalMisses = new Set<string>()
 
-const reportSafeEvalMiss = (expr: string) => {
+const reportSafeEvalMiss = (expr: string, miss: SafeEvalMiss) => {
   if (reportedSafeEvalMisses.has(expr)) return
   reportedSafeEvalMisses.add(expr)
-  console.error(
-    `jq79: safeEval() is on, and "${expr}" was not precompiled, so it rendered as nothing. ` +
-    "Safe mode never builds code at runtime: the component's precompiled functions did not reach the page."
-  )
+  console.error(`jq79: safeEval() is on, and "${expr}" ${miss.reason}, so it rendered as nothing. ${miss.hint}`)
 }
 
 // Resolves a name the `const` prologue could not: its fast read came back
@@ -210,7 +302,7 @@ const compileWith = (expr: string, params: string[]): Function | null => {
   } catch (error) {
     // nothing precompiled, in a mode that won't compile: not a syntax error,
     // though it is cached like one - it will not start compiling later either
-    if (error instanceof SafeEvalMiss) reportSafeEvalMiss(expr)
+    if (error instanceof SafeEvalMiss) reportSafeEvalMiss(expr, error)
     return null // a syntax error: it will never compile, so don't try again
   }
 }
@@ -3539,7 +3631,7 @@ const compileScript = (params: string[], body: string, at: ScriptLocation): Func
     if (!(error instanceof SafeEvalMiss)) throw error
     throw new Error(
       `jq79: safeEval() is on, and script ${at.index ?? 0} of ${at.filename ?? "a component built from a string"} ` +
-      "was not precompiled. Safe mode never builds code at runtime: the component's precompiled functions did not reach the page."
+      `${error.reason}. ${error.hint}`
     )
   }
 }
@@ -4215,17 +4307,33 @@ export class Component79 {
   }
 
   // for a page whose CSP has no 'unsafe-eval': from here on the runtime never
-  // builds a function out of a component's text, and runs only the ones that
-  // were precompiled for it - a miss is reported, never evaluated. Opt-in, so
-  // a page that doesn't call it behaves exactly as before; global and one-way,
-  // like the CSP it exists for.
+  // calls `new Function`. Opt-in, so a page that doesn't call it behaves
+  // exactly as before; global and one-way, like the CSP it exists for.
   //
-  // Async for what it will wait on: the service worker that compiles a
-  // no-bundle page's components, which is not written yet. Until then, the
-  // precompiled functions have to reach the page some other way
-  // (RECORD/2026-09-23.no-unsafe-eval.md)
-  static safeEval(): Promise<void> {
+  //   await Component79.safeEval()                  // precompiled only: a miss is reported
+  //   await Component79.safeEval({ nonce: true })   // a miss is built with the page's nonce
+  //
+  // Precompiled functions come first either way. `{ nonce: true }` is for a
+  // page whose server issues a fresh nonce per response: it still turns the
+  // component's text into code in the browser, as eval would, only through a
+  // door just jq79 holds the key to. A static host's nonce never changes, and
+  // a nonce everyone knows protects nothing.
+  //
+  // With no nonce on the page, the promise rejects - and safe mode stays on:
+  // a page that asked for no eval never falls back to it. Async for what the
+  // plain form will wait on: the service worker that compiles a no-bundle
+  // page's components, which is not written yet (RECORD/2026-09-23.no-unsafe-eval.md)
+  static safeEval(options: { nonce?: boolean } = {}): Promise<void> {
     safeEvalOn = true
+    if (!options.nonce) return Promise.resolve()
+    const nonce = pageNonce()
+    if (nonce === undefined) {
+      return Promise.reject(new Error(
+        "jq79: safeEval({ nonce: true }) found no nonce on this page - no <script> carries one. " +
+        "The nonce belongs on the script that loads the page, the one the CSP names."
+      ))
+    }
+    safeEvalNonce = nonce
     return Promise.resolve()
   }
 
