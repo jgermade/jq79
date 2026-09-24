@@ -493,3 +493,100 @@ describe("Component79.safeEval() with its worker", () => {
     await expect(Promise.resolve(Component79.fetch(`${origin}/Counter.html`))).rejects.toThrow(/couldn't register/)
   })
 })
+
+// A <style> is inline style to a CSP, refused by a `style-src` without
+// 'unsafe-inline'; a constructed sheet adopted by the document or a shadow
+// root is CSSOM, which no directive governs. So under safe mode a component's
+// styles are adopted sheets (checked for real under `style-src 'self'` in
+// scripts/check-csp.mjs). jsdom has no adoptedStyleSheets, so these cases give
+// it one - an accessor holding whatever it is handed, as a browser's does
+describe("component styles under safe mode", () => {
+  const CARD = `
+    <p class="card">card</p>
+    <style>.card { color: rgb(1, 2, 3) }</style>
+    <style scoped>.card { font-weight: 700 }</style>
+  `
+  const adopted = new WeakMap<object, CSSStyleSheet[]>()
+  const giveAdoptedStyleSheets = () => {
+    for (const proto of [Document.prototype, ShadowRoot.prototype]) {
+      Object.defineProperty(proto, "adoptedStyleSheets", {
+        configurable: true,
+        get() { return adopted.get(this) ?? [] },
+        set(sheets: CSSStyleSheet[]) { adopted.set(this, sheets) },
+      })
+    }
+  }
+  const takeAdoptedStyleSheets = () => {
+    delete (Document.prototype as any).adoptedStyleSheets
+    delete (ShadowRoot.prototype as any).adoptedStyleSheets
+    adopted.delete(document)
+  }
+  const cssOf = (sheets: CSSStyleSheet[]) => sheets.map(sheet => Array.from(sheet.cssRules).map(rule => rule.cssText).join(" "))
+  const styleElements = (root: ParentNode) => root.querySelectorAll("style").length
+
+  afterEach(() => {
+    takeAdoptedStyleSheets()
+  })
+
+  it("adopts them into the document - no <style> element - and keeps the count across instances", async () => {
+    giveAdoptedStyleSheets()
+    const { Component79 } = await freshLibrary()
+    await Component79.safeEval({ worker: false })
+    const stylesBefore = styleElements(document.head)
+
+    const box = new Component79(`<Card></Card><Card></Card>`)
+    const card = new Component79(CARD)
+    box.mount(document.createElement("div"), { Card: card })
+    const one = new Component79(CARD).mount(document.createElement("div"))
+    const two = new Component79(CARD).mount(document.createElement("div"))
+
+    expect(styleElements(document.head)).toBe(stylesBefore)
+    const css = cssOf(document.adoptedStyleSheets)
+    expect(css.some(text => text.includes("rgb(1, 2, 3)"))).toBe(true)
+    expect(css.some(text => text.includes("font-weight: 700") && text.includes("data-jq79"))).toBe(true) // scoped
+    expect(css.some(text => text.includes("display: contents"))).toBe(true) // the component boxes' rule
+
+    one.destroy()
+    expect(cssOf(document.adoptedStyleSheets).some(text => text.includes("rgb(1, 2, 3)"))).toBe(true) // two still holds it
+    two.destroy()
+    box.destroy()
+    expect(cssOf(document.adoptedStyleSheets).some(text => text.includes("rgb(1, 2, 3)"))).toBe(false)
+    expect(cssOf(document.adoptedStyleSheets).some(text => text.includes("display: contents"))).toBe(true) // stays, as its <style> does
+  })
+
+  it("adopts them into a shadow root, and takes them back out when the component goes", async () => {
+    giveAdoptedStyleSheets()
+    const { Component79 } = await freshLibrary()
+    await Component79.safeEval({ worker: false })
+
+    const host = document.createElement("div")
+    const card = new Component79(CARD).mountShadow(host)
+    const root = host.shadowRoot!
+    expect(styleElements(root)).toBe(0)
+    expect(cssOf(root.adoptedStyleSheets).some(text => text.includes("rgb(1, 2, 3)"))).toBe(true)
+    expect(cssOf(root.adoptedStyleSheets).some(text => text.includes("display: contents"))).toBe(true)
+    expect(root.querySelector(".card")?.textContent).toBe("card")
+
+    card.destroy()
+    expect(cssOf(root.adoptedStyleSheets).some(text => text.includes("rgb(1, 2, 3)"))).toBe(false)
+  })
+
+  it("without safe mode, stays <style> elements - the order a page already has", async () => {
+    giveAdoptedStyleSheets()
+    const { Component79 } = await freshLibrary()
+    const stylesBefore = styleElements(document.head)
+    const card = new Component79(CARD).mount(document.createElement("div"))
+    expect(styleElements(document.head)).toBeGreaterThan(stylesBefore)
+    expect(document.adoptedStyleSheets).toEqual([])
+    card.destroy()
+  })
+
+  it("in a browser that adopts no sheets, falls back to <style> elements", async () => {
+    const { Component79 } = await freshLibrary()
+    await Component79.safeEval({ worker: false })
+    const stylesBefore = styleElements(document.head)
+    const card = new Component79(CARD).mount(document.createElement("div"))
+    expect(styleElements(document.head)).toBeGreaterThan(stylesBefore)
+    card.destroy()
+  })
+})

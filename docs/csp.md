@@ -2,8 +2,9 @@
 
 > **Nothing changes unless you ask.** By default jq79 turns a component's
 > expressions and scripts into functions with `new Function`, which a Content
-> Security Policy only allows with `'unsafe-eval'`. `safeEval` is the opt-in
-> way to run without it, in Vite or with no bundler at all.
+> Security Policy only allows with `'unsafe-eval'`, and adds its styles as
+> `<style>` elements, which a strict `style-src` refuses. `safeEval` is the
+> opt-in way to run without either, in Vite or with no bundler at all.
 
 A component is text: `{{ count * 2 }}`, `@click="save()"` and every `<script>`
 arrive as strings, and the runtime compiles them when they first render. On a
@@ -145,10 +146,27 @@ jq79: safeEval() is on, and "total * 2" was not precompiled, so it rendered as n
 
 ## Styles
 
-`safeEval` is about `script-src`. A component's `<style>` blocks — scoped or
-not — are added to the page as `<style>` elements, which a `style-src` without
-`'unsafe-inline'` refuses. For now, a page that uses component styles needs
-`'unsafe-inline'` in `style-src` (or no `style-src` at all).
+A strict CSP usually restricts styles too, and a `<style>` element is exactly
+what a `style-src` without `'unsafe-inline'` refuses. So under safe mode a
+component's `<style>` blocks — scoped or not, in the document or in a shadow
+root — are added as [adopted stylesheets](https://developer.mozilla.org/docs/Web/API/Document/adoptedStyleSheets)
+instead, which `style-src` doesn't govern:
+
+```
+Content-Security-Policy: script-src 'self'; style-src 'self'
+```
+
+Two differences from the `<style>` elements jq79 adds without safe mode:
+
+- **Where they cascade.** Adopted stylesheets come after every stylesheet in
+  the document, `<link>` and `<style>` alike. A page rule that relied on coming
+  later than a component's own, at the same specificity, needs a more specific
+  selector.
+- **Where devtools shows them** — as constructed stylesheets, not as `<style>`
+  elements in `<head>`.
+
+A browser without adopted stylesheets gets `<style>` elements, as before, and
+those still need `'unsafe-inline'` in `style-src`.
 
 ## Checking a page
 

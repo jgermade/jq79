@@ -8,6 +8,10 @@
 // a fresh nonce per response the way a server issues one, and a component
 // fetched as a plain .html file (RECORD/2026-09-23.no-unsafe-eval.md).
 //
+// Every page's CSP also has a `style-src` with no 'unsafe-inline' - its own
+// 'self', or its nonce - and its components carry styles, plain and scoped:
+// under safe mode they are adopted stylesheets, which style-src doesn't govern.
+//
 // Three pages, each a claim:
 //
 //   eval     no safeEval(): the CSP refuses eval, and mounting a component
@@ -65,6 +69,8 @@ const COUNTER = `
 <button class="ten" @click="count += 10">+10</button>
 <ul><li :each="item in items">{{ item }}</li></ul>
 <span class="big" :if="count > 5">big</span>
+<style>.out { color: rgb(1, 2, 3) }</style>
+<style scoped>.add { font-weight: 700 }</style>
 `
 
 // what each page's module does, then leaves on window.__result
@@ -83,6 +89,8 @@ try {
   const text = () => host.textContent.replace(/\\s+/g, "")
   await new Promise(r => setTimeout(r))
   result.before = text()
+  result.color = getComputedStyle(host.querySelector(".out")).color
+  result.scoped = getComputedStyle(host.querySelector(".add")).fontWeight
   host.querySelector(".add")?.click()
   host.querySelector(".ten")?.click()
   await new Promise(r => setTimeout(r))
@@ -109,6 +117,8 @@ try {
   // had to be registered before its module finished evaluating
   Counter.mount(host)
   result.before = text()
+  result.color = getComputedStyle(host.querySelector(".out")).color
+  result.scoped = getComputedStyle(host.querySelector(".add")).fontWeight
   host.querySelector(".add")?.click()
   host.querySelector(".ten")?.click()
   await new Promise(r => setTimeout(r))
@@ -137,6 +147,8 @@ try {
   const text = () => host.textContent.replace(/\\s+/g, "")
   Counter.mount(host)
   result.before = text()
+  result.color = getComputedStyle(host.querySelector(".out")).color
+  result.scoped = getComputedStyle(host.querySelector(".add")).fontWeight
   host.querySelector(".add")?.click()
   host.querySelector(".ten")?.click()
   await new Promise(r => setTimeout(r))
@@ -144,9 +156,12 @@ try {
 
   const App = await Component79.fetch("/App.html")
   const appHost = document.createElement("div")
+  document.body.append(appHost)
   App.mount(appHost)
   for (let i = 0; i < 50 && !appHost.querySelector(".row"); i++) await new Promise(r => setTimeout(r, 10))
   result.nested = appHost.querySelector(".row")?.textContent
+  result.rowColor = getComputedStyle(appHost.querySelector(".row")).color
+  result.box = getComputedStyle(appHost.querySelector("c79-row")).display
 
   const Evil = await Component79.fetch("/Evil.html")
   const evilHost = document.createElement("div")
@@ -166,7 +181,7 @@ const APP = `
 </script>
 <Row :label></Row>
 `
-const ROW = `<script :setup="{ label }"></script><b class="row">{{ label.toUpperCase() }}</b>`
+const ROW = `<script :setup="{ label }"></script><b class="row">{{ label.toUpperCase() }}</b><style>.row { color: rgb(4, 5, 6) }</style>`
 // closes its function, its entry and the push, and sets a flag - if it's ever
 // written into the worker's script unchecked (see tests/sw.test.ts)
 const EVIL = `<p>{{ 1) } }]); self.__pwned = 1; ([[], "", function () { { (1 }}</p><b>{{ ok }}</b>`
@@ -212,16 +227,16 @@ const serveBuilt = (res, dir, path, csp, nonce) => {
 const server = createServer((req, res) => {
   const url = new URL(req.url, "http://localhost")
   if (url.pathname.startsWith("/vite/")) {
-    serveBuilt(res, viteApps.vite, url.pathname.slice("/vite/".length), "script-src 'self'")
+    serveBuilt(res, viteApps.vite, url.pathname.slice("/vite/".length), "script-src 'self'; style-src 'self'")
   } else if (url.pathname.startsWith("/vite-n/")) {
     const nonce = randomBytes(16).toString("base64")
-    serveBuilt(res, viteApps["vite+n"], url.pathname.slice("/vite-n/".length), `script-src 'nonce-${nonce}'`, nonce)
+    serveBuilt(res, viteApps["vite+n"], url.pathname.slice("/vite-n/".length), `script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'`, nonce)
   } else if (url.pathname === "/jq79-sw.js") {
     // a static host's CSP is on every response, the worker's own included
     res.writeHead(200, { "content-type": "text/javascript", "content-security-policy": "script-src 'self'" })
       .end(readFileSync(resolve("dist/jq79-sw.js")))
   } else if (url.pathname === "/sw-page") {
-    res.writeHead(200, { "content-type": "text/html", "content-security-policy": "script-src 'self'" })
+    res.writeHead(200, { "content-type": "text/html", "content-security-policy": "script-src 'self'; style-src 'self'" })
       .end(`<!doctype html><html><head><script type="module" src="/sw-main.js"></script></head><body><div id="app"></div></body></html>`)
   } else if (url.pathname === "/sw-main.js") {
     res.writeHead(200, { "content-type": "text/javascript" }).end(SW_MAIN)
@@ -245,7 +260,7 @@ const server = createServer((req, res) => {
     const decoy = mode === "refused" ? `<script type="application/json" nonce="not-the-nonce">{}</script>` : ""
     res.writeHead(200, {
       "content-type": "text/html",
-      "content-security-policy": `script-src 'nonce-${nonce}'`,
+      "content-security-policy": `script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'`,
     }).end(
       `<!doctype html><html><head>${decoy}` +
       `<script type="module" nonce="${nonce}" src="/main.js?mode=${mode}"></script>` +
@@ -281,12 +296,14 @@ try {
     } else if (mode === "nonce") {
       check(mode, "renders", result.before === "1/2++10ab", detail)
       check(mode, "reacts to clicks, $: included", result.after === "12/24++10abbig", detail)
+      check(mode, "component styles apply, plain and scoped, with no 'unsafe-inline' in style-src", result.color === "rgb(1, 2, 3)" && result.scoped === "700", detail)
       check(mode, "the page records no CSP violation", result.violations.length === 0, detail)
       check(mode, "and logs no error", errors.length === 0, detail)
     } else if (mode === "vite" || mode === "vite+n") {
       check(mode, "renders on the stack it mounts on", result.before === "1/2++10ab", detail)
       check(mode, "reacts to clicks, $: included", result.after === "12/24++10abbig", detail)
       if (mode === "vite+n") check(mode, "builds a string component through the nonce", result.extra === "42", detail)
+      check(mode, "component styles apply, plain and scoped, with no 'unsafe-inline' in style-src", result.color === "rgb(1, 2, 3)" && result.scoped === "700", detail)
       check(mode, "the page records no CSP violation", result.violations?.length === 0, detail)
       check(mode, "and logs no error", errors.length === 0, detail)
     } else {
@@ -311,6 +328,8 @@ try {
     check(mode, "a fetched component renders on the stack it mounts on", result.before === "1/2++10ab", detail)
     check(mode, "reacts to clicks, $: included", result.after === "12/24++10abbig", detail)
     check(mode, "a component imported from a script renders", result.nested === "HI", detail)
+    check(mode, "component styles apply, plain and scoped, with no 'unsafe-inline' in style-src", result.color === "rgb(1, 2, 3)" && result.scoped === "700" && result.rowColor === "rgb(4, 5, 6)", detail)
+    check(mode, "a component's box lays out as display: contents", result.box === "contents", detail)
     check(mode, "an expression written to escape its function runs nothing", result.pwned === false && result.evil === "fine", detail)
     check(mode, "the page records no CSP violation", result.violations?.length === 0, detail)
     check(mode, "and logs no error", errors.length === 0, detail)

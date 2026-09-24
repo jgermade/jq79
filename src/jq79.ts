@@ -3372,9 +3372,51 @@ const headStyle = (style: TagBlock): string => style.scoped ?? style.content
 // isConnected check is what makes it survive a head somebody emptied
 const WRAPPER_STYLE = `:where([${COMPONENT_BOX_ATTR}]) { display: contents }`
 
+// ---------------------------------------------------------------------------
+// styles under safe mode
+//
+// A <style> element is inline style to a CSP, and a `style-src` without
+// 'unsafe-inline' refuses it - checked in Chromium, for a component's <style>
+// and <style scoped> alike, and for the wrapper rule every component box
+// needs. A constructed stylesheet adopted by the document or a shadow root is
+// CSSOM, which no CSP directive governs: in the same browser, under
+// `style-src 'self'`, it applied - in the document, in a shadow root, and
+// after an insertRule - with no violation. So under safe mode, component
+// styles are adopted sheets.
+//
+// Only under safe mode: an adopted sheet cascades after every stylesheet of
+// the document, <link> and <style> alike, which is a different place from the
+// end of <head> - a page that didn't ask keeps the order it has. And only
+// where the browser adopts sheets at all; elsewhere it is <style> elements, as
+// before (RECORD/2026-09-23.no-unsafe-eval.md)
+// ---------------------------------------------------------------------------
+
+const adoptsStyles = (): boolean =>
+  safeEvalOn && typeof Document !== "undefined" && "adoptedStyleSheets" in Document.prototype
+
+const constructedSheet = (css: string): CSSStyleSheet => {
+  const sheet = new CSSStyleSheet()
+  sheet.replaceSync(css)
+  return sheet
+}
+
+const adoptSheet = (target: Document | ShadowRoot, sheet: CSSStyleSheet) => {
+  if (!target.adoptedStyleSheets.includes(sheet)) target.adoptedStyleSheets = [...target.adoptedStyleSheets, sheet]
+}
+
+const unadoptSheet = (target: Document | ShadowRoot, sheet: CSSStyleSheet) => {
+  target.adoptedStyleSheets = target.adoptedStyleSheets.filter(adopted => adopted !== sheet)
+}
+
 let wrapperStyleEl: HTMLStyleElement | null = null
+// one sheet serves every root that adopts it: the document, and each shadow root
+let wrapperSheet: CSSStyleSheet | null = null
 
 const ensureWrapperStyle = () => {
+  if (adoptsStyles()) {
+    adoptSheet(document, wrapperSheet ??= constructedSheet(WRAPPER_STYLE))
+    return
+  }
   if (wrapperStyleEl?.isConnected) return
   wrapperStyleEl = document.createElement("style")
   wrapperStyleEl.textContent = WRAPPER_STYLE
@@ -3383,16 +3425,23 @@ const ensureWrapperStyle = () => {
 
 // document.head styles are shared by content and refcounted, so N instances
 // of the same component (e.g. one per :each item) inject a single <style> tag
-// that goes away when the last instance is destroyed
-const styleRegistry = new Map<string, { el: HTMLStyleElement; count: number }>()
+// that goes away when the last instance is destroyed - or, under safe mode, a
+// single adopted sheet
+const styleRegistry = new Map<string, { el?: HTMLStyleElement; sheet?: CSSStyleSheet; count: number }>()
 
 const acquireStyle = (content: string) => {
   let entry = styleRegistry.get(content)
   if (!entry) {
-    const el = document.createElement("style")
-    el.textContent = content
-    document.head.appendChild(el)
-    entry = { el, count: 0 }
+    if (adoptsStyles()) {
+      const sheet = constructedSheet(content)
+      adoptSheet(document, sheet)
+      entry = { sheet, count: 0 }
+    } else {
+      const el = document.createElement("style")
+      el.textContent = content
+      document.head.appendChild(el)
+      entry = { el, count: 0 }
+    }
     styleRegistry.set(content, entry)
   }
   entry.count++
@@ -3401,7 +3450,8 @@ const acquireStyle = (content: string) => {
 const releaseStyle = (content: string) => {
   const entry = styleRegistry.get(content)
   if (entry && --entry.count <= 0) {
-    entry.el.remove()
+    if (entry.sheet) unadoptSheet(document, entry.sheet)
+    else entry.el?.remove()
     styleRegistry.delete(content)
   }
 }
@@ -3926,6 +3976,11 @@ export class Component79 {
   // shadow rendering keeps per-instance <style> elements; head rendering goes
   // through the shared refcounted styleRegistry instead
   private styleEls: HTMLStyleElement[] = []
+  // under safe mode, a shadow root's styles: the CSS, and the sheets built from
+  // it once there is a shadow root to adopt them (see placeShadowStyles)
+  private shadowCss: string[] | null = null
+  private shadowSheets: CSSStyleSheet[] = []
+  private sheetRoot: ShadowRoot | null = null
   private ownsSharedStyles = false
   private useShadow = false
   private mountRoot: Element | ShadowRoot | DocumentFragment | null = null
@@ -4025,7 +4080,7 @@ export class Component79 {
 
     // shadow styles live inline, right before the DOM they style (attach()
     // appends them ahead of the content), so they go back the same way
-    if (shadow) this.styleEls.forEach(el => parent.insertBefore(el, before))
+    if (shadow) this.placeShadowStyles(parent, before)
     parent.insertBefore(this.content!, before)
     this.mountRoot = parent
     this.settleMounted()
@@ -4431,13 +4486,18 @@ export class Component79 {
       // the position carries nothing: :where() has no specificity, so an author
       // rule wins wherever it sits. What it does buy is that "the shadow root's
       // style" still means the component's own
-      const wrapperEl = document.createElement("style")
-      wrapperEl.textContent = WRAPPER_STYLE
-      this.styleEls = [...this.styles.map(style => {
-        const el = document.createElement("style")
-        el.textContent = style.content // the source: a shadow root scopes it already
-        return el
-      }), wrapperEl]
+      if (adoptsStyles()) {
+        // sheets, and only once there is a shadow root to adopt them
+        this.shadowCss = [...this.styles.map(style => style.content), WRAPPER_STYLE]
+      } else {
+        const wrapperEl = document.createElement("style")
+        wrapperEl.textContent = WRAPPER_STYLE
+        this.styleEls = [...this.styles.map(style => {
+          const el = document.createElement("style")
+          el.textContent = style.content // the source: a shadow root scopes it already
+          return el
+        }), wrapperEl]
+      }
     } else {
       this.styles.forEach(style => acquireStyle(headStyle(style)))
       this.ownsSharedStyles = true
@@ -4474,11 +4534,33 @@ export class Component79 {
     const root = this.useShadow && target instanceof Element
       ? target.shadowRoot ?? target.attachShadow({ mode: "open" })
       : target
-    if (this.useShadow) this.styleEls.forEach(el => root.appendChild(el))
+    if (this.useShadow) this.placeShadowStyles(root, null)
     root.appendChild(this.content!)
     this.mountRoot = root
     this.settleMounted()
     return this
+  }
+
+  // where a shadow-rendered component's styles go: <style> elements ahead of
+  // its content, as always - or, under safe mode, sheets adopted by the shadow
+  // root. Built on first placement, since only then is there a root; one that
+  // isn't a ShadowRoot (a fragment) can't adopt, and gets elements after all
+  private placeShadowStyles(root: Node, before: Node | null) {
+    if (this.shadowCss && typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot) {
+      if (this.sheetRoot && this.sheetRoot !== root) this.shadowSheets.forEach(sheet => unadoptSheet(this.sheetRoot!, sheet))
+      if (this.shadowSheets.length === 0) this.shadowSheets = this.shadowCss.map(css => css === WRAPPER_STYLE ? (wrapperSheet ??= constructedSheet(css)) : constructedSheet(css))
+      this.shadowSheets.forEach(sheet => adoptSheet(root, sheet))
+      this.sheetRoot = root
+      return
+    }
+    if (this.shadowCss && this.styleEls.length === 0) {
+      this.styleEls = this.shadowCss.map(css => {
+        const el = document.createElement("style")
+        el.textContent = css
+        return el
+      })
+    }
+    this.styleEls.forEach(el => root.insertBefore(el, before))
   }
 
   // `await $mounted()` means "rendered and on the page", so it waits for both -
@@ -4517,6 +4599,12 @@ export class Component79 {
     this.data?.$dispose()
     this.styleEls.forEach(el => el.parentNode?.removeChild(el))
     this.styleEls = []
+    // the wrapper sheet stays: other boxes in that root may need it, as the
+    // wrapper <style> stays in the document
+    if (this.sheetRoot) this.shadowSheets.forEach(sheet => { if (sheet !== wrapperSheet) unadoptSheet(this.sheetRoot!, sheet) })
+    this.shadowCss = null
+    this.shadowSheets = []
+    this.sheetRoot = null
     if (this.ownsSharedStyles) {
       this.styles.forEach(style => releaseStyle(headStyle(style)))
       this.ownsSharedStyles = false
