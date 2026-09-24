@@ -712,9 +712,10 @@ describe("jq79 vite plugin", () => {
       expect(emitted[0].source).toContain("(self.__jq79precompiled = self.__jq79precompiled || []).push(")
 
       const resolved = await on.resolveId.call({}, "virtual:jq79/safe-eval", `${file}?jq79`)
-      expect(await on.load.call({}, resolved)).toContain("Component79.safeEval({})")
+      // a Vite page's functions come from its build: it never registers the worker
+      expect(await on.load.call({}, resolved)).toContain('Component79.safeEval({"worker":false})')
       const nonce: any = jq79({ safeEval: { nonce: true } })
-      expect(await nonce.load.call({}, resolved)).toContain('Component79.safeEval({"nonce":true})')
+      expect(await nonce.load.call({}, resolved)).toContain('Component79.safeEval({"nonce":true,"worker":false})')
 
       const { code: off } = await plugin.load.call({}, `${file}?jq79`)
       expect(off).not.toContain("safeEval")

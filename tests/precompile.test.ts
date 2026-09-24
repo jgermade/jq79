@@ -113,7 +113,7 @@ const load = (entries: [string[], string][]) => {
 const safePage = async (source: string) => {
   const library = await freshLibrary()
   load(precompile(source))
-  await library.Component79.safeEval()
+  await library.Component79.safeEval({ worker: false })
   globalThis.Function = new Proxy(RealFunction, {
     construct() { throw new EvalError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed") },
   })

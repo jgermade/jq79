@@ -370,3 +370,19 @@ export const declaredPropNames = (scripts: TagBlock[], signature: (script: TagBl
 // matching, which tests/precompile.test.ts and `npm run check:precompile` catch
 export const SETUP_HELPER_NAMES = ["$", "$$", "$create", "$reactive", "$toRaw", "Component79"]
 export const INSTANCE_HELPER_NAMES = ["$mounted", "$self", "$$self", "$emit", "$updateModel", "$slots"]
+
+// the global a precompiled script leaves its functions on, for the runtime to
+// drain: (self.__jq79precompiled = self.__jq79precompiled || []).push([params,
+// body, fn], ...) - a global rather than a call, so the script can load before
+// the library or after it, and serve either build of it
+export const PRECOMPILED_QUEUE = "__jq79precompiled"
+
+// the query parameter that asks safe mode's service worker for a component's
+// precompiled script rather than the component: /Card.html?jq79-precompiled
+export const PRECOMPILED_PARAM = "jq79-precompiled"
+
+// a function's text laid out as `new Function` lays it out, so that a
+// precompiled or nonce-built function is named as eval's was, and devtools
+// reports the same line numbers for it
+export const functionText = (params: string[], body: string): string =>
+  `function anonymous(${params.join(",")}\n) {\n${body}\n}`

@@ -14,7 +14,9 @@ the core that reads a component as text (no DOM in it). A second entry,
 [`precompile.ts`](src/precompile.ts) (`jq79/precompile`), shares `source.ts` and
 [`html.ts`](src/html.ts) to find every function a component needs without
 rendering it; it is what safe mode runs on, and it stays out of the runtime so
-pages don't carry it. Read the code before changing it; it's shorter than the
+pages don't carry it. A third, [`sw.ts`](src/sw.ts), is safe mode's service
+worker (`dist/jq79-sw.js`), which compiles components for a page with no
+bundler. Read the code before changing it; it's shorter than the
 docs.
 
 `src/` is the library and nothing else — it ships to the browser. The build-time

@@ -5,7 +5,8 @@ import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
 import {
-  COMPONENT_NAME_RE, COMPONENT_TAG_ATTR, CONTROL_ATTRS, EACH_PATTERN, EXPR_PARAMS, componentTagName,
+  COMPONENT_NAME_RE, COMPONENT_TAG_ATTR, CONTROL_ATTRS, EACH_PATTERN, EXPR_PARAMS, PRECOMPILED_PARAM, PRECOMPILED_QUEUE,
+  componentTagName, functionText,
   assignment, declaredPropNames, defer, factoryBody, factoryParams, functionKey, isControlAttr, isSlotTag,
   kebabToCamel, prepareSource, readSetupSignature, scopedBody, setupBody, setupParams, slotName, splitText, withBody,
   type TagBlock, type TemplateNode, type TextPart,
@@ -114,8 +115,6 @@ const compiled = new Map<string, CompiledExpr>()
 // `fn: null` is a body that did not compile, cached as the syntax error it is
 type PrecompiledEntry = [params: string[], body: string, fn: Function | null]
 
-// (self.__jq79precompiled = self.__jq79precompiled || []).push([params, body, fn], ...)
-const PRECOMPILED_QUEUE = "__jq79precompiled"
 
 const precompiled = new Map<string, Function | null>()
 let safeEvalOn = false
@@ -213,8 +212,7 @@ const NONCE_BUILT = "__jq79built"
 const buildWithNonce = (params: string[], body: string, suffix: string, nonce: string): Function => {
   const script = document.createElement("script")
   script.setAttribute("nonce", nonce)
-  script.textContent =
-    `document.currentScript.${NONCE_BUILT} = function anonymous(${params.join(",")}\n) {\n${body}\n}${suffix}`
+  script.textContent = `document.currentScript.${NONCE_BUILT} = ${functionText(params, body)}${suffix}`
   let syntaxError: unknown
   const onError = (event: ErrorEvent) => {
     syntaxError = event.error ?? new SyntaxError(event.message)
@@ -3791,11 +3789,84 @@ const warnIfStuck = (component: Component79, gates: Promise<void>[]) => {
 }
 
 const fetchComponent = async (url: string): Promise<Component79> => {
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
+  // under safeEval()'s worker, the component's functions arrive beside it,
+  // and both have to be in before anyone can render it
+  const [text] = await Promise.all([
+    fetch(url).then(response => {
+      if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
+      return response.text()
+    }),
+    safeEvalWorker?.then(() => loadPrecompiled(url)),
+  ])
   // the URL names the component's scripts in devtools, and is where the
   // browser will look for the source when a breakpoint lands in one
-  return new Component79(await response.text(), { filename: url })
+  return new Component79(text, { filename: url })
+}
+
+// ---------------------------------------------------------------------------
+// safe eval's worker
+//
+// Without a bundler, a component's functions come from jq79-sw.js (src/sw.ts):
+// asked for `<url>?jq79-precompiled`, it fetches the component from the site
+// itself and answers with the script that registers its functions. Asked for
+// with a <script src>, which the CSP judges by URL - the site's own - and
+// carrying the page's nonce where there is one, for a CSP that works by nonce.
+// ---------------------------------------------------------------------------
+
+// set by safeEval() when it registers the worker: settles once the worker
+// controls the page, which is when a `?jq79-precompiled` request reaches it
+let safeEvalWorker: Promise<void> | undefined
+
+const DEFAULT_WORKER_URL = "/jq79-sw.js"
+
+// registers the worker and waits until it controls this page. On a first visit
+// it claims the page as it activates; a page loaded past it (a hard reload)
+// isn't controlled until it asks, so it asks
+const startWorker = async (url: string): Promise<void> => {
+  const container = typeof navigator === "undefined" ? undefined : navigator.serviceWorker
+  if (!container) {
+    throw new Error(
+      "jq79: safeEval() compiles components in a service worker, and this page can't have one - service workers " +
+      "need https (or localhost). Precompile with the jq79/vite plugin instead, or use safeEval({ nonce: true }) " +
+      "on a page whose server issues a nonce."
+    )
+  }
+  let registration: ServiceWorkerRegistration
+  try {
+    registration = await container.register(url)
+  } catch (error) {
+    throw new Error(
+      `jq79: safeEval() couldn't register its service worker at ${url} (${(error as Error).message}). ` +
+      "Serve jq79-sw.js from the jq79 package at your site's root, or pass its URL: safeEval({ worker: \"/path/jq79-sw.js\" })."
+    )
+  }
+  await container.ready
+  if (container.controller) return
+  await new Promise<void>(resolve => {
+    container.addEventListener("controllerchange", () => resolve(), { once: true })
+    if (container.controller) resolve()
+    else registration.active?.postMessage("jq79:claim")
+  })
+}
+
+// a component's precompiled script: the component's own URL (no fragment)
+// with the worker's parameter on it, loaded as a classic <script>
+const loadPrecompiled = (url: string): Promise<void> => {
+  const at = new URL(url, document.baseURI)
+  at.hash = ""
+  at.searchParams.set(PRECOMPILED_PARAM, "")
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script")
+    const nonce = pageNonce()
+    if (nonce) script.setAttribute("nonce", nonce)
+    script.src = at.href
+    script.onload = () => { script.remove(); resolve() }
+    script.onerror = () => {
+      script.remove()
+      reject(new Error(`jq79: the precompiled functions of ${url} did not load, and safeEval() can't render it without them`))
+    }
+    document.head.append(script)
+  })
 }
 
 // a parsed single-file component. Typical lifecycle:
@@ -4005,31 +4076,42 @@ export class Component79 {
   // calls `new Function`. Opt-in, so a page that doesn't call it behaves
   // exactly as before; global and one-way, like the CSP it exists for.
   //
-  //   await Component79.safeEval()                  // precompiled only: a miss is reported
-  //   await Component79.safeEval({ nonce: true })   // a miss is built with the page's nonce
+  //   await Component79.safeEval()                  // precompiled by the worker: a miss is reported
+  //   await Component79.safeEval({ nonce: true })   // no worker: every function built with the page's nonce
   //
-  // Precompiled functions come first either way. `{ nonce: true }` is for a
-  // page whose server issues a fresh nonce per response: it still turns the
-  // component's text into code in the browser, as eval would, only through a
-  // door just jq79 holds the key to. A static host's nonce never changes, and
-  // a nonce everyone knows protects nothing.
+  // Precompiled functions come first either way (RECORD/2026-09-23.no-unsafe-eval.md).
   //
-  // With no nonce on the page, the promise rejects - and safe mode stays on:
-  // a page that asked for no eval never falls back to it. Async for what the
-  // plain form will wait on: the service worker that compiles a no-bundle
-  // page's components, which is not written yet (RECORD/2026-09-23.no-unsafe-eval.md)
-  static safeEval(options: { nonce?: boolean } = {}): Promise<void> {
+  // The plain form registers jq79-sw.js - served from the site's root, or
+  // wherever `worker` says - and resolves once it controls the page. From
+  // then on a component fetched by URL (Component79.fetch, an import() of an
+  // .html from a script) arrives with its functions, compiled by the worker
+  // from the same file. A component built from a string has no file to
+  // compile, and its misses are reported. `worker: false` registers nothing,
+  // for a page whose functions reach it another way - the jq79/vite plugin's.
+  //
+  // `{ nonce: true }` is for a page whose server issues a fresh nonce per
+  // response: it still turns the component's text into code in the browser, as
+  // eval would, only through a door just jq79 holds the key to. A static host's
+  // nonce never changes, and a nonce everyone knows protects nothing. It
+  // registers no worker unless `worker` asks for one too.
+  //
+  // With no nonce on the page, or no worker to be had, the promise rejects -
+  // and safe mode stays on: a page that asked for no eval never falls back to it
+  static safeEval(options: { nonce?: boolean; worker?: string | false } = {}): Promise<void> {
     safeEvalOn = true
-    if (!options.nonce) return Promise.resolve()
-    const nonce = pageNonce()
-    if (nonce === undefined) {
-      return Promise.reject(new Error(
-        "jq79: safeEval({ nonce: true }) found no nonce on this page - no <script> carries one. " +
-        "The nonce belongs on the script that loads the page, the one the CSP names."
-      ))
+    const steps: Promise<void>[] = []
+    if (options.nonce) {
+      const nonce = pageNonce()
+      if (nonce === undefined) {
+        steps.push(Promise.reject(new Error(
+          "jq79: safeEval({ nonce: true }) found no nonce on this page - no <script> carries one. " +
+          "The nonce belongs on the script that loads the page, the one the CSP names."
+        )))
+      } else safeEvalNonce = nonce
     }
-    safeEvalNonce = nonce
-    return Promise.resolve()
+    const worker = options.worker ?? (options.nonce ? false : DEFAULT_WORKER_URL)
+    if (worker !== false) steps.push(safeEvalWorker ??= startWorker(worker))
+    return Promise.all(steps).then(() => undefined)
   }
 
   static fetch(url: string): PendingComponent79 {

@@ -28,6 +28,17 @@
 //            (Vite's html.cspNonce, filled per response): the same, and a
 //            component built from a string goes through the nonce
 //
+// And the no-bundle route: a static site with jq79-sw.js at its root, every
+// response under `script-src 'self'` - the worker's own included - and
+// `await Component79.safeEval()` on the page, visited for the first time in a
+// fresh browser context and then reloaded:
+//
+//   sw       first visit: the worker installs and claims the page; a fetched
+//            component renders on its mounting stack and reacts to clicks, one
+//            imported from a script renders too, and a file holding an
+//            expression written to close its function early runs nothing
+//   sw 2nd   the same page reloaded, already under the worker's control
+//
 // Run it with `npm run check:csp`. Exits non-zero when a claim fails.
 
 import { createServer } from "node:http"
@@ -111,6 +122,55 @@ try {
 result.violations = violations
 window.__result = result
 `
+// the no-bundle page: safeEval() first, then components fetched by URL
+const SW_MAIN = `
+import { Component79 } from "/jq79.js"
+
+const violations = []
+document.addEventListener("securitypolicyviolation", e => violations.push(e.violatedDirective))
+const result = {}
+try {
+  await Component79.safeEval()
+  result.controlled = !!navigator.serviceWorker.controller
+  const Counter = await Component79.fetch("/Counter.html")
+  const host = document.querySelector("#app")
+  const text = () => host.textContent.replace(/\\s+/g, "")
+  Counter.mount(host)
+  result.before = text()
+  host.querySelector(".add")?.click()
+  host.querySelector(".ten")?.click()
+  await new Promise(r => setTimeout(r))
+  result.after = text()
+
+  const App = await Component79.fetch("/App.html")
+  const appHost = document.createElement("div")
+  App.mount(appHost)
+  for (let i = 0; i < 50 && !appHost.querySelector(".row"); i++) await new Promise(r => setTimeout(r, 10))
+  result.nested = appHost.querySelector(".row")?.textContent
+
+  const Evil = await Component79.fetch("/Evil.html")
+  const evilHost = document.createElement("div")
+  Evil.mount(evilHost, { ok: "fine" })
+  result.evil = evilHost.textContent
+  result.pwned = self.__pwned === 1
+} catch (error) {
+  result.thrown = String(error && error.message || error)
+}
+result.violations = violations
+window.__result = result
+`
+const APP = `
+<script>
+  const Row = await import("./Row.html")
+  let label = "hi"
+</script>
+<Row :label></Row>
+`
+const ROW = `<script :setup="{ label }"></script><b class="row">{{ label.toUpperCase() }}</b>`
+// closes its function, its entry and the push, and sets a flag - if it's ever
+// written into the worker's script unchecked (see tests/sw.test.ts)
+const EVIL = `<p>{{ 1) } }]); self.__pwned = 1; ([[], "", function () { { (1 }}</p><b>{{ ok }}</b>`
+
 const NONCE_PLACEHOLDER = "JQ79_CSP_NONCE"
 const viteRoot = mkdtempSync(join(tmpdir(), "jq79-csp-"))
 const buildViteApp = async (name, safeEval, nonce) => {
@@ -156,6 +216,21 @@ const server = createServer((req, res) => {
   } else if (url.pathname.startsWith("/vite-n/")) {
     const nonce = randomBytes(16).toString("base64")
     serveBuilt(res, viteApps["vite+n"], url.pathname.slice("/vite-n/".length), `script-src 'nonce-${nonce}'`, nonce)
+  } else if (url.pathname === "/jq79-sw.js") {
+    // a static host's CSP is on every response, the worker's own included
+    res.writeHead(200, { "content-type": "text/javascript", "content-security-policy": "script-src 'self'" })
+      .end(readFileSync(resolve("dist/jq79-sw.js")))
+  } else if (url.pathname === "/sw-page") {
+    res.writeHead(200, { "content-type": "text/html", "content-security-policy": "script-src 'self'" })
+      .end(`<!doctype html><html><head><script type="module" src="/sw-main.js"></script></head><body><div id="app"></div></body></html>`)
+  } else if (url.pathname === "/sw-main.js") {
+    res.writeHead(200, { "content-type": "text/javascript" }).end(SW_MAIN)
+  } else if (url.pathname === "/App.html") {
+    res.writeHead(200, { "content-type": "text/html" }).end(APP)
+  } else if (url.pathname === "/Row.html") {
+    res.writeHead(200, { "content-type": "text/html" }).end(ROW)
+  } else if (url.pathname === "/Evil.html") {
+    res.writeHead(200, { "content-type": "text/html" }).end(EVIL)
   } else if (url.pathname === "/jq79.js") {
     res.writeHead(200, { "content-type": "text/javascript" }).end(readFileSync(resolve("dist/jq79.js")))
   } else if (url.pathname === "/Counter.html") {
@@ -219,6 +294,28 @@ try {
     }
     await page.close()
   }
+
+  // a fresh context is a first visit: no worker installed yet
+  const context = await browser.newContext()
+  const page = await context.newPage()
+  const errors = []
+  page.on("console", message => { if (message.type() === "error") errors.push(message.text()) })
+  for (const mode of ["sw", "sw 2nd"]) {
+    errors.length = 0
+    if (mode === "sw") await page.goto(`${origin}/sw-page`)
+    else await page.reload()
+    await page.waitForFunction(() => window.__result, null, { timeout: 15_000 })
+    const result = await page.evaluate(() => window.__result)
+    const detail = JSON.stringify({ ...result, errors })
+    check(mode, "the worker controls the page once safeEval() resolves", result.controlled === true, detail)
+    check(mode, "a fetched component renders on the stack it mounts on", result.before === "1/2++10ab", detail)
+    check(mode, "reacts to clicks, $: included", result.after === "12/24++10abbig", detail)
+    check(mode, "a component imported from a script renders", result.nested === "HI", detail)
+    check(mode, "an expression written to escape its function runs nothing", result.pwned === false && result.evil === "fine", detail)
+    check(mode, "the page records no CSP violation", result.violations?.length === 0, detail)
+    check(mode, "and logs no error", errors.length === 0, detail)
+  }
+  await context.close()
 } finally {
   await browser.close()
   server.close()

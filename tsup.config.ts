@@ -31,6 +31,21 @@ export default defineConfig([
     target: "es2020",
   },
   {
+    // safe mode's service worker, dist/jq79-sw.js: a classic worker script
+    // (register() needs no `type: "module"` for it anywhere) with the generator
+    // and acorn inside, because the site has to serve it as one file of its own
+    entry: { "jq79-sw": "src/sw.ts" },
+    format: ["iife"],
+    outExtension: () => ({ js: ".js" }),
+    noExternal: ["acorn"],
+    dts: false,
+    sourcemap: false,
+    minify: true,
+    clean: false,
+    platform: "browser",
+    target: "es2020",
+  },
+  {
     entry: { vite: "dev/vite.ts" }, // the Vite plugin, exported as jq79/vite
     format: ["esm", "cjs"],
     external: ["jq79/precompile"],  // the package's own entry, resolved at runtime

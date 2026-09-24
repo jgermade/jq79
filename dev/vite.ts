@@ -5,7 +5,7 @@ import type { Plugin, ResolvedConfig } from "vite"
 // by package name rather than ../src: this file's types are emitted with dev/
 // as their root, and the generator is the runtime's own code - resolved through
 // the package's exports (external in the build, aliased to src in the tests)
-import { precompile } from "jq79/precompile"
+import { precompile, precompiledScript } from "jq79/precompile"
 
 // Vite plugin: import .html single-file components as modules.
 //
@@ -71,7 +71,7 @@ const COMPONENT_QUERY = "?jq79"
 // have one by default; on Vite 5 or 6, raise build.target to es2022
 const SAFE_EVAL_ID = "virtual:jq79/safe-eval"
 const RESOLVED_SAFE_EVAL_ID = `\0${SAFE_EVAL_ID}`
-const safeEvalModule = (options: { nonce?: boolean }) => `
+const safeEvalModule = (options: { nonce?: boolean; worker: false }) => `
 let started = null
 const loading = new Map()
 const pageNonce = () => {
@@ -117,26 +117,19 @@ const safeEvalOptions = (option: Jq79PluginOptions["safeEval"]): { nonce?: boole
 const SCOPED_BODY_RE = /^(?:let \$t;| return \()/
 
 // a component's precompiled functions, as the classic script that registers
-// them. Each is compiled here first - node can, where the page may not - so
-// the script holds only functions that parse, and one that doesn't goes in as
-// null: the runtime's cached syntax error, which renders nothing, as it does
-// under eval. Laid out as `new Function` lays it out ("function anonymous(
-// params\n) {\nbody\n}"), so what devtools shows lines up with what it
-// shows today; and since `new Function` parsed the body on its own, the text
-// can't close the function early
-const precompiledScript = (source: string, warn: (message: string) => void): string => {
-  const entries = precompile(source).map(([params, body]) => {
-    let fn = "null"
+// them (precompiledScript, in jq79/precompile). Each is compiled here first -
+// node can, where the page may not - so the script holds only functions that
+// parse; one that doesn't ships as null, and the build says so
+const componentScript = (source: string, warn: (message: string) => void): string =>
+  precompiledScript(precompile(source), (params, body) => {
     try {
       new Function(...params, body)
-      fn = `function anonymous(${params.join(",")}\n) {\n${body}\n}`
+      return true
     } catch (error) {
       if (!SCOPED_BODY_RE.test(body)) warn(`${(error as Error).message}, in: ${body.length > 120 ? `${body.slice(0, 120)}…` : body}`)
+      return false
     }
-    return `[${JSON.stringify(params)}, ${JSON.stringify(body)}, ${fn}]`
   })
-  return `(self.__jq79precompiled = self.__jq79precompiled || []).push(\n${entries.join(",\n")}\n)\n`
-}
 
 // a <script> block with its attribute string, so `lang` can be read and the
 // body replaced - the same shape as STYLE_BLOCK_RE below, quote-aware so a
@@ -549,7 +542,8 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
     },
 
     async load(id) {
-      if (id === RESOLVED_SAFE_EVAL_ID) return safeEvalModule(safeEval ?? {})
+      // a Vite page's functions come from the build, so it never registers the worker
+      if (id === RESOLVED_SAFE_EVAL_ID) return safeEvalModule({ ...safeEval, worker: false })
       if (!id.endsWith(COMPONENT_QUERY)) return null
       const file = id.slice(0, -COMPONENT_QUERY.length)
 
@@ -565,7 +559,7 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
 
       // the component's functions, compiled after its TypeScript and styles are:
       // the runtime compiles what reaches it, and this is what reaches it
-      const script = precompiledScript(source, message => this.warn(`jq79: ${filename}: ${message}`))
+      const script = componentScript(source, message => this.warn(`jq79: ${filename}: ${message}`))
       let url: string
       if (config?.command === "serve") {
         let devId = devIds.get(file)

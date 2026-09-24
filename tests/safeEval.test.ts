@@ -51,6 +51,15 @@ const recordCompiles = async (fn: (library: Library) => void | Promise<void>): P
   return calls
 }
 
+// the script a nonce-based CSP names, which safeEval({ nonce: true }) reads
+const givePageNonce = (nonce = "r4nd0m") => {
+  const script = document.createElement("script")
+  script.type = "application/json"
+  script.setAttribute("nonce", nonce)
+  document.head.append(script)
+  return script
+}
+
 // what a precompiled script does once the browser has loaded it as code
 const pushPrecompiled = (entries: [string[], string, Function | null][]) => {
   const queue = ((globalThis as any)[QUEUE] ??= [])
@@ -101,7 +110,7 @@ describe("Component79.safeEval()", () => {
 
     precompile(calls)
     const library = await freshLibrary()
-    await library.Component79.safeEval()
+    await library.Component79.safeEval({ worker: false })
     const error = vi.spyOn(console, "error").mockImplementation(() => {})
 
     const got = await withEvalBlocked(() => renderCounter(library))
@@ -115,7 +124,7 @@ describe("Component79.safeEval()", () => {
 
     precompile(early)
     const library = await freshLibrary()
-    await library.Component79.safeEval()
+    await library.Component79.safeEval({ worker: false })
     precompile(late)
 
     const got = await withEvalBlocked(() => renderCounter(library))
@@ -124,7 +133,7 @@ describe("Component79.safeEval()", () => {
 
   it("never evaluates: a missing expression is reported once, by name, and renders empty", async () => {
     const { Component79 } = await freshLibrary()
-    await Component79.safeEval()
+    await Component79.safeEval({ worker: false })
     const error = vi.spyOn(console, "error").mockImplementation(() => {})
     const construct = vi.fn()
     globalThis.Function = new Proxy(RealFunction, { construct: (target, args) => { construct(); return Reflect.construct(target, args) } })
@@ -145,7 +154,7 @@ describe("Component79.safeEval()", () => {
 
   it("a missing script throws, naming the script, as a script that doesn't compile always has", async () => {
     const { Component79 } = await freshLibrary()
-    await Component79.safeEval()
+    await Component79.safeEval({ worker: false })
     vi.spyOn(console, "error").mockImplementation(() => {})
 
     const component = new Component79(`<script>let n = 1</script><p>{{ n }}</p>`, { filename: "counter.html" })
@@ -164,7 +173,7 @@ describe("Component79.safeEval()", () => {
     pushPrecompiled(calls.map(([params, body]) => [params, body, null]))
     const { Component79 } = await freshLibrary()
     Component79.debug({ scopedNames: false })
-    await Component79.safeEval()
+    await Component79.safeEval({ worker: false })
     const error = vi.spyOn(console, "error").mockImplementation(() => {})
 
     const host = document.createElement("div")
@@ -319,5 +328,168 @@ describe("Component79.safeEval({ nonce: true })", () => {
     await withEvalBlocked(() => new Component79(`<p>{{ msg }}</p>`).mount(host, { msg: "hi" }))
     expect(host.textContent).toBe("")
     expect(String(error.mock.calls[0]?.[0])).toContain(`"msg" was not precompiled`)
+  })
+})
+
+// Without a bundler, safeEval() registers jq79-sw.js and waits until it
+// controls the page; a component fetched after that arrives with its
+// functions, compiled by the worker from the same file. jsdom has no service
+// workers and fetches no scripts, so both are stood in for: a container that
+// claims the page when asked, and a <script src> whose answer is the worker's
+// own code (precompiledResponse), run as the browser would run it. The real
+// thing is in scripts/check-csp.mjs
+describe("Component79.safeEval() with its worker", () => {
+  const FILES: Record<string, string> = {
+    "/Counter.html": COUNTER,
+    "/App.html": `
+      <script>
+        const Row = await import("./Row.html")
+        let label = "hi"
+      </script>
+      <Row :label></Row>
+    `,
+    "/Row.html": `<script :setup="{ label }"></script><b class="row">{{ label.toUpperCase() }}</b>`,
+  }
+  const origin = "http://localhost:3000"
+
+  const serveFiles = async (url: string) => {
+    const path = new URL(url, origin).pathname
+    return path in FILES ? new Response(FILES[path]) : new Response("not found", { status: 404 })
+  }
+
+  // a service worker container, first visit: nothing controls the page until
+  // the worker claims it - which it does when the page asks
+  const fakeContainer = (options: { controlled?: boolean; refuse?: boolean } = {}) => {
+    const listeners: Record<string, (() => void)[]> = {}
+    const container: any = {
+      controller: options.controlled ? {} : null,
+      registered: [] as string[],
+      claims: 0,
+      ready: Promise.resolve(),
+      addEventListener: (type: string, fn: () => void) => { (listeners[type] ??= []).push(fn) },
+      register: async (url: string) => {
+        if (options.refuse) throw new TypeError("Failed to register a ServiceWorker: 404")
+        container.registered.push(url)
+        return {
+          active: {
+            postMessage: (message: string) => {
+              if (message !== "jq79:claim") return
+              container.claims++
+              container.controller = {}
+              listeners.controllerchange?.forEach(fn => fn())
+            },
+          },
+        }
+      },
+    }
+    return container
+  }
+
+  // the worker's answer to every `?jq79-precompiled` script the page asks for
+  const answerAsTheWorker = async () => {
+    const { precompiledResponse } = await import("../src/sw")
+    const asked: string[] = []
+    const append = document.head.append.bind(document.head)
+    vi.spyOn(document.head, "append").mockImplementation((...nodes: (Node | string)[]) => {
+      for (const node of nodes) {
+        if (node instanceof HTMLScriptElement && node.src.includes("jq79-precompiled")) {
+          asked.push(node.src)
+          precompiledResponse(new URL(node.src), serveFiles).then(async response => {
+            if (!response.ok) return node.dispatchEvent(new Event("error"))
+            new RealFunction("self", await response.text())(globalThis)
+            node.dispatchEvent(new Event("load"))
+          })
+        } else append(node)
+      }
+    })
+    return asked
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("registers the worker, waits until it controls the page - and a fetched component arrives with its functions", async () => {
+    const container = fakeContainer()
+    vi.stubGlobal("navigator", { serviceWorker: container })
+    vi.stubGlobal("fetch", serveFiles)
+    const asked = await answerAsTheWorker()
+    const { Component79 } = await freshLibrary()
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+
+    await Component79.safeEval()
+    expect(container.registered).toEqual(["/jq79-sw.js"])
+    expect(container.claims).toBe(1) // a first visit: claimed when it asked
+
+    const got = await withEvalBlocked(async () => {
+      const Counter = await Component79.fetch(`${origin}/Counter.html`)
+      const host = document.createElement("div")
+      Counter.mount(host)
+      // on the stack it mounts on: the functions were in before fetch resolved
+      const before = host.textContent!.replace(/\s+/g, "")
+      host.querySelector<HTMLButtonElement>(".add")!.click()
+      host.querySelector<HTMLButtonElement>(".ten")!.click()
+      await tick()
+      return { before, after: host.textContent!.replace(/\s+/g, "") }
+    })
+    expect(got).toEqual({ before: "1/2++10ab", after: "12/24++10abbig" })
+    expect(asked).toEqual([`${origin}/Counter.html?jq79-precompiled=`])
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it("covers a component imported from a script, which is fetched the same way", async () => {
+    vi.stubGlobal("navigator", { serviceWorker: fakeContainer() })
+    vi.stubGlobal("fetch", serveFiles)
+    const asked = await answerAsTheWorker()
+    const { Component79 } = await freshLibrary()
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    await Component79.safeEval()
+
+    const host = document.createElement("div")
+    await withEvalBlocked(async () => {
+      const App = await Component79.fetch(`${origin}/App.html`)
+      App.mount(host)
+      for (let i = 0; i < 20 && !host.querySelector(".row"); i++) await tick()
+    })
+    expect(host.querySelector(".row")?.textContent).toBe("HI")
+    expect(asked.sort()).toEqual([`${origin}/App.html?jq79-precompiled=`, `${origin}/Row.html?jq79-precompiled=`])
+    expect(error).not.toHaveBeenCalled()
+  })
+
+  it("on a page the worker already controls, asks nothing of it", async () => {
+    const container = fakeContainer({ controlled: true })
+    vi.stubGlobal("navigator", { serviceWorker: container })
+    const { Component79 } = await freshLibrary()
+    await Component79.safeEval()
+    expect(container.registered).toEqual(["/jq79-sw.js"])
+    expect(container.claims).toBe(0)
+  })
+
+  it("registers the worker it is pointed at - or none, with worker: false or { nonce: true }", async () => {
+    const container = fakeContainer({ controlled: true })
+    vi.stubGlobal("navigator", { serviceWorker: container })
+    await (await freshLibrary()).Component79.safeEval({ worker: "/site/jq79-sw.js" })
+    await (await freshLibrary()).Component79.safeEval({ worker: false })
+    givePageNonce()
+    await (await freshLibrary()).Component79.safeEval({ nonce: true })
+    expect(container.registered).toEqual(["/site/jq79-sw.js"])
+  })
+
+  it("rejects where there can be no worker, saying why - and safe mode stays on", async () => {
+    vi.stubGlobal("navigator", {})
+    const { Component79 } = await freshLibrary()
+    await expect(Component79.safeEval()).rejects.toThrow(/this page can't have one - service workers need https/)
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    const host = document.createElement("div")
+    await withEvalBlocked(() => new Component79(`<p>{{ msg }}</p>`).mount(host, { msg: "hi" }))
+    expect(String(error.mock.calls[0]?.[0])).toContain(`"msg" was not precompiled`)
+  })
+
+  it("rejects when the worker won't register, naming where it looked - and fetch says so too", async () => {
+    vi.stubGlobal("navigator", { serviceWorker: fakeContainer({ refuse: true }) })
+    vi.stubGlobal("fetch", serveFiles)
+    const { Component79 } = await freshLibrary()
+    await expect(Component79.safeEval()).rejects.toThrow(/couldn't register its service worker at \/jq79-sw\.js/)
+    await expect(Promise.resolve(Component79.fetch(`${origin}/Counter.html`))).rejects.toThrow(/couldn't register/)
   })
 })

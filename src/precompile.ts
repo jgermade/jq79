@@ -1,7 +1,8 @@
 import { parseHTML, type HTMLNode, type HTMLElementNode } from "./html"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps } from "./transform"
 import {
-  COMPONENT_NAME_RE, COMPONENT_TAG_ATTR, EACH_PATTERN, EXPR_PARAMS, INSTANCE_HELPER_NAMES, SETUP_HELPER_NAMES,
+  COMPONENT_NAME_RE, COMPONENT_TAG_ATTR, EACH_PATTERN, EXPR_PARAMS, INSTANCE_HELPER_NAMES, PRECOMPILED_QUEUE,
+  SETUP_HELPER_NAMES, functionText,
   assignment, declaredPropNames, defer, factoryBody, factoryParams, functionKey, isControlAttr, isSlotTag,
   kebabToCamel, prepareSource, readSetupSignature, scopedBody, setupBody, setupParams, splitText, withBody,
   type TagBlock, type TemplateNode,
@@ -30,7 +31,7 @@ import {
 // the runtime actually compiles
 // ---------------------------------------------------------------------------
 
-type Precompiled = [params: string[], body: string]
+export type Precompiled = [params: string[], body: string]
 
 const isElementNode = (node: HTMLNode): node is HTMLElementNode => typeof node !== "string"
 
@@ -215,4 +216,22 @@ const precompileComponent = (
   })
 
   collectExpressions(template, known, addExpression)
+}
+
+// a component's precompiled functions as the classic script that registers
+// them - classic, because they compile under `with`, which is a SyntaxError in
+// strict code and every module is strict.
+//
+// `parses` says whether a function's text parses as that one function: `new
+// Function` where eval is at hand (the Vite plugin, on node), a JavaScript
+// parser where it isn't (the service worker). One that doesn't parse ships as
+// null - the runtime's cached syntax error, which renders nothing, as it does
+// under eval. And because only text that parses as a single function is ever
+// written, no expression can close its function early and run what follows
+// when the script loads
+export const precompiledScript = (entries: Precompiled[], parses: (params: string[], body: string) => boolean): string => {
+  const items = entries.map(([params, body]) =>
+    `[${JSON.stringify(params)}, ${JSON.stringify(body)}, ${parses(params, body) ? functionText(params, body) : "null"}]`
+  )
+  return `(self.${PRECOMPILED_QUEUE} = self.${PRECOMPILED_QUEUE} || []).push(\n${items.join(",\n")}\n)\n`
 }
