@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises"
-import { relative } from "node:path"
+import { basename, relative } from "node:path"
 import { preprocessCSS, transformWithEsbuild } from "vite"
 import type { Plugin, ResolvedConfig } from "vite"
+// by package name rather than ../src: this file's types are emitted with dev/
+// as their root, and the generator is the runtime's own code - resolved through
+// the package's exports (external in the build, aliased to src in the tests)
+import { precompile } from "jq79/precompile"
 
 // Vite plugin: import .html single-file components as modules.
 //
@@ -30,10 +34,11 @@ export interface Jq79PluginOptions {
   exclude?: RegExp
   // run the app without eval, for a CSP with no 'unsafe-eval' - the value
   // Component79.safeEval() takes, and meaning the same thing
-  // (RECORD/2026-09-23.no-unsafe-eval.md). `{ nonce: true }`: whatever isn't
-  // precompiled is built as a <script> carrying the page's nonce. `true` -
-  // precompiled functions and nothing else - needs the precompiler, which
-  // isn't written yet, so it throws rather than build an app that can't run
+  // (RECORD/2026-09-23.no-unsafe-eval.md). Every component is precompiled, and
+  // its functions ship as a script of their own. `true`: those and nothing
+  // else - whatever the build couldn't see is reported, never evaluated.
+  // `{ nonce: true }`: whatever it couldn't see (a component built from a
+  // string, an edit during HMR) is built as a <script> carrying the page's nonce
   safeEval?: boolean | { nonce?: boolean }
 }
 
@@ -41,38 +46,96 @@ export interface Jq79PluginOptions {
 // Vite's own html handling (entries, asset pipeline) leaves them alone
 const COMPONENT_QUERY = "?jq79"
 
-// safeEval turns the runtime's safe mode on from a module every component
-// module imports: modules evaluate once, so the call is made once per app,
-// however many components there are - and a page with no nonce is reported
-// once rather than once per component. Imports come first, so it runs before
-// any component module's body constructs a component, nested ones included.
+// safeEval. A component's precompiled functions travel as a classic script of
+// their own - Card.html.jq79.js - and not inside its module: they compile
+// under `with`, which is a SyntaxError in strict code, and every module is
+// strict. In a build the script is an asset beside the chunk; in dev the
+// server hands it out (PRECOMPILED_PATH). Either way it pushes its functions
+// onto the queue the runtime drains (see "safe eval" in src/jq79.ts).
 //
-// Component79 is passed in rather than imported, so this module resolves
+// The component's module waits for it - a top-level await - before it builds
+// anything, through a module every component module imports. That module
+// evaluates once, so safe mode is turned on once per app, and a page with no
+// nonce is reported once rather than once per component; and it loads each
+// script once, however many modules ask. The <script> carries the page's
+// nonce when there is one, so a CSP that works by nonce admits it; under
+// `script-src 'self'` the URL is what admits it.
+//
+// Component79 is passed in rather than imported, so the module resolves
 // nothing: a bare "jq79" from a virtual importer is the one resolution that
 // would depend on how the app is laid out.
 //
 // A component built from a string *before* any .html module is imported runs
-// in the default mode; such an app calls Component79.safeEval itself
+// in the default mode; such an app calls Component79.safeEval itself. The
+// await needs a build target with top-level await in it - Vite 7 and later
+// have one by default; on Vite 5 or 6, raise build.target to es2022
 const SAFE_EVAL_ID = "virtual:jq79/safe-eval"
 const RESOLVED_SAFE_EVAL_ID = `\0${SAFE_EVAL_ID}`
-const SAFE_EVAL_MODULE = `
+const safeEvalModule = (options: { nonce?: boolean }) => `
 let started = null
-export const safeEval = (Component79) => {
-  if (started) return
-  started = Component79.safeEval({ nonce: true }).catch(error => console.error(error))
+const loading = new Map()
+const pageNonce = () => {
+  for (const script of document.querySelectorAll("script[nonce]")) {
+    const nonce = script.nonce || script.getAttribute("nonce")
+    if (nonce) return nonce
+  }
+}
+export const safeEval = (Component79, url) => {
+  if (!started) started = Component79.safeEval(${JSON.stringify(options)}).catch(error => console.error(error))
+  let loaded = loading.get(url)
+  if (!loaded) {
+    loaded = new Promise((resolve, reject) => {
+      const script = document.createElement("script")
+      const nonce = pageNonce()
+      if (nonce) script.setAttribute("nonce", nonce)
+      script.src = url
+      script.onload = () => { script.remove(); resolve() }
+      script.onerror = () => {
+        script.remove()
+        reject(new Error("jq79: the precompiled functions at " + url + " did not load, and safeEval can't render without them"))
+      }
+      document.head.append(script)
+    })
+    loading.set(url, loaded)
+  }
+  return loaded
 }
 `
 
-// the plugin's safeEval option, as what the modules need to know: whether to
-// turn nonce mode on. Only that form exists yet
-const nonceMode = (option: Jq79PluginOptions["safeEval"]): boolean => {
-  if (option === undefined || option === false) return false
-  if (typeof option === "object" && option !== null && option.nonce === true) return true
-  throw new Error(
-    `jq79: safeEval: ${JSON.stringify(option)} runs precompiled functions and nothing else, ` +
-    "and the precompiler that makes them isn't written yet. On a page whose server issues a nonce " +
-    "per response, safeEval: { nonce: true } works today."
-  )
+// where the dev server hands out a component's precompiled script
+const PRECOMPILED_PATH = "/@jq79/precompiled.js"
+
+// the plugin's safeEval option, as what the modules pass the runtime: null
+// for off, or Component79.safeEval's own options
+const safeEvalOptions = (option: Jq79PluginOptions["safeEval"]): { nonce?: boolean } | null => {
+  if (option === undefined || option === false) return null
+  return typeof option === "object" && option !== null && option.nonce === true ? { nonce: true } : {}
+}
+
+// a scoped-form body: the runtime falls back to the `with` form when one
+// doesn't compile, so only the `with` form's failure is worth a word
+const SCOPED_BODY_RE = /^(?:let \$t;| return \()/
+
+// a component's precompiled functions, as the classic script that registers
+// them. Each is compiled here first - node can, where the page may not - so
+// the script holds only functions that parse, and one that doesn't goes in as
+// null: the runtime's cached syntax error, which renders nothing, as it does
+// under eval. Laid out as `new Function` lays it out ("function anonymous(
+// params\n) {\nbody\n}"), so what devtools shows lines up with what it
+// shows today; and since `new Function` parsed the body on its own, the text
+// can't close the function early
+const precompiledScript = (source: string, warn: (message: string) => void): string => {
+  const entries = precompile(source).map(([params, body]) => {
+    let fn = "null"
+    try {
+      new Function(...params, body)
+      fn = `function anonymous(${params.join(",")}\n) {\n${body}\n}`
+    } catch (error) {
+      if (!SCOPED_BODY_RE.test(body)) warn(`${(error as Error).message}, in: ${body.length > 120 ? `${body.slice(0, 120)}…` : body}`)
+    }
+    return `[${JSON.stringify(params)}, ${JSON.stringify(body)}, ${fn}]`
+  })
+  return `(self.__jq79precompiled = self.__jq79precompiled || []).push(\n${entries.join(",\n")}\n)\n`
 }
 
 // a <script> block with its attribute string, so `lang` can be read and the
@@ -391,7 +454,9 @@ const compileScriptBlocks = async (source: string, file: string): Promise<string
 // component's markers. An instance only used as a definition has nothing to
 // re-render (nested clones can't be reached from this module), so it falls
 // back to a full reload.
-const componentModule = (source: string, include: RegExp, filename: string, safeEval = false): string => {
+// `precompiled` is the precompiled script's URL, as a JS expression - present
+// only in safeEval mode
+const componentModule = (source: string, include: RegExp, filename: string, precompiled?: string): string => {
   const hoisted = hoistableImports(source, include)
   const imports = hoisted
     .map((spec, i) =>
@@ -403,8 +468,8 @@ const componentModule = (source: string, include: RegExp, filename: string, safe
   const modulesMap = `{ ${hoisted.map((spec, i) => `${JSON.stringify(spec)}: __jq79_${i}`).join(", ")} }`
 
   // without safeEval, the module is exactly what it always was
-  const safeEvalImport = safeEval ? `\nimport { safeEval } from "${SAFE_EVAL_ID}"` : ""
-  const safeEvalCall = safeEval ? "\nsafeEval(Component79)" : ""
+  const safeEvalImport = precompiled ? `\nimport { safeEval } from "${SAFE_EVAL_ID}"` : ""
+  const safeEvalCall = precompiled ? `\nawait safeEval(Component79, ${precompiled})` : ""
 
   return `
 import { Component79 } from "jq79"${safeEvalImport}
@@ -442,7 +507,11 @@ ${declaredComponents(source).map(name => `export const ${name} = component.${nam
 export function jq79(options: Jq79PluginOptions = {}): Plugin {
   const include = options.include ?? /\.html$/
   const { exclude } = options
-  const safeEval = nonceMode(options.safeEval)
+  const safeEval = safeEvalOptions(options.safeEval)
+  // dev only: each component's precompiled script, by the id its module asks
+  // for - so the server hands out what the plugin compiled and nothing else
+  const devScripts = new Map<string, string>()
+  const devIds = new Map<string, number>()
 
   let config: ResolvedConfig | null = null
 
@@ -452,6 +521,19 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
 
     configResolved(resolved) {
       config = resolved
+    },
+
+    configureServer(server) {
+      if (!safeEval) return
+      server.middlewares.use((req, res, next) => {
+        const url = new URL(req.url ?? "/", "http://localhost")
+        if (!url.pathname.endsWith(PRECOMPILED_PATH)) return next()
+        const script = devScripts.get(url.searchParams.get("id") ?? "")
+        if (script === undefined) return next()
+        res.setHeader("Content-Type", "text/javascript")
+        res.setHeader("Cache-Control", "no-cache")
+        res.end(script)
+      })
     },
 
     async resolveId(source, importer) {
@@ -467,7 +549,7 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
     },
 
     async load(id) {
-      if (id === RESOLVED_SAFE_EVAL_ID) return SAFE_EVAL_MODULE
+      if (id === RESOLVED_SAFE_EVAL_ID) return safeEvalModule(safeEval ?? {})
       if (!id.endsWith(COMPONENT_QUERY)) return null
       const file = id.slice(0, -COMPONENT_QUERY.length)
 
@@ -479,7 +561,23 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
       // shows a path the user recognizes instead of an anonymous VM script
       const filename = config ? relative(config.root, file) : file
 
-      return { code: componentModule(source, include, filename, safeEval), map: null }
+      if (!safeEval) return { code: componentModule(source, include, filename), map: null }
+
+      // the component's functions, compiled after its TypeScript and styles are:
+      // the runtime compiles what reaches it, and this is what reaches it
+      const script = precompiledScript(source, message => this.warn(`jq79: ${filename}: ${message}`))
+      let url: string
+      if (config?.command === "serve") {
+        let devId = devIds.get(file)
+        if (devId === undefined) devIds.set(file, devId = devIds.size)
+        devScripts.set(String(devId), script)
+        // versioned, so an edit loads the new functions rather than a cached copy
+        url = JSON.stringify(`${config.base}${PRECOMPILED_PATH.slice(1)}?id=${devId}&v=${Date.now()}`)
+      } else {
+        const ref = this.emitFile({ type: "asset", name: `${basename(file)}.jq79.js`, source: script })
+        url = `import.meta.ROLLUP_FILE_URL_${ref}`
+      }
+      return { code: componentModule(source, include, filename, url), map: null }
     },
   }
 }

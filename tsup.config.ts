@@ -33,6 +33,7 @@ export default defineConfig([
   {
     entry: { vite: "dev/vite.ts" }, // the Vite plugin, exported as jq79/vite
     format: ["esm", "cjs"],
+    external: ["jq79/precompile"],  // the package's own entry, resolved at runtime
     dts: false,
     sourcemap: true,
     clean: false,                   // keep the runtime build from the config above
