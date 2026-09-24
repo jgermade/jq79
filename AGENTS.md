@@ -7,10 +7,17 @@ dependencies — `new Component79(src)` parses and mounts at runtime.
 Be concise in your answers. I prefer examples over long text.
 
 The source is small enough to read in a sitting: [`src/jq79.ts`](src/jq79.ts) is
-the core (parsing, rendering, components), with three leaf modules —
+the core (parsing, rendering, components), with its leaf modules —
 [`dom.ts`](src/dom.ts), [`reactive.ts`](src/reactive.ts),
-[`transform.ts`](src/transform.ts). Read the code before changing it; it's shorter
-than the docs.
+[`transform.ts`](src/transform.ts), and [`source.ts`](src/source.ts), the half of
+the core that reads a component as text (no DOM in it). A second entry,
+[`precompile.ts`](src/precompile.ts) (`jq79/precompile`), shares `source.ts` and
+[`html.ts`](src/html.ts) to find every function a component needs without
+rendering it; it is what safe mode runs on, and it stays out of the runtime so
+pages don't carry it. A third, [`sw.ts`](src/sw.ts), is safe mode's service
+worker (`dist/jq79-sw.js`), which compiles components for a page with no
+bundler. Read the code before changing it; it's shorter than the
+docs.
 
 `src/` is the library and nothing else — it ships to the browser. The build-time
 tooling lives in [`dev/`](dev/), and runs on node: the
@@ -87,7 +94,7 @@ Written for users, but they're where the behaviour is specified:
 [components](docs/components.md), [template syntax](docs/template-syntax.md),
 [setup scripts](docs/setup-scripts.md), [reactive data](docs/reactive-data.md),
 [DOM helpers](docs/dom-helpers.md), [Vite plugin](docs/vite-plugin.md),
-[dev server](docs/dev-server.md).
+[dev server](docs/dev-server.md), [Content Security Policy](docs/csp.md).
 
 Docs and the site are generated from the repo's own markdown
 ([`scripts/build-site.mjs`](scripts/build-site.mjs)) — edit the `.md`, not `site/`

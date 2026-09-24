@@ -3,7 +3,14 @@ import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl } from "./dom"
 import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
-import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, freeIdentifiers, type PropDecl } from "./transform"
+import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
+import {
+  COMPONENT_NAME_RE, COMPONENT_TAG_ATTR, CONTROL_ATTRS, EACH_PATTERN, EXPR_PARAMS, PRECOMPILED_PARAM, PRECOMPILED_QUEUE,
+  componentTagName, functionText,
+  assignment, declaredPropNames, defer, factoryBody, factoryParams, functionKey, isControlAttr, isSlotTag,
+  kebabToCamel, prepareSource, readSetupSignature, scopedBody, setupBody, setupParams, slotName, splitText, withBody,
+  type TagBlock, type TemplateNode, type TextPart,
+} from "./source"
 
 export { $, $$, $create } from "./dom"
 export { $reactive, $toRaw } from "./reactive"
@@ -14,34 +21,6 @@ export { $reactive, $toRaw } from "./reactive"
 // doesn't define it see a bare identifier, not a ReferenceError
 declare const __JQ79_VERSION__: string
 const VERSION = typeof __JQ79_VERSION__ === "string" ? __JQ79_VERSION__ : "0.0.0-dev"
-
-type TemplateNode = {
-  tag: string
-  attrs: Record<string, string>
-  children: (TemplateNode | string)[]
-  // the tag as the author capitalized it, present only when they wrote it
-  // uppercase-initial - i.e. when they meant a component. `tag` cannot answer
-  // this: the HTML parser lowercases it, so the claim is captured before the
-  // parse (see stampComponentTag) and lifted off attrs here, where it stops
-  // looking like an attribute to every loop downstream
-  component?: string
-  // the element's namespace, present only when it is NOT HTML - an <svg>
-  // subtree, or MathML. Read straight off the parsed tree, because the HTML
-  // parser has already run the foreign-content algorithm over it and knows
-  // things a tag name cannot say: whether this <title> is SVG's or HTML's, and
-  // where a <foreignObject> hands the namespace back. Absent is the common
-  // case and means HTML, so an ordinary node is exactly the shape it was
-  ns?: string
-}
-
-type TagBlock = {
-  attrs: Record<string, string>
-  content: string
-  // <style scoped> only: `content` rewritten to require the component's scope
-  // attribute. Kept beside the original rather than replacing it, because a
-  // shadow root doesn't want it - see headStyle()
-  scoped?: string
-}
 
 const elementAttrs = (el: Element): Record<string, string> =>
   Object.fromEntries(Array.from(el.attributes).map(attr => [attr.name, attr.value]))
@@ -111,6 +90,164 @@ type CompiledExpr = { fn: Function | null; scoped: boolean }
 
 const compiled = new Map<string, CompiledExpr>()
 
+// ---------------------------------------------------------------------------
+// safe eval
+//
+// Every function the runtime builds out of a component's text - an expression,
+// a setup script, a factory script - is built by makeFunction. By default that
+// is `new Function`, exactly as it always was. Two things stand in front of it:
+//
+// - precompiled functions, which scripts the browser loaded *as code* push onto
+//   a global queue, keyed by the very (params, body) the runtime would have
+//   handed `new Function` - so a hit is the same function by construction. A
+//   global rather than a call, so such a script can load before the library or
+//   after it, and serve either build of it (the module, or the CDN global)
+// - safe mode (Component79.safeEval()), in which the runtime never calls
+//   `new Function`. That is what a CSP without 'unsafe-eval' demands, and
+//   where one throws EvalError that compileWith would swallow as a syntax
+//   error, safe mode says what is missing instead of rendering empty in silence.
+//   With `{ nonce: true }` a miss is built anyway - as a <script> carrying the
+//   page's nonce, which the CSP admits where it refuses eval (buildWithNonce)
+//
+// See RECORD/2026-09-23.no-unsafe-eval.md
+// ---------------------------------------------------------------------------
+
+// `fn: null` is a body that did not compile, cached as the syntax error it is
+type PrecompiledEntry = [params: string[], body: string, fn: Function | null]
+
+
+const precompiled = new Map<string, Function | null>()
+let safeEvalOn = false
+// set by safeEval({ nonce: true }), and then never unset: safe mode is one-way
+let safeEvalNonce: string | undefined
+
+// what safe mode could not provide. `reason` completes "<the code> ..." and
+// `hint` says why, so an expression and a script report it the same way
+class SafeEvalMiss extends Error {
+  constructor(readonly reason: string, readonly hint: string) {
+    super(`${reason}. ${hint}`)
+  }
+}
+
+const notPrecompiled = () => new SafeEvalMiss(
+  "was not precompiled",
+  "Safe mode never builds code at runtime: the component's precompiled functions did not reach the page."
+)
+
+// drains the queue first: a precompiled script may have loaded since the last
+// lookup. With nothing registered - every page that never precompiled anything
+// - the answer is known without building a key
+const lookupPrecompiled = (params: string[], body: string): Function | null | undefined => {
+  const queue = (globalThis as any)[PRECOMPILED_QUEUE]
+  if (Array.isArray(queue) && queue.length > 0) {
+    for (const [entryParams, entryBody, fn] of queue.splice(0) as PrecompiledEntry[]) {
+      precompiled.set(functionKey(entryParams, entryBody), fn)
+    }
+  }
+  return precompiled.size === 0 ? undefined : precompiled.get(functionKey(params, body))
+}
+
+// `suffix` goes to `new Function` only and is not part of the key: it is the
+// //# sourceURL that names a script for devtools, which a precompiled script
+// has no use for (it has a URL of its own) and a generator couldn't spell the
+// way the runtime does - it depends on how the component was loaded
+const makeFunction = (params: string[], body: string, suffix = ""): Function => {
+  const hit = lookupPrecompiled(params, body)
+  if (hit === null) throw new SyntaxError("jq79: this code did not compile when it was precompiled")
+  if (hit !== undefined) return hit
+  if (safeEvalNonce !== undefined) return buildWithNonce(params, body, suffix, safeEvalNonce)
+  if (safeEvalOn) throw notPrecompiled()
+  return new Function(...params, body + suffix)
+}
+
+// the page's nonce, read off a script that carries one. The `.nonce` property
+// and not the attribute: once the element is in a document under a CSP header,
+// the browser blanks the attribute (so a stylesheet's attribute selector can't
+// leak it) and keeps the value on the property - checked in Chromium, where
+// getAttribute("nonce") read "" and .nonce the real value. The attribute is
+// the fallback for an environment with no such property (jsdom).
+//
+// Searched for, because the library may have no script of its own to read: a
+// module has no document.currentScript. A CSP that works by nonce always has
+// one - the script that loaded the page
+const pageNonce = (): string | undefined => {
+  if (typeof document === "undefined") return undefined
+  for (const script of Array.from(document.querySelectorAll<HTMLScriptElement>("script[nonce]"))) {
+    const nonce = script.nonce || script.getAttribute("nonce")
+    if (nonce) return nonce
+  }
+  return undefined
+}
+
+// builds what `new Function` would, as a classic <script> the CSP admits
+// because it carries the page's nonce. Classic scripts are sloppy, so `with`
+// compiles exactly as it does under `new Function`; the text is laid out as
+// `new Function` lays it out ("function anonymous(params\n) {\nbody\n}"), so
+// the function is named the same and devtools reports the same line numbers,
+// and the //# sourceURL suffix names the script as it names the function today.
+//
+// An inline script runs synchronously when it is inserted, so this is a
+// drop-in for the synchronous `new Function`. The function comes back on the
+// element itself (document.currentScript) rather than through a global: nothing
+// for the page to collide with, and nothing to clean up.
+//
+// Two ways it can fail, told apart by what the insertion left behind:
+// - a syntax error is reported to window's `error` event rather than thrown to
+//   the inserter. The listener takes it and cancels the report, and it is
+//   rethrown here - where `new Function` threw it, and where compileWith
+//   caches it as the syntax error it always has been;
+// - a nonce the CSP refuses leaves nothing at all: no function, no error
+//   event, only a violation the browser logs. That one says so.
+//
+// A body that closes the function's brace early (`a) } alert(1); { (`) is one
+// place this differs: `new Function` refuses it, and a script runs what comes
+// after the brace. The text is the component's own, which can hold a <script>
+// anyway, so this admits nothing a component couldn't already do.
+//
+// Built functions go into the precompiled map: they hold no state, and a
+// setup script - built once per *instance* - would otherwise insert a script
+// per instance
+const NONCE_BUILT = "__jq79built"
+
+const buildWithNonce = (params: string[], body: string, suffix: string, nonce: string): Function => {
+  const script = document.createElement("script")
+  script.setAttribute("nonce", nonce)
+  script.textContent = `document.currentScript.${NONCE_BUILT} = ${functionText(params, body)}${suffix}`
+  let syntaxError: unknown
+  const onError = (event: ErrorEvent) => {
+    syntaxError = event.error ?? new SyntaxError(event.message)
+    event.preventDefault()
+  }
+  window.addEventListener("error", onError)
+  try {
+    (document.head ?? document.documentElement).append(script)
+  } finally {
+    window.removeEventListener("error", onError)
+    script.remove()
+  }
+  const fn = (script as any)[NONCE_BUILT]
+  if (typeof fn === "function") {
+    precompiled.set(functionKey(params, body), fn)
+    return fn
+  }
+  if (syntaxError !== undefined) throw syntaxError
+  throw new SafeEvalMiss(
+    "could not be built",
+    // the value stays out of the message: a nonce has no business in a log
+    "The page's CSP refused a <script> carrying the nonce jq79 read from the page."
+  )
+}
+
+// once per expression, like reportFailedExpr: a :each over 1000 rows misses
+// 1000 times per render
+const reportedSafeEvalMisses = new Set<string>()
+
+const reportSafeEvalMiss = (expr: string, miss: SafeEvalMiss) => {
+  if (reportedSafeEvalMisses.has(expr)) return
+  reportedSafeEvalMisses.add(expr)
+  console.error(`jq79: safeEval() is on, and "${expr}" ${miss.reason}, so it rendered as nothing. ${miss.hint}`)
+}
+
 // Resolves a name the `const` prologue could not: its fast read came back
 // undefined, which means one of three different things. `with` told them apart
 // by consulting [[HasProperty]] on every read of every name; this consults it
@@ -128,14 +265,13 @@ const resolveName = (scope: Record<string, any>, name: string): any => {
   throw new ReferenceError(`${name} is not defined`)
 }
 
-// the newline before `)` ends a trailing line comment in the expression
-// ({{ msg // greeting }}); ASI doesn't apply inside parens, so everything else
-// is untouched. Without it the comment eats the rest of this single-line body
-// and the expression never compiles
 const compileWith = (expr: string, params: string[]): Function | null => {
   try {
-    return new Function("$scope", "$r", ...params, `with ($scope) { return (${expr}\n); }`)
-  } catch {
+    return makeFunction([...EXPR_PARAMS, ...params], withBody(expr))
+  } catch (error) {
+    // nothing precompiled, in a mode that won't compile: not a syntax error,
+    // though it is cached like one - it will not start compiling later either
+    if (error instanceof SafeEvalMiss) reportSafeEvalMiss(expr, error)
     return null // a syntax error: it will never compile, so don't try again
   }
 }
@@ -162,15 +298,13 @@ const compileWith = (expr: string, params: string[]): Function | null => {
 // differential in tests/expressions.test.ts is what stands behind it
 const compileScoped = (expr: string, params: string[]): Function | null => {
   if (!debugFlags.scopedNames) return null
-  const free = freeIdentifiers(expr)
-  if (free === null) return null
-  // an extra is already a parameter of this function: declaring it again would
-  // shadow the value the caller passed in
-  const names = free.filter(name => !params.includes(name))
-  const prologue = names.length === 0 ? "" : `let $t; ${names.map(name =>
-    `const ${name} = ($t = $scope.${name}) !== undefined ? $t : $r($scope, ${JSON.stringify(name)});`).join(" ")}`
+  const body = scopedBody(expr, params)
+  if (body === null) return null
+  // a safe-mode miss lands here too, and stays quiet: the caller falls back to
+  // the `with` form, which may well be the one that was precompiled - and
+  // reports if it wasn't
   try {
-    return new Function("$scope", "$r", ...params, `${prologue} return (${expr}\n);`)
+    return makeFunction([...EXPR_PARAMS, ...params], body)
   } catch {
     return null
   }
@@ -374,39 +508,6 @@ const evalHandler = (expr: string, scope: Record<string, any>, extras: Record<st
   }
 }
 
-// [\s\S] rather than `.` so an expression can span lines, like the ones in
-// directive attributes (which reach evalExpr wrapped in parens either way)
-const INTERPOLATION_RE = /{{\s*([\s\S]+?)\s*}}/g
-
-// A text template split once into its literal and expression parts. The split
-// used to happen on every run of every instance - `String.replace` over the
-// whole text, a fresh match object and a callback per expression - and a
-// :each over 1,000 rows runs it 1,000 times per text node to reach the same
-// answer about the same string. Keyed by the template text, like compileExpr's
-// cache and bounded the same way: by how many distinct texts the source holds
-//
-// An expression part is boxed so a literal `"x"` and an expression `x` stay
-// distinguishable without a second array
-type TextPart = string | { expr: string }
-
-const textParts = new Map<string, TextPart[]>()
-
-const splitText = (template: string): TextPart[] => {
-  const cached = textParts.get(template)
-  if (cached) return cached
-  const parts: TextPart[] = []
-  let at = 0
-  INTERPOLATION_RE.lastIndex = 0
-  for (let match = INTERPOLATION_RE.exec(template); match; match = INTERPOLATION_RE.exec(template)) {
-    if (match.index > at) parts.push(template.slice(at, match.index))
-    parts.push({ expr: match[1] })
-    at = match.index + match[0].length
-  }
-  if (at < template.length) parts.push(template.slice(at))
-  textParts.set(template, parts)
-  return parts
-}
-
 // what an interpolated text node renders to, from the parts. `?? ""` on each
 // expression, and String() over the join, is what template.replace did: a
 // nullish value contributes nothing and everything else is coerced
@@ -420,20 +521,6 @@ const renderText = (parts: TextPart[], scope: Record<string, any>): string => {
   return out
 }
 
-
-const CONTROL_ATTRS = new Set([":class", ":value", ":checked", ":selected", ":if", ":elseif", ":else", ":each", ":key", ":with", ":text", ":html", ":html.allowed", ":props"])
-
-// a control attribute is one the static-attr loop and nested-component prop
-// collection must skip. The set holds the fixed names; `:class.<name>` (the
-// single-flag shorthand) and `:props.<n>` (one spread among several) are
-// open-ended, so they're matched by prefix - they can't be enumerated into the set
-const isControlAttr = (attr: string): boolean =>
-  CONTROL_ATTRS.has(attr) || attr.startsWith(":class.") || attr.startsWith(":props.") ||
-  attr === ":slot" || attr.startsWith(":slot.")
-// `item in items`, `item, i in items`, `(value, key) in props` - the second
-// binding is the array index or the object key, parens optional (Vue-style).
-// The list expression can span lines, so it matches [\s\S] rather than `.`
-const EACH_PATTERN = /^\s*\(?\s*(\w+)\s*(?:,\s*(\w+))?\s*\)?\s+in\s+([\s\S]+)$/
 
 type ConditionalBranch = { expr?: string; node: TemplateNode }
 
@@ -490,14 +577,6 @@ const wireTagEvent = (instance: Component79, attr: string, expr: string, scope: 
   }
   instance.on(name, listener)
 }
-
-const kebabToCamel = (name: string) => name.replace(/-(\w)/g, (_, c: string) => c.toUpperCase())
-
-// the inverse, used only by the pre-parse name rewrite (see expandNameCase):
-// uppercase ASCII letters only, never digits - `:props.0` is a generated
-// attribute name and splitting on digits would mangle it. Round-trips through
-// kebabToCamel, acronyms included: userID -> user-i-d -> userID
-const camelToKebab = (name: string) => name.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)
 
 // the stable boundaries of a rendered chunk. An element is its own handle, but
 // a fragment (a nested component: two anchors with the instance's DOM between
@@ -776,15 +855,6 @@ type SlotMap = Record<string, SlotRenderer>
 // as data - not in Object.keys, not in a snapshot spread, not in the props a
 // nested component is handed
 const SLOTS = Symbol("jq79.slots")
-
-// <slot>, <slot.header-bar>: the hole and its name. Names arrive kebab-case
-// whichever way they were authored (the HTML parser lowercases tag names and
-// attribute modifiers alike, so expandNameCase normalizes camelCase to kebab
-// before parsing) and are camelCase where read - <slot.header-bar> and
-// <slot.headerBar> are :slot.header-bar is $slots.headerBar
-const isSlotTag = (tag: string): boolean => tag === "slot" || tag.startsWith("slot.")
-
-const slotName = (suffix: string): string => (suffix ? kebabToCamel(suffix) : "default")
 
 // the content of one slot, as written at the usage site
 type SlotContent = { nodes: (TemplateNode | string)[]; binder?: string }
@@ -1101,11 +1171,6 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // initial value would never reach the child
   const modelAttr = (name: string) => (name === "default" ? ":model" : `:model.${name}`)
   const modelProp = (name: string) => (name === "default" ? "model" : name)
-  // the newline keeps `= $value` out of a trailing line comment in the
-  // expression (:model="uname // the username") - glued on the same line,
-  // the assignment would vanish into the comment and compile as a bare read,
-  // dropping every update without a word
-  const assignment = (expr: string) => `${expr}\n= $value`
   // the models whose expression will never take an update, decided here rather
   // than at update time: an assignment that landed and one that was dropped
   // both evaluate to the value assigned, so the result can't tell them apart -
@@ -2869,181 +2934,6 @@ type ComponentParts = {
   name?: string
 }
 
-const VOID_ELEMENTS = new Set([
-  "area", "base", "br", "col", "embed", "hr", "img", "input",
-  "link", "meta", "param", "source", "track", "wbr",
-])
-
-// a self-closing tag with its attributes; quoted attribute values are matched
-// as whole chunks so a "/>" inside one doesn't end the tag early. The tag name
-// admits a dot for the named forms of a tag - <slot.header /> - which is a
-// legal HTML tag name (the tokenizer reads to the first space, "/" or ">")
-const SELF_CLOSING_RE = /<([A-Za-z][\w.-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)\/>/g
-const RAW_BLOCK_RE = /(<script[\s\S]*?<\/script\s*>|<style[\s\S]*?<\/style\s*>)/gi
-
-// expands self-closing tags (<MyComponent />, <div />) into explicit
-// open+close pairs BEFORE DOM parsing. The HTML parser ignores the slash and
-// would treat them as unclosed, swallowing the following siblings. Void
-// elements keep their native behavior, and <script>/<style> contents are
-// passed through untouched so code inside them is never rewritten
-const expandSelfClosingTags = (src: string): string =>
-  src
-    .split(RAW_BLOCK_RE)
-    .map((chunk, i) =>
-      i % 2 === 1 // odd chunks are the captured script/style blocks
-        ? chunk
-        : chunk.replace(SELF_CLOSING_RE, (match, tag: string, attrs: string) =>
-            VOID_ELEMENTS.has(tag.toLowerCase()) ? match : `<${tag}${attrs}></${tag}>`
-          )
-    )
-    .join("")
-
-// a start tag with its attributes, quote-aware so a ">" inside a value doesn't
-// end it early; and a single spread attribute in name position (preceded by
-// start-or-whitespace), its expression an identifier or member path
-const OPEN_TAG_RE = /<([A-Za-z][\w.-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
-const ATTR_SPREAD_RE = /"[^"]*"|'[^']*'|(^|\s)\.\.\.([A-Za-z_$][\w$.]*)/g
-
-// `...expr` as an attribute is sugar for :props="expr" (spread an object's
-// properties as props - see renderNestedComponent). Rewritten BEFORE DOM
-// parsing, into a value-based :props.<n>, because the HTML parser lowercases
-// attribute *names*: with the expression in the name, `...userData` would arrive
-// as `...userdata` and resolve to nothing. Moving it into a value - which the
-// parser leaves untouched - keeps camelCase intact. Same pre-parse string move
-// as expandSelfClosingTags, with the same defenses against rewriting code that
-// only looks like a spread: <script>/<style> bodies are split out (a JS `...rest`
-// there is not an attribute), only a start tag's interior is scanned (text
-// between tags is safe), and quoted values are consumed whole so a genuine JS
-// spread in a value (@click="f(...args)", :x="{ ...a }") is skipped. The <n>
-// suffix (per tag) only keeps several spreads' attribute names distinct. A call
-// (`...getProps()`) stops at the paren and is left alone - use :props="expr()"
-const expandPropsSpread = (src: string): string =>
-  src
-    .split(RAW_BLOCK_RE)
-    .map((chunk, i) =>
-      i % 2 === 1
-        ? chunk
-        : chunk.replace(OPEN_TAG_RE, (_match, tag: string, attrs: string) => {
-            let n = 0
-            const rewritten = attrs.replace(ATTR_SPREAD_RE, (whole, space: string | undefined, expr: string | undefined) =>
-              expr === undefined ? whole : `${space}:props.${n++}="${expr}"`
-            )
-            return `<${tag}${rewritten}>`
-          })
-    )
-    .join("")
-
-// a `:`-prefixed attribute name in name position, and a </slot.name> closing
-// tag. Both quote-aware for the same reason ATTR_SPREAD_RE is: a colon inside
-// a value (@click="a ? b : c", style="color: red") is not an attribute name
-const ATTR_NAME_RE = /"[^"]*"|'[^']*'|(^|\s)(:[\w.$-]+)/g
-const CLOSE_SLOT_RE = /<\/slot\.([\w.$-]+)(\s*)>/gi
-const SLOT_TAG_RE = /^slot\./i
-
-// camelCase -> kebab-case for every name the HTML parser would lowercase,
-// BEFORE it gets the chance: `:firstName` would arrive as `:firstname` and
-// kebabToCamel (which is what reads these names back out) would have nothing
-// to un-kebab, so the prop, model or slot would silently land under the wrong
-// key. Rewriting to `:first-name` here means both spellings converge on the
-// same camelCase name downstream - the author picks, the runtime doesn't care.
-//
-// Runs FIRST among the pre-parse passes, which is what keeps it simple: it
-// never sees the `:props.<n>` that expandPropsSpread generates, and a
-// <slot.firstName /> is still one occurrence rather than the open+close pair
-// expandSelfClosingTags turns it into. Same defenses as the passes after it -
-// <script>/<style> bodies split out, only start-tag interiors scanned, quoted
-// values consumed whole.
-//
-// Three name positions, not one: attribute names (`:model.firstName`), the
-// dotted tag names (`<slot.firstName>`) and component tags (`<UserCard>`,
-// renamed by componentTagName below). The last two have closing halves that are
-// rewritten too, or the parser sees a mismatched pair
-const kebabTagName = (tag: string): string =>
-  SLOT_TAG_RE.test(tag) ? `slot.${camelToKebab(tag.slice("slot.".length))}` : tag
-
-// the same pass records what it declined to rewrite. An uppercase-initial tag
-// is a claim about a component: HTML's own elements are matched
-// case-insensitively but nobody writes <DIV> by accident, and a custom element
-// may not be spelled that way at all. So <UserCard> is a name the author
-// expected to resolve - which is what lets renderNode throw when it doesn't
-// (see unresolvedComponent).
-//
-// Carried in a *value* rather than left in the tag name, because the value is
-// the one place the HTML parser preserves case - the same move expandPropsSpread
-// makes for `...userData`, and for the same reason. elementToAST lifts it
-// straight off attrs into a field, so no attribute loop downstream ever sees
-// it - and since that lift is unconditional, the name has to be one no author
-// would write: a plain `:component` would eat the prop of that name off
-// <Card :component="Widget" />
-const COMPONENT_TAG_ATTR = ":jq79-component"
-const COMPONENT_TAG_RE = /^[A-Z]/
-
-// A component tag is renamed to a name the HTML parser cannot resolve to an
-// element, because a PascalCase tag is lowercased by the parser and what comes
-// out is *the native element of that name*: <Circle /> inside an <svg> is a
-// circle, <Tr /> is a row placed inside its <tbody>, and 70 of 90 ordinary
-// one-word component names collide the same way. The claim the author made -
-// this is a component - survives in the stamp, and the tag stops being a name
-// anything downstream can mistake for an element's.
-//
-//   <Circle />    ->  <c79-circle :jq79-component="Circle" />
-//   </UserCard>   ->  </c79-user-card>
-//
-// Hyphenated, and that is not cosmetic: `c79-circle` is a valid custom element
-// name, so the parser builds an HTMLElement for it, where `c79circle` would be
-// an HTMLUnknownElement. The hyphen is the shape the platform reserves for what
-// is not native, which is the principle this rests on applied to our own tags -
-// and it reads for itself in the inspector, where a component that resolves to
-// nothing leaves <c79-circle> rather than a plausible-looking <circle>.
-//
-// Every capitalized tag, not only the colliding ones: today's safe name is
-// tomorrow's element. See RECORD/2026-08-25.component-tag-prefix.md
-const COMPONENT_TAG_PREFIX = "c79-"
-
-const componentTagName = (tag: string): string =>
-  `${COMPONENT_TAG_PREFIX}${camelToKebab(tag[0].toLowerCase() + tag.slice(1))}`
-
-const rewriteTagName = (tag: string): string =>
-  COMPONENT_TAG_RE.test(tag) ? componentTagName(tag) : kebabTagName(tag)
-
-// the closing half of the rename. OPEN_TAG_RE matches open tags only, which was
-// fine while both ends lowercased to the same name; rename one end and not the
-// other and `<c79-circle>` gets closed by `</circle>`, nesting everything that
-// follows inside it. </slot.x> keeps its own pass - it is lowercase and
-// unaffected by this one
-const CLOSE_COMPONENT_RE = /<\/([A-Z][\w.-]*)(\s*)>/g
-
-// appends the stamp inside the tag, *before* a self-closing slash: this pass
-// runs first and expandSelfClosingTags still has to recognize the `/>` that
-// OPEN_TAG_RE swept into the attributes. A slash inside a quoted value can't be
-// mistaken for it - only a trailing one is matched
-const TRAILING_SLASH_RE = /\/\s*$/
-
-const stampComponentTag = (tag: string, attrs: string): string => {
-  if (!COMPONENT_TAG_RE.test(tag)) return attrs
-  const stamp = ` ${COMPONENT_TAG_ATTR}="${tag}"`
-  const slash = TRAILING_SLASH_RE.exec(attrs)
-  return slash ? `${attrs.slice(0, slash.index)}${stamp}${slash[0]}` : `${attrs}${stamp}`
-}
-
-const expandNameCase = (src: string): string =>
-  src
-    .split(RAW_BLOCK_RE)
-    .map((chunk, i) =>
-      i % 2 === 1
-        ? chunk
-        : chunk
-            .replace(OPEN_TAG_RE, (_match, tag: string, attrs: string) => {
-              const rewritten = attrs.replace(ATTR_NAME_RE, (whole, space: string | undefined, name: string | undefined) =>
-                name === undefined ? whole : `${space}${camelToKebab(name)}`
-              )
-              return `<${rewriteTagName(tag)}${stampComponentTag(tag, rewritten)}>`
-            })
-            .replace(CLOSE_SLOT_RE, (_match, suffix: string, space: string) => `</slot.${camelToKebab(suffix)}${space}>`)
-            .replace(CLOSE_COMPONENT_RE, (_match, tag: string, space: string) => `</${componentTagName(tag)}${space}>`)
-    )
-    .join("")
-
 // <style scoped> support. Every element of the component's own template is
 // stamped with data-jq79="<hash>" and the style's selectors are rewritten to
 // require that attribute, so its rules can't reach anything the component
@@ -3200,12 +3090,6 @@ const scopeCss = (css: string, scope: string): string => {
   return Array.from(sheet.cssRules).map(rule => rule.cssText).join("\n")
 }
 
-// a component name has to be PascalCase to be usable: findComponentKey only
-// ever considers capitalized scope keys, so a lowercase name would declare a
-// component no tag could reference. It is also what keeps the named exports
-// from colliding with a definition's own fields, which are all lowercase
-const COMPONENT_NAME_RE = /^[A-Z][A-Za-z0-9]*$/
-
 // converts a string of HTML into an AST representation of the component:
 // - template: the non-script/style top-level elements, as TemplateNodes
 // - scripts/styles: { attrs, content } blocks in source order
@@ -3234,7 +3118,7 @@ const parseComponentString = (component: string): ComponentParts => {
   // self-closing tag is still one occurrence), then `...expr` -> :props.<n>
   // (which reads the raw camelCase before the parser can lowercase names),
   // then self-closing tags
-  const prepared = expandSelfClosingTags(expandPropsSpread(expandNameCase(component)))
+  const prepared = prepareSource(component)
   const parsedDOM = new DOMParser().parseFromString(`<template>${prepared}</template>`, "text/html")
   const root = parsedDOM.querySelector("template") as HTMLTemplateElement
 
@@ -3452,6 +3336,20 @@ type ScriptRun = { settled: Promise<unknown>; sync: boolean }
 const sourceUrlComment = (filename: string | undefined, index: number): string =>
   filename ? `\n//# sourceURL=${filename}?jq79-script=${index}` : ""
 
+// a script's function, named for devtools. A safe-mode miss throws, as a
+// script that doesn't compile always has - but saying which script, and why
+const compileScript = (params: string[], body: string, at: ScriptLocation): Function => {
+  try {
+    return makeFunction(params, body, sourceUrlComment(at.filename, at.index ?? 0))
+  } catch (error) {
+    if (!(error instanceof SafeEvalMiss)) throw error
+    throw new Error(
+      `jq79: safeEval() is on, and script ${at.index ?? 0} of ${at.filename ?? "a component built from a string"} ` +
+      `${error.reason}. ${error.hint}`
+    )
+  }
+}
+
 // what a <style> block injects into document.head: the scoped rewrite when it
 // has one, the source otherwise. A shadow root uses `content` directly instead
 // - scoping is what a shadow root already does, and doing both would break the
@@ -3474,9 +3372,51 @@ const headStyle = (style: TagBlock): string => style.scoped ?? style.content
 // isConnected check is what makes it survive a head somebody emptied
 const WRAPPER_STYLE = `:where([${COMPONENT_BOX_ATTR}]) { display: contents }`
 
+// ---------------------------------------------------------------------------
+// styles under safe mode
+//
+// A <style> element is inline style to a CSP, and a `style-src` without
+// 'unsafe-inline' refuses it - checked in Chromium, for a component's <style>
+// and <style scoped> alike, and for the wrapper rule every component box
+// needs. A constructed stylesheet adopted by the document or a shadow root is
+// CSSOM, which no CSP directive governs: in the same browser, under
+// `style-src 'self'`, it applied - in the document, in a shadow root, and
+// after an insertRule - with no violation. So under safe mode, component
+// styles are adopted sheets.
+//
+// Only under safe mode: an adopted sheet cascades after every stylesheet of
+// the document, <link> and <style> alike, which is a different place from the
+// end of <head> - a page that didn't ask keeps the order it has. And only
+// where the browser adopts sheets at all; elsewhere it is <style> elements, as
+// before (RECORD/2026-09-23.no-unsafe-eval.md)
+// ---------------------------------------------------------------------------
+
+const adoptsStyles = (): boolean =>
+  safeEvalOn && typeof Document !== "undefined" && "adoptedStyleSheets" in Document.prototype
+
+const constructedSheet = (css: string): CSSStyleSheet => {
+  const sheet = new CSSStyleSheet()
+  sheet.replaceSync(css)
+  return sheet
+}
+
+const adoptSheet = (target: Document | ShadowRoot, sheet: CSSStyleSheet) => {
+  if (!target.adoptedStyleSheets.includes(sheet)) target.adoptedStyleSheets = [...target.adoptedStyleSheets, sheet]
+}
+
+const unadoptSheet = (target: Document | ShadowRoot, sheet: CSSStyleSheet) => {
+  target.adoptedStyleSheets = target.adoptedStyleSheets.filter(adopted => adopted !== sheet)
+}
+
 let wrapperStyleEl: HTMLStyleElement | null = null
+// one sheet serves every root that adopts it: the document, and each shadow root
+let wrapperSheet: CSSStyleSheet | null = null
 
 const ensureWrapperStyle = () => {
+  if (adoptsStyles()) {
+    adoptSheet(document, wrapperSheet ??= constructedSheet(WRAPPER_STYLE))
+    return
+  }
   if (wrapperStyleEl?.isConnected) return
   wrapperStyleEl = document.createElement("style")
   wrapperStyleEl.textContent = WRAPPER_STYLE
@@ -3485,16 +3425,23 @@ const ensureWrapperStyle = () => {
 
 // document.head styles are shared by content and refcounted, so N instances
 // of the same component (e.g. one per :each item) inject a single <style> tag
-// that goes away when the last instance is destroyed
-const styleRegistry = new Map<string, { el: HTMLStyleElement; count: number }>()
+// that goes away when the last instance is destroyed - or, under safe mode, a
+// single adopted sheet
+const styleRegistry = new Map<string, { el?: HTMLStyleElement; sheet?: CSSStyleSheet; count: number }>()
 
 const acquireStyle = (content: string) => {
   let entry = styleRegistry.get(content)
   if (!entry) {
-    const el = document.createElement("style")
-    el.textContent = content
-    document.head.appendChild(el)
-    entry = { el, count: 0 }
+    if (adoptsStyles()) {
+      const sheet = constructedSheet(content)
+      adoptSheet(document, sheet)
+      entry = { sheet, count: 0 }
+    } else {
+      const el = document.createElement("style")
+      el.textContent = content
+      document.head.appendChild(el)
+      entry = { el, count: 0 }
+    }
     styleRegistry.set(content, entry)
   }
   entry.count++
@@ -3503,7 +3450,8 @@ const acquireStyle = (content: string) => {
 const releaseStyle = (content: string) => {
   const entry = styleRegistry.get(content)
   if (entry && --entry.count <= 0) {
-    entry.el.remove()
+    if (entry.sheet) unadoptSheet(document, entry.sheet)
+    else entry.el?.remove()
     styleRegistry.delete(content)
   }
 }
@@ -3540,10 +3488,9 @@ const runSetupScript = (code: string, scope: Record<string, any>, effect: (run: 
       (Reflect.has(target, key) || !(key in globalThis) && !(key in helpers)),
   })
   const state: { done?: boolean } = {}
-  const result: Promise<void> = new Function(
-    "$scope", "$__effect", "$__import", "$__state", ...Object.keys(helpers),
-    `return (async () => { with ($scope) { ${code} }\n;$__state.done = true })()${sourceUrlComment(at.filename, at.index ?? 0)}`
-  )(scriptScope, effect, importer, state, ...Object.values(helpers))
+  const result: Promise<void> = compileScript(setupParams(Object.keys(helpers)), setupBody(code), at)(
+    scriptScope, effect, importer, state, ...Object.values(helpers)
+  )
   result.catch(error => console.error("jq79: error in :setup script", error))
   trackScript(result)
   return { settled: result, sync: state.done === true }
@@ -3579,11 +3526,8 @@ const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
 // with no :setup at all) stays `null`, so its signature is still read from the
 // factory's first parameter
 const setupSignature = (script: TagBlock): PropDecl[] | null => {
-  const pattern = script.attrs[":setup"]
-  if (pattern === undefined) return null
-  if (pattern.trim() === "") return []
-  const props = parsePropsPattern(pattern)
-  if (!props) warnUnreadableSignature(script, pattern)
+  const props = readSetupSignature(script)
+  if (!props && script.attrs[":setup"] !== undefined) warnUnreadableSignature(script, script.attrs[":setup"])
   return props
 }
 
@@ -3610,20 +3554,6 @@ const warnUnreadableSignature = (script: TagBlock, pattern: string) => {
     `signature and takes whatever a parent passes - write the props it takes ` +
     `("{ a, b }"), a bare :setup for none, or "_" to stay open on purpose`
   )
-}
-
-// every prop name a component's scripts declare, across both script modes.
-// Read before the store exists, because what a component declares decides
-// which of its file's sibling components it can still see: declaring a name
-// says it comes from the parent, so the file's own definition of that name is
-// deliberately not in this component's scope
-const declaredPropNames = (scripts: TagBlock[]): Set<string> => {
-  const names = new Set<string>()
-  scripts.forEach(script => {
-    const declarations = parseFactoryProps(script.content) ?? setupSignature(script)
-    declarations?.forEach(({ name }) => names.add(name))
-  })
-  return names
 }
 
 // the same names, but null when NO script declared a signature at all - the
@@ -3739,10 +3669,9 @@ const interopDefault = (mod: any) => (mod && mod.default !== undefined ? mod.def
 const runFactoryScript = (code: string, scope: Record<string, any>, effect: (run: () => void) => void, instanceHelpers: Record<string, any> = {}, importer: (url: string) => Promise<any> = importResource, at: ScriptLocation = {}): ScriptRun => {
   const helpers = { ...SETUP_HELPERS, ...instanceHelpers }
   const $__exports: { default?: (props: Record<string, any>, ctx: Record<string, any>) => any; done?: boolean } = {}
-  const result: Promise<void> = new Function(
-    "$__exports", "$__default", "$__import", ...Object.keys(helpers),
-    `return (async () => { "use strict";\n${code}\n;$__exports.done = true })()${sourceUrlComment(at.filename, at.index ?? 0)}`
-  )($__exports, interopDefault, importer, ...Object.values(helpers))
+  const result: Promise<void> = compileScript(factoryParams(Object.keys(helpers)), factoryBody(code), at)(
+    $__exports, interopDefault, importer, ...Object.values(helpers)
+  )
 
   const logError = (error: any) => console.error("jq79: error in factory script", error)
   let invoked = false
@@ -3910,11 +3839,84 @@ const warnIfStuck = (component: Component79, gates: Promise<void>[]) => {
 }
 
 const fetchComponent = async (url: string): Promise<Component79> => {
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
+  // under safeEval()'s worker, the component's functions arrive beside it,
+  // and both have to be in before anyone can render it
+  const [text] = await Promise.all([
+    fetch(url).then(response => {
+      if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
+      return response.text()
+    }),
+    safeEvalWorker?.then(() => loadPrecompiled(url)),
+  ])
   // the URL names the component's scripts in devtools, and is where the
   // browser will look for the source when a breakpoint lands in one
-  return new Component79(await response.text(), { filename: url })
+  return new Component79(text, { filename: url })
+}
+
+// ---------------------------------------------------------------------------
+// safe eval's worker
+//
+// Without a bundler, a component's functions come from jq79-sw.js (src/sw.ts):
+// asked for `<url>?jq79-precompiled`, it fetches the component from the site
+// itself and answers with the script that registers its functions. Asked for
+// with a <script src>, which the CSP judges by URL - the site's own - and
+// carrying the page's nonce where there is one, for a CSP that works by nonce.
+// ---------------------------------------------------------------------------
+
+// set by safeEval() when it registers the worker: settles once the worker
+// controls the page, which is when a `?jq79-precompiled` request reaches it
+let safeEvalWorker: Promise<void> | undefined
+
+const DEFAULT_WORKER_URL = "/jq79-sw.js"
+
+// registers the worker and waits until it controls this page. On a first visit
+// it claims the page as it activates; a page loaded past it (a hard reload)
+// isn't controlled until it asks, so it asks
+const startWorker = async (url: string): Promise<void> => {
+  const container = typeof navigator === "undefined" ? undefined : navigator.serviceWorker
+  if (!container) {
+    throw new Error(
+      "jq79: safeEval() compiles components in a service worker, and this page can't have one - service workers " +
+      "need https (or localhost). Precompile with the jq79/vite plugin instead, or use safeEval({ nonce: true }) " +
+      "on a page whose server issues a nonce."
+    )
+  }
+  let registration: ServiceWorkerRegistration
+  try {
+    registration = await container.register(url)
+  } catch (error) {
+    throw new Error(
+      `jq79: safeEval() couldn't register its service worker at ${url} (${(error as Error).message}). ` +
+      "Serve jq79-sw.js from the jq79 package at your site's root, or pass its URL: safeEval({ worker: \"/path/jq79-sw.js\" })."
+    )
+  }
+  await container.ready
+  if (container.controller) return
+  await new Promise<void>(resolve => {
+    container.addEventListener("controllerchange", () => resolve(), { once: true })
+    if (container.controller) resolve()
+    else registration.active?.postMessage("jq79:claim")
+  })
+}
+
+// a component's precompiled script: the component's own URL (no fragment)
+// with the worker's parameter on it, loaded as a classic <script>
+const loadPrecompiled = (url: string): Promise<void> => {
+  const at = new URL(url, document.baseURI)
+  at.hash = ""
+  at.searchParams.set(PRECOMPILED_PARAM, "")
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script")
+    const nonce = pageNonce()
+    if (nonce) script.setAttribute("nonce", nonce)
+    script.src = at.href
+    script.onload = () => { script.remove(); resolve() }
+    script.onerror = () => {
+      script.remove()
+      reject(new Error(`jq79: the precompiled functions of ${url} did not load, and safeEval() can't render it without them`))
+    }
+    document.head.append(script)
+  })
 }
 
 // a parsed single-file component. Typical lifecycle:
@@ -3974,6 +3976,11 @@ export class Component79 {
   // shadow rendering keeps per-instance <style> elements; head rendering goes
   // through the shared refcounted styleRegistry instead
   private styleEls: HTMLStyleElement[] = []
+  // under safe mode, a shadow root's styles: the CSS, and the sheets built from
+  // it once there is a shadow root to adopt them (see placeShadowStyles)
+  private shadowCss: string[] | null = null
+  private shadowSheets: CSSStyleSheet[] = []
+  private sheetRoot: ShadowRoot | null = null
   private ownsSharedStyles = false
   private useShadow = false
   private mountRoot: Element | ShadowRoot | DocumentFragment | null = null
@@ -4073,7 +4080,7 @@ export class Component79 {
 
     // shadow styles live inline, right before the DOM they style (attach()
     // appends them ahead of the content), so they go back the same way
-    if (shadow) this.styleEls.forEach(el => parent.insertBefore(el, before))
+    if (shadow) this.placeShadowStyles(parent, before)
     parent.insertBefore(this.content!, before)
     this.mountRoot = parent
     this.settleMounted()
@@ -4120,6 +4127,48 @@ export class Component79 {
     return { ...debugFlags }
   }
 
+  // for a page whose CSP has no 'unsafe-eval': from here on the runtime never
+  // calls `new Function`. Opt-in, so a page that doesn't call it behaves
+  // exactly as before; global and one-way, like the CSP it exists for.
+  //
+  //   await Component79.safeEval()                  // precompiled by the worker: a miss is reported
+  //   await Component79.safeEval({ nonce: true })   // no worker: every function built with the page's nonce
+  //
+  // Precompiled functions come first either way (RECORD/2026-09-23.no-unsafe-eval.md).
+  //
+  // The plain form registers jq79-sw.js - served from the site's root, or
+  // wherever `worker` says - and resolves once it controls the page. From
+  // then on a component fetched by URL (Component79.fetch, an import() of an
+  // .html from a script) arrives with its functions, compiled by the worker
+  // from the same file. A component built from a string has no file to
+  // compile, and its misses are reported. `worker: false` registers nothing,
+  // for a page whose functions reach it another way - the jq79/vite plugin's.
+  //
+  // `{ nonce: true }` is for a page whose server issues a fresh nonce per
+  // response: it still turns the component's text into code in the browser, as
+  // eval would, only through a door just jq79 holds the key to. A static host's
+  // nonce never changes, and a nonce everyone knows protects nothing. It
+  // registers no worker unless `worker` asks for one too.
+  //
+  // With no nonce on the page, or no worker to be had, the promise rejects -
+  // and safe mode stays on: a page that asked for no eval never falls back to it
+  static safeEval(options: { nonce?: boolean; worker?: string | false } = {}): Promise<void> {
+    safeEvalOn = true
+    const steps: Promise<void>[] = []
+    if (options.nonce) {
+      const nonce = pageNonce()
+      if (nonce === undefined) {
+        steps.push(Promise.reject(new Error(
+          "jq79: safeEval({ nonce: true }) found no nonce on this page - no <script> carries one. " +
+          "The nonce belongs on the script that loads the page, the one the CSP names."
+        )))
+      } else safeEvalNonce = nonce
+    }
+    const worker = options.worker ?? (options.nonce ? false : DEFAULT_WORKER_URL)
+    if (worker !== false) steps.push(safeEvalWorker ??= startWorker(worker))
+    return Promise.all(steps).then(() => undefined)
+  }
+
   static fetch(url: string): PendingComponent79 {
     if (Array.isArray(url)) throw new TypeError("Component79.fetch takes one URL; use fetchAll for an array")
     return new PendingComponent79(fetchComponent(url))
@@ -4164,7 +4213,7 @@ export class Component79 {
     // what this component can see of its file's other components, and which of
     // its declared props arrived empty - both decided by the signature, before
     // the store exists (see siblingsInScope / UNFILLED_PROPS)
-    const declared = declaredPropNames(this.scripts)
+    const declared = declaredPropNames(this.scripts, setupSignature)
     const siblingScope = siblingsInScope(this.siblings, declared)
     const raw: Record<string, any> = siblingScope
       ? Object.assign(Object.create(siblingScope), data)
@@ -4302,11 +4351,9 @@ export class Component79 {
     })
 
     // scripts run before the template renders so `$:` values are initialized;
-    // a `:mounted` script defers entirely until mount() instead. A top-level
-    // `export default` switches the script to factory mode (plain lexical JS)
-    // a `:mounted` script is deferred by prepending the await on the code's own
-    // first line, so deferring doesn't shift the lines devtools reports for it
-    const defer = (code: string) => `await $mounted();${code}`
+    // a `:mounted` script defers entirely until mount() instead (see defer). A
+    // top-level `export default` switches the script to factory mode (plain
+    // lexical JS)
 
     // what the first render is still waiting for. A script holds the template
     // back until it returns or calls $mounted() - whichever comes first - so
@@ -4439,13 +4486,18 @@ export class Component79 {
       // the position carries nothing: :where() has no specificity, so an author
       // rule wins wherever it sits. What it does buy is that "the shadow root's
       // style" still means the component's own
-      const wrapperEl = document.createElement("style")
-      wrapperEl.textContent = WRAPPER_STYLE
-      this.styleEls = [...this.styles.map(style => {
-        const el = document.createElement("style")
-        el.textContent = style.content // the source: a shadow root scopes it already
-        return el
-      }), wrapperEl]
+      if (adoptsStyles()) {
+        // sheets, and only once there is a shadow root to adopt them
+        this.shadowCss = [...this.styles.map(style => style.content), WRAPPER_STYLE]
+      } else {
+        const wrapperEl = document.createElement("style")
+        wrapperEl.textContent = WRAPPER_STYLE
+        this.styleEls = [...this.styles.map(style => {
+          const el = document.createElement("style")
+          el.textContent = style.content // the source: a shadow root scopes it already
+          return el
+        }), wrapperEl]
+      }
     } else {
       this.styles.forEach(style => acquireStyle(headStyle(style)))
       this.ownsSharedStyles = true
@@ -4482,11 +4534,33 @@ export class Component79 {
     const root = this.useShadow && target instanceof Element
       ? target.shadowRoot ?? target.attachShadow({ mode: "open" })
       : target
-    if (this.useShadow) this.styleEls.forEach(el => root.appendChild(el))
+    if (this.useShadow) this.placeShadowStyles(root, null)
     root.appendChild(this.content!)
     this.mountRoot = root
     this.settleMounted()
     return this
+  }
+
+  // where a shadow-rendered component's styles go: <style> elements ahead of
+  // its content, as always - or, under safe mode, sheets adopted by the shadow
+  // root. Built on first placement, since only then is there a root; one that
+  // isn't a ShadowRoot (a fragment) can't adopt, and gets elements after all
+  private placeShadowStyles(root: Node, before: Node | null) {
+    if (this.shadowCss && typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot) {
+      if (this.sheetRoot && this.sheetRoot !== root) this.shadowSheets.forEach(sheet => unadoptSheet(this.sheetRoot!, sheet))
+      if (this.shadowSheets.length === 0) this.shadowSheets = this.shadowCss.map(css => css === WRAPPER_STYLE ? (wrapperSheet ??= constructedSheet(css)) : constructedSheet(css))
+      this.shadowSheets.forEach(sheet => adoptSheet(root, sheet))
+      this.sheetRoot = root
+      return
+    }
+    if (this.shadowCss && this.styleEls.length === 0) {
+      this.styleEls = this.shadowCss.map(css => {
+        const el = document.createElement("style")
+        el.textContent = css
+        return el
+      })
+    }
+    this.styleEls.forEach(el => root.insertBefore(el, before))
   }
 
   // `await $mounted()` means "rendered and on the page", so it waits for both -
@@ -4525,6 +4599,12 @@ export class Component79 {
     this.data?.$dispose()
     this.styleEls.forEach(el => el.parentNode?.removeChild(el))
     this.styleEls = []
+    // the wrapper sheet stays: other boxes in that root may need it, as the
+    // wrapper <style> stays in the document
+    if (this.sheetRoot) this.shadowSheets.forEach(sheet => { if (sheet !== wrapperSheet) unadoptSheet(this.sheetRoot!, sheet) })
+    this.shadowCss = null
+    this.shadowSheets = []
+    this.sheetRoot = null
     if (this.ownsSharedStyles) {
       this.styles.forEach(style => releaseStyle(headStyle(style)))
       this.ownsSharedStyles = false
@@ -4629,7 +4709,9 @@ export const parseComponent = (component: string): Component79 => new Component7
 
 // library helpers injected into setup scripts. They behave like extra
 // globals: a same-named scope property (render data or a top-level
-// declaration) shadows them
+// declaration) shadows them. Their names, in this order, are also
+// SETUP_HELPER_NAMES (source.ts) - what precompile compiles scripts with, so
+// the two change together
 const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, Component79 }
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
