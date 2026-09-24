@@ -178,6 +178,7 @@ When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$
 - [Reactive data](docs/reactive-data.md) — the standalone `$reactive` store: `$on`, `$onAny`, `$effect`.
 - [DOM helpers](docs/dom-helpers.md) — `$`, `$$` and `$create`.
 - [Vite plugin](docs/vite-plugin.md) — importing `.html` components as bundled modules, HMR, options.
+- [Content Security Policy](docs/csp.md) — `safeEval`: running without `'unsafe-eval'`, with Vite or with no bundler at all.
 - [Dev server](docs/dev-server.md) — `npx jq79 dev`: serve and hot-reload components with no build step.
 - [Development](docs/development.md) — running tests, building, publishing releases.
 

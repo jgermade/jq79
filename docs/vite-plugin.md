@@ -45,6 +45,10 @@ same `.html` file works unchanged in all three delivery modes:
   build of jq79. [`npx jq79 dev`](dev-server.md) serves and hot-reloads those
   files without a bundler in sight.
 
+The one thing the plugin can add is [`safeEval`](#safeeval--a-csp-without-unsafe-eval):
+each component's functions, precompiled into a script beside the bundle. The
+source still travels verbatim; the precompiled script sits next to it.
+
 ## `<style lang>` — CSS preprocessors
 
 A style block with a `lang` is compiled to plain CSS by the plugin, through
@@ -211,8 +215,29 @@ jq79({
   include: /\.c79\.html$/,
   // resolved absolute paths to skip even when include matches
   exclude: /\/email-templates\//,
+  // run without 'unsafe-eval': true, or { nonce: true } (default: off)
+  safeEval: true,
 })
 ```
+
+## `safeEval` — a CSP without `'unsafe-eval'`
+
+```js
+jq79({ safeEval: true })              // Content-Security-Policy: script-src 'self'
+jq79({ safeEval: { nonce: true } })   // Content-Security-Policy: script-src 'nonce-…'
+```
+
+Every imported component is precompiled at build time, and its functions ship
+as a script of their own beside the bundle — `UserCard.html.jq79-[hash].js` —
+which the component's module waits for before it exports the component. The
+runtime then never calls `new Function`: with `true`, anything that wasn't
+precompiled is reported in the console instead; with `{ nonce: true }`, it is
+built as a `<script>` carrying the page's nonce. The build reports an expression
+that doesn't compile, with its file.
+
+The wait is a top-level `await` — Vite 7 and later target it by default; on
+Vite 5 or 6, set `build.target: "es2022"`. The whole story, the no-bundler
+route included, is in [Content Security Policy](csp.md).
 
 ## Imports inside component scripts
 
