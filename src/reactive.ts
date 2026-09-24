@@ -178,14 +178,21 @@ const isStore = (value: any): boolean =>
 // during a proxy's `get` trap are attributed to whichever run is on top
 const trackerStack: Set<string>[] = []
 
+// the effect whose run is on top of trackerStack, or null while tracking is
+// suspended. A store read by an effect it doesn't hold adopts it (see adopt)
+let activeEffect: Effect | null = null
+
 // runs fn with dependency tracking suspended - reads inside it are attributed
 // to a throwaway set instead of the currently running effect
 export const untracked = <T>(fn: () => T): T => {
   trackerStack.push(new Set())
+  const outer = activeEffect
+  activeEffect = null
   try {
     return fn()
   } finally {
     trackerStack.pop()
+    activeEffect = outer
   }
 }
 
@@ -193,7 +200,39 @@ export const untracked = <T>(fn: () => T): T => {
 // own, plus any it was attached to), each keeping that store's trie in step
 // with the deps of the last settled run. It lives on the effect rather than
 // in a per-store map because `run` has to reach it without a lookup
-export type Effect = { deps: Set<string>; run: () => void; reindex: Set<(deps: Set<string>) => void>; deep: boolean; order: number }
+//
+// `home` is the effect set of the store that created it, which is what lets a
+// read skip the adoption check with one comparison. `adopted` maps every other
+// store that took it on (by that store's effect set) to the handle detaching
+// it, and `read` collects the ones the current run read - a store the settled
+// run didn't read lets go of it (see adopt)
+export type Effect = {
+  deps: Set<string>
+  run: () => void
+  reindex: Set<(deps: Set<string>) => void>
+  deep: boolean
+  order: number
+  home: Set<Effect>
+  adopted: Map<Set<Effect>, Unsubscribe> | null
+  read: Set<Set<Effect>> | null
+}
+
+// the settled run read none of these stores: they stop waking the effect.
+// `current = second` must leave `first` with nothing of it, or a write to the
+// store it dropped still re-runs it - it is indexed there under the same
+// namespace-free paths it reads off `second`
+const releaseUnread = (effect: Effect) => {
+  effect.adopted!.forEach((detach, store) => {
+    if (effect.read?.has(store)) return
+    detach()
+    effect.adopted!.delete(store)
+  })
+}
+
+const releaseAll = (effect: Effect) => {
+  effect.adopted?.forEach(detach => detach())
+  effect.adopted = null
+}
 
 // creation order, module-wide. The flat `effects` set used to give this for
 // free - iterating it ran effects oldest-first, so a parent's bindings always
@@ -226,6 +265,10 @@ const NO_DEPS: ReadonlySet<string> = new Set()
 // that exists in both stores wakes the effect from either. A spurious re-run,
 // never a stale render
 const ATTACH = "$__attach"
+
+// whether an effect is registered with this store - the holder of a bridge
+// asks, so it doesn't wake what the nested store already will (see effectsFor)
+const HOLDS = "$__holds"
 
 // the extra stores every effect created off a scope must be attached to. Read
 // by createEffectScope off the scope it is given, so a scope can hand the
@@ -339,7 +382,12 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       eachDeep(node, effect => matched.add(effect))
       // a nested store sits here: an effect that read through it holds this
       // path and nothing below it, so its own set is the whole channel
-      if (bridges.has(path)) eachOwn(node, effect => matched.add(effect))
+      //
+      // ...except an effect the nested store already wakes itself: one that
+      // read into it was adopted there (see adopt), and matches its own paths
+      // precisely. Waking it here too ran it twice per write
+      const bridged = bridges.get(path)
+      if (bridged) eachOwn(node, effect => { if (!bridged.store[HOLDS](effect)) matched.add(effect) })
       // ...whereas an array's length stands for the array: everything that
       // read an element has to hear a truncation, and those deps are below
       if (depth === segments.length - 2 && segments[depth + 1] === "length") {
@@ -774,6 +822,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       // KEYS_SEGMENT), so adds and deletes wake exactly the effects enumerating
       ownKeys(target) {
         trackerStack[trackerStack.length - 1]?.add(keysPath(path))
+        if (activeEffect !== null && activeEffect.home !== effects) adopt(activeEffect)
         return Reflect.ownKeys(target)
       },
       get(target, key, receiver) {
@@ -784,6 +833,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
 
         const dotKey = path ? `${path}.${key}` : key
         trackerStack[trackerStack.length - 1]?.add(dotKey)
+        if (activeEffect !== null && activeEffect.home !== effects) adopt(activeEffect)
 
         // nested objects are wrapped here rather than up front, so the object
         // handed to $reactive is never rewritten
@@ -904,6 +954,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
       reindex: new Set(),
       deep,
       order: effectsCreated++,
+      home: effects,
+      adopted: null,
+      read: null,
       run: () => {
         if (running) {
           dirty = true
@@ -914,12 +967,16 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
           let cycles = 0
           do {
             dirty = false
+            effect.read = null
             const deps = new Set<string>()
             trackerStack.push(deps)
+            const outer = activeEffect
+            activeEffect = effect
             try {
               run()
             } finally {
               trackerStack.pop()
+              activeEffect = outer
               effect.deps = deps
             }
           } while (dirty && ++cycles < 100)
@@ -928,6 +985,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
           if (dirty) console.error("jq79: an effect re-woke itself 100 times in a row (it writes what it reads); giving up on it settling")
         } finally {
           running = false
+          if (effect.adopted) releaseUnread(effect)
           // the settled deps are the only ones worth indexing: the repeats of
           // a dirty run overwrite each other, and a notify that lands mid-run
           // is queued rather than dispatched, so nothing reads the index in
@@ -942,6 +1000,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     const forget = () => {
       effects.delete(effect)
       stopIndexing()
+      releaseAll(effect)
     }
     // the shared case is rare (only slot content asks for it) and this
     // function is on the stack for as long as whatever it renders - a
@@ -972,9 +1031,29 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     }
   }
 
+  // an effect of another store just read this one. Tracking spans stores -
+  // the deps it recorded are this store's paths - but waking did not: the
+  // effect sat in its own store's index alone, where `list.1.busy` means
+  // nothing, so a write here reached it only if it had also read the path
+  // this store sits at in its own, and then through the bridge's catch-all.
+  // A `:each` row reads its item directly and never does, so it never updated.
+  // Registered here like slot content is (see ATTACH), and detached when the
+  // effect is disposed
+  //
+  // Only an effect that isn't already registered here some other way: slot
+  // content is attached to both its stores for as long as it lives, and is
+  // not this function's to release
+  const adopt = (effect: Effect) => {
+    ;(effect.read ??= new Set()).add(effects)
+    if (effect.adopted?.has(effects) || effects.has(effect)) return
+    ;(effect.adopted ??= new Map()).set(effects, $__attach(effect))
+  }
+
   const $dispose = () => {
     bridges.forEach(({ unsubscribe }) => unsubscribe())
     bridges.clear()
+    // ...and the stores that adopted this one's effects by being read
+    effects.forEach(effect => { if (effect.home === effects) releaseAll(effect) })
   }
 
   storeApi.$on = $on
@@ -982,6 +1061,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   storeApi.$effect = $effect
   storeApi.$dispose = $dispose
   storeApi[ATTACH] = $__attach
+  storeApi[HOLDS] = (effect: Effect) => effects.has(effect)
 
   return reactive
 }

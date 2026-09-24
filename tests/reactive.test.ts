@@ -423,6 +423,43 @@ describe("$reactive", () => {
       expect(seen).toEqual([1, 10, 20])
     })
 
+    // an effect that reads an object straight off the nested store - a `:each`
+    // row holding its item - records the nested store's paths and never the one
+    // the store sits at in its holder, so the bridge's re-notify couldn't reach
+    // it: rows over a shared `$reactive` never updated. The nested store adopts
+    // whatever effect reads it
+    it("wakes a holder's effect that read an element directly off the nested store", () => {
+      const app = $reactive({ list: [{ id: 0, busy: true }] })
+      const store = $reactive({ app })
+
+      const row = (store.app.list as any[])[0]
+      const seen: boolean[] = []
+      store.$effect(() => { seen.push(row.busy) })
+      app.list[0].busy = false
+      expect(seen).toEqual([true, false])
+
+      // and an element that arrived with a replacement of the array
+      app.list = [...app.list, { id: 1, busy: true }]
+      const added = app.list[1]
+      const seenAdded: boolean[] = []
+      store.$effect(() => { seenAdded.push(added.busy) })
+      app.list.find(item => item.id === 1)!.busy = false
+      expect(seenAdded).toEqual([true, false])
+    })
+
+    // adopted by the nested store AND reachable through the bridge: one write,
+    // one run, not one per channel
+    it("runs an effect that read through the nested store once per write", () => {
+      const cart = $reactive({ items: [{ n: 1 }] })
+      const store = $reactive({ cart })
+
+      let runs = 0
+      store.$effect(() => { runs++; store.cart.items[0].n })
+      cart.items[0].n = 2
+
+      expect(runs).toBe(2)
+    })
+
     it("drops its subscriptions on $dispose, so a shared store doesn't collect dead holders", () => {
       const cart = $reactive({ items: [] as string[] })
       const store = $reactive({ cart })
@@ -832,7 +869,7 @@ describe("a splice announced as the shift it is", () => {
 // package entry
 describe("a trie node's effect slots", () => {
   const effect = (order: number): Effect =>
-    ({ deps: new Set(), run: () => {}, reindex: new Set(), deep: false, order })
+    ({ deps: new Set(), run: () => {}, reindex: new Set(), deep: false, order, home: new Set(), adopted: null, read: null })
   const node = () =>
     ({ children: null, own: null, ownMany: null, deep: null, deepMany: null, parent: null, segment: "x" })
   const owners = (n: any) => { const seen: Effect[] = []; eachOwn(n, e => seen.push(e)); return seen }

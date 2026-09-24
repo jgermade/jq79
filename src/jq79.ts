@@ -2200,6 +2200,12 @@ const renderConditional = (branches: ConditionalBranch[], scope: Record<string, 
     current = boundsOf(rendered)
     anchor.parentNode!.insertBefore(rendered, anchor.nextSibling)
   })
+  // the branch lives inside whatever holds this chain: when that goes - an
+  // outer :if turning false, a :each row removed - the branch's effects go
+  // with it. Left to this chain's own effect, they outlived it, and a write
+  // that tore the outer branch down still woke them against the value that
+  // had just emptied it (`toast = null` evaluating `toast.action.label`)
+  fx.onDispose(() => branchFx?.dispose())
 
   return wrapper
 }
@@ -2565,6 +2571,9 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       closeRenderPass(pass)
     }
   })
+  // the rows live inside whatever holds this list, as a :if branch does (see
+  // renderConditional): torn down with it, not left subscribed to the store
+  fx.onDispose(() => entries.forEach(entry => entry.fx.dispose()))
 
   return wrapper
 }

@@ -1450,6 +1450,79 @@ describe(":each and in-place array mutation", () => {
   })
 })
 
+// a list inside something that gets torn down, and a list over a store the
+// component was handed rather than one it owns
+describe(":each and :if, nested and shared", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+
+  afterEach(() => container.remove())
+
+  for (const via of ["a prop", "a setup variable"]) {
+    it(`updates a row whose item came in with a replacement, over a store held as ${via}`, () => {
+      const store = $reactive({ list: [{ id: 0, busy: true }] })
+      ;(globalThis as any).__sharedStore = store
+      const template = `<ul><li :each="item in app.list">{{ item.id }}:{{ item.busy }}</li></ul>`
+      const jq79 = via === "a prop"
+        ? new Component79(template).mount(container, { app: store })
+        : new Component79(`<script :setup>const app = globalThis.__sharedStore</script>${template}`).mount(container, {})
+
+      store.list[0].busy = false
+      expect(container.textContent).toBe("0:false")
+
+      store.list = [...store.list, { id: 1, busy: true }]
+      expect(container.textContent).toBe("0:false1:true")
+
+      store.list.find(item => item.id === 1)!.busy = false
+      expect(container.textContent).toBe("0:false1:false")
+
+      // and once the component is gone, the shared store runs none of its rows
+      jq79.destroy()
+      expect(() => { store.list[1].busy = true }).not.toThrow()
+      delete (globalThis as any).__sharedStore
+    })
+  }
+
+  // the outer :if's own effect runs first and tears the branch down, but the
+  // inner chain's branch belonged to the inner chain alone: it stayed
+  // subscribed, and evaluated `toast.action.label` against a null toast
+  it("tears a nested :if down with the branch around it, before it can re-evaluate", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    const component = parseComponent(
+      `<div :if="toast"><button :if="toast.action">{{ toast.action.label }}</button></div>`
+    )
+    const data = $reactive<{ toast: any }>({ toast: { action: { label: "undo" } } })
+    container.appendChild(renderComponent(component, data))
+    expect(container.textContent).toBe("undo")
+
+    data.toast = null
+
+    expect(error).not.toHaveBeenCalled()
+    expect(container.textContent).toBe("")
+    error.mockRestore()
+  })
+
+  it("stops running the bindings of nested branches and rows once their branch is gone", () => {
+    let runs = 0
+    const component = parseComponent(
+      `<div :if="show"><p :if="true">{{ count(n) }}</p><i :each="x in list">{{ count(n) }}</i></div>`
+    )
+    const data = $reactive({ show: true, list: [1], n: 0, count: (value: number) => { runs++; return value } })
+    container.appendChild(renderComponent(component, data))
+    expect(runs).toBe(2)
+
+    data.show = false
+    runs = 0
+    data.n = 1
+
+    expect(runs).toBe(0)
+  })
+})
+
 // :html.allowed - the per-element destination policy over :html's sanitizer.
 // Value is an expression, like every : attribute: host patterns (string or
 // array) or a predicate; anything broken denies every destination
