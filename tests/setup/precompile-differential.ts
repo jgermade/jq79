@@ -44,7 +44,7 @@ if (typeof DOMParser !== "undefined") {
 }
 
 afterAll(async () => {
-  const { precompile } = await import("../../src/jq79")
+  const { precompile } = await import("../../src/precompile")
   const generated = new Set<string>()
   sources.forEach(source => precompile(source).forEach(([params, body]) => generated.add(keyOf(params, body))))
   const missed = [...compiled]

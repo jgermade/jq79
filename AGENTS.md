@@ -7,10 +7,15 @@ dependencies — `new Component79(src)` parses and mounts at runtime.
 Be concise in your answers. I prefer examples over long text.
 
 The source is small enough to read in a sitting: [`src/jq79.ts`](src/jq79.ts) is
-the core (parsing, rendering, components), with three leaf modules —
+the core (parsing, rendering, components), with its leaf modules —
 [`dom.ts`](src/dom.ts), [`reactive.ts`](src/reactive.ts),
-[`transform.ts`](src/transform.ts). Read the code before changing it; it's shorter
-than the docs.
+[`transform.ts`](src/transform.ts), and [`source.ts`](src/source.ts), the half of
+the core that reads a component as text (no DOM in it). A second entry,
+[`precompile.ts`](src/precompile.ts) (`jq79/precompile`), shares `source.ts` and
+[`html.ts`](src/html.ts) to find every function a component needs without
+rendering it; it is what safe mode runs on, and it stays out of the runtime so
+pages don't carry it. Read the code before changing it; it's shorter than the
+docs.
 
 `src/` is the library and nothing else — it ships to the browser. The build-time
 tooling lives in [`dev/`](dev/), and runs on node: the

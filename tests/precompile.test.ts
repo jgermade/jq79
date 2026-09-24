@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { parseHTML, type HTMLNode } from "../src/html"
+import { precompile } from "../src/precompile"
 
 // precompile() finds every function the runtime would build for a component,
 // without rendering it (RECORD/2026-09-23.no-unsafe-eval.md). Two things stand
@@ -111,7 +112,7 @@ const load = (entries: [string[], string][]) => {
 // a page in safe mode, where `new Function` throws as a CSP makes it throw
 const safePage = async (source: string) => {
   const library = await freshLibrary()
-  load(library.precompile(source))
+  load(precompile(source))
   await library.Component79.safeEval()
   globalThis.Function = new Proxy(RealFunction, {
     construct() { throw new EvalError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed") },
@@ -126,8 +127,14 @@ afterEach(() => {
 })
 
 describe("precompile", () => {
+  // the runtime is what every page loads, and a page has no use for the
+  // generator: it lives at jq79/precompile, for the worker and the Vite plugin
+  it("is its own entry: the runtime doesn't carry it", async () => {
+    const runtime: Record<string, unknown> = await freshLibrary()
+    expect(runtime.precompile).toBeUndefined()
+  })
+
   it("returns [params, body] pairs, deduplicated", async () => {
-    const { precompile } = await freshLibrary()
     const entries = precompile(`<p>{{ msg }}</p><b>{{ msg }}</b>`)
     // the scoped form and the `with` form of one expression, once each
     expect(entries).toHaveLength(2)
@@ -232,7 +239,6 @@ describe("precompile", () => {
   })
 
   it("skips a component the runtime refuses, and warns about nothing", async () => {
-    const { precompile } = await freshLibrary()
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     // a factory destructuring a ctx name from props throws when it renders
     expect(() => precompile(`<script>export default ({ $data }) => ({})</script><p>{{ x }}</p>`)).not.toThrow()
@@ -242,7 +248,6 @@ describe("precompile", () => {
   })
 
   it("runs where there is no DOM at all: it reads no document, window or DOMParser", async () => {
-    const { precompile } = await freshLibrary()
     const source = readFileSync(resolve("tests/fixtures/user-card.html"), "utf8")
     const expected = precompile(source)
     vi.stubGlobal("DOMParser", undefined)

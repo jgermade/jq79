@@ -18,6 +18,19 @@ export default defineConfig([
     target: "es2020",
   },
   {
+    // the generator safe mode runs on (RECORD/2026-09-23.no-unsafe-eval.md),
+    // exported as jq79/precompile: its own entry so the runtime every page
+    // loads doesn't carry it. Browser code with no DOM in it - it runs on node
+    // for the Vite plugin, and in a service worker
+    entry: { precompile: "src/precompile.ts" },
+    format: ["esm", "cjs"],
+    dts: false,
+    sourcemap: true,
+    minify: true,
+    clean: false,
+    target: "es2020",
+  },
+  {
     entry: { vite: "dev/vite.ts" }, // the Vite plugin, exported as jq79/vite
     format: ["esm", "cjs"],
     dts: false,
