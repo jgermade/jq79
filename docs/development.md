@@ -77,6 +77,16 @@ above: the fix for eager wrapping is not to re-wrap the store, it's to listen to
 it. It's dropped when the holder is destroyed (`$dispose`), or a long-lived store
 would collect a listener per component that ever held it.
 
+The bridge only reaches effects that read *through* the holder's path. One that
+reads an object straight off the nested store — a `:each` row holding its item —
+recorded the nested store's paths (`list.1.busy`) and nothing the holder
+re-notifies, so the nested store **adopts** it: any store read by an effect it
+doesn't hold registers that effect, for as long as its runs keep reading there.
+The bridge then skips what the nested store already wakes, so one write is one
+run. Both go when the effect is disposed — which is why a `:if` branch and a
+`:each` row are torn down with the scope that holds them, not only by their own
+chain or list: a shared store outlives the component.
+
 **Identity is keyed to the object, not to its path.** A reordered list has to hand
 back the same proxy for the same item, because [`:each`](template-syntax.md) diffs
 by reference (`Object.is`) — key the proxy cache by path instead and every row
