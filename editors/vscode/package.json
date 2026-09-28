@@ -1,0 +1,80 @@
+{
+  "name": "jq79-vscode",
+  "displayName": "jq79",
+  "description": "Syntax highlighting for jq79 components: <script lang=\"ts\">, <style lang=\"scss\">, and the HTML inside Component79(`…`) and tagged template literals",
+  "version": "0.0.1",
+  "publisher": "jgermade",
+  "license": "ISC",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jgermade/jq79.git",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "jq79",
+    "html",
+    "typescript",
+    "scss",
+    "template literal"
+  ],
+  "contributes": {
+    "grammars": [
+      {
+        "scopeName": "jq79.injection.script-lang",
+        "path": "./syntaxes/script-lang.tmLanguage.json",
+        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "embeddedLanguages": {
+          "source.ts": "typescript"
+        }
+      },
+      {
+        "scopeName": "jq79.injection.style-lang",
+        "path": "./syntaxes/style-lang.tmLanguage.json",
+        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "embeddedLanguages": {
+          "source.css.scss": "scss",
+          "source.css.less": "less",
+          "source.sass": "sass",
+          "source.stylus": "stylus"
+        }
+      },
+      {
+        "scopeName": "jq79.injection.template-literal",
+        "path": "./syntaxes/template-literal.tmLanguage.json",
+        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "embeddedLanguages": {
+          "text.html.basic": "html",
+          "source.css": "css",
+          "source.css.scss": "scss",
+          "source.css.less": "less",
+          "source.js": "javascript",
+          "source.ts": "typescript"
+        }
+      },
+      {
+        "scopeName": "jq79.injection.template-substitution",
+        "path": "./syntaxes/template-substitution.tmLanguage.json",
+        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "embeddedLanguages": {
+          "meta.embedded.line.js": "javascript"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "pretest": "node test/fetch-grammars.mjs",
+    "test": "node --test test/grammars.mjs",
+    "package": "npx --yes @vscode/vsce package --skip-license"
+  },
+  "devDependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
+  }
+}

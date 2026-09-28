@@ -1,0 +1,263 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "jq79.injection.style-lang",
+  "comment": "<style lang=\"scss|less|sass|styl\"> in the language it names. Mirrors the <style> rule of VS Code's HTML grammar. scss and less ship with VS Code; sass and stylus are only colored when an extension providing source.sass / source.stylus is installed.",
+  "injectionSelector": "L:text.html -comment -string",
+  "patterns": [
+    {
+      "include": "#style-scss"
+    },
+    {
+      "include": "#style-less"
+    },
+    {
+      "include": "#style-sass"
+    },
+    {
+      "include": "#style-stylus"
+    }
+  ],
+  "repository": {
+    "style-scss": {
+      "begin": "(?i)(<)(style)\\b(?!-)(?=(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\\blang\\s*=\\s*(?:\"\\s*(?:scss)\\s*\"|'\\s*(?:scss)\\s*'|(?:scss)(?![^\\s/>])))",
+      "beginCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.start.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        }
+      },
+      "end": "(?i)((<)/)(style)\\s*(>)",
+      "endCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.end.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "source.css-ignored-vscode"
+        },
+        "3": {
+          "name": "entity.name.tag.html"
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.html"
+        }
+      },
+      "name": "meta.embedded.block.html",
+      "patterns": [
+        {
+          "comment": "the block's content, once the tag's > is behind it. Its own rule, apart from the >, because vscode-textmate drops a rule whose only include names a grammar that isn't installed (source.sass without its extension): this way what goes is the coloring, not the tag's scopes",
+          "begin": "(?<=>)",
+          "end": "(?=</(?i:style))",
+          "contentName": "source.css.scss",
+          "patterns": [
+            {
+              "include": "source.css.scss"
+            }
+          ]
+        },
+        {
+          "begin": "\\G",
+          "end": "(>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.end.html"
+            }
+          },
+          "name": "meta.tag.metadata.style.start.html",
+          "patterns": [
+            {
+              "include": "text.html.basic#attribute"
+            }
+          ]
+        }
+      ]
+    },
+    "style-less": {
+      "begin": "(?i)(<)(style)\\b(?!-)(?=(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\\blang\\s*=\\s*(?:\"\\s*(?:less)\\s*\"|'\\s*(?:less)\\s*'|(?:less)(?![^\\s/>])))",
+      "beginCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.start.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        }
+      },
+      "end": "(?i)((<)/)(style)\\s*(>)",
+      "endCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.end.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "source.css-ignored-vscode"
+        },
+        "3": {
+          "name": "entity.name.tag.html"
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.html"
+        }
+      },
+      "name": "meta.embedded.block.html",
+      "patterns": [
+        {
+          "begin": "(?<=>)",
+          "end": "(?=</(?i:style))",
+          "contentName": "source.css.less",
+          "patterns": [
+            {
+              "include": "source.css.less"
+            }
+          ]
+        },
+        {
+          "begin": "\\G",
+          "end": "(>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.end.html"
+            }
+          },
+          "name": "meta.tag.metadata.style.start.html",
+          "patterns": [
+            {
+              "include": "text.html.basic#attribute"
+            }
+          ]
+        }
+      ]
+    },
+    "style-sass": {
+      "begin": "(?i)(<)(style)\\b(?!-)(?=(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\\blang\\s*=\\s*(?:\"\\s*(?:sass)\\s*\"|'\\s*(?:sass)\\s*'|(?:sass)(?![^\\s/>])))",
+      "beginCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.start.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        }
+      },
+      "end": "(?i)((<)/)(style)\\s*(>)",
+      "endCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.end.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "source.css-ignored-vscode"
+        },
+        "3": {
+          "name": "entity.name.tag.html"
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.html"
+        }
+      },
+      "name": "meta.embedded.block.html",
+      "patterns": [
+        {
+          "begin": "(?<=>)",
+          "end": "(?=</(?i:style))",
+          "contentName": "source.sass",
+          "patterns": [
+            {
+              "include": "source.sass"
+            }
+          ]
+        },
+        {
+          "begin": "\\G",
+          "end": "(>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.end.html"
+            }
+          },
+          "name": "meta.tag.metadata.style.start.html",
+          "patterns": [
+            {
+              "include": "text.html.basic#attribute"
+            }
+          ]
+        }
+      ]
+    },
+    "style-stylus": {
+      "begin": "(?i)(<)(style)\\b(?!-)(?=(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\\blang\\s*=\\s*(?:\"\\s*(?:styl|stylus)\\s*\"|'\\s*(?:styl|stylus)\\s*'|(?:styl|stylus)(?![^\\s/>])))",
+      "beginCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.start.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        }
+      },
+      "end": "(?i)((<)/)(style)\\s*(>)",
+      "endCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.style.end.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "source.css-ignored-vscode"
+        },
+        "3": {
+          "name": "entity.name.tag.html"
+        },
+        "4": {
+          "name": "punctuation.definition.tag.end.html"
+        }
+      },
+      "name": "meta.embedded.block.html",
+      "patterns": [
+        {
+          "begin": "(?<=>)",
+          "end": "(?=</(?i:style))",
+          "contentName": "source.stylus",
+          "patterns": [
+            {
+              "include": "source.stylus"
+            }
+          ]
+        },
+        {
+          "begin": "\\G",
+          "end": "(>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.end.html"
+            }
+          },
+          "name": "meta.tag.metadata.style.start.html",
+          "patterns": [
+            {
+              "include": "text.html.basic#attribute"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

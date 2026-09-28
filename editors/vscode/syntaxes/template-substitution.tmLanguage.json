@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "jq79.injection.template-substitution",
+  "comment": "${\u2026} and the escapes that stop one (\\${, \\`) anywhere inside a template literal the template-literal injection opened - an injection rather than a pattern of that rule, because the embedded grammar is usually several rules deep (inside a tag, inside an attribute value) when it meets one. JS's own rule is used in TypeScript files too: the JS grammar is generated from the TypeScript one and reads the same expressions.",
+  "injectionSelector": "L:meta.embedded.template-literal.jq79",
+  "patterns": [
+    {
+      "match": "\\\\[\\\\`$]",
+      "name": "constant.character.escape.js"
+    },
+    {
+      "include": "source.js#template-substitution-element"
+    }
+  ]
+}
