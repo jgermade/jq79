@@ -19,7 +19,7 @@ import { precompile, precompiledScript } from "jq79/precompile"
 // with fetch instead - with one deliberate exception, a block that says it is
 // written in something else: <style lang="scss"> (or less/stylus/sass) is
 // compiled to plain CSS here, and a TypeScript script - <script lang="ts">, or
-// the <script type="text/typescript"> editors read as one - to plain JS. Such a
+// the same mark spelled <script type="text/typescript"> - to plain JS. Such a
 // component only works through the bundler; loaded with fetch() it would reach
 // the runtime uncompiled, which the runtime warns about.
 //
@@ -298,10 +298,12 @@ const compileStyleBlocks = async (
 // languages a <script lang> is compiled from. Anything else is left as written
 // for the runtime to warn about, rather than guessed at
 const TS_LANGS = new Set(["ts", "typescript"])
-// the other spelling of the same mark, and the one editors read: a component is
-// a plain .html file, not an SFC, so nothing in an IDE knows what `lang` means
-// there - embedded-script tooling picks a language from `type`, and a typed
-// block without one is linted as JavaScript. The `x-` forms are the historical
+// the other spelling of the same mark. A component is a plain .html file, not
+// an SFC, so nothing in an editor knows what `lang` means there, and each mark
+// gets half of one: VS Code's HTML language service checks a `type` of
+// text/typescript as TypeScript (and `lang="ts"` as JavaScript), while its
+// grammar colors that `type` not at all (and `lang="ts"` as JavaScript). See
+// docs/vite-plugin.md#which-mark-in-vs-code. The `x-` forms are the historical
 // spelling of the same two media types
 const TS_TYPE_RE = /^(?:text|application)\/(?:x-)?typescript$/
 

@@ -262,9 +262,9 @@ resolves them, so an npm package works whether or not the page has an import map
 
 ## TypeScript
 
-A script block written in TypeScript is marked with `lang="ts"` — or with
-`type="text/typescript"`, which is the same mark and the one editors read, since
-a component is a plain `.html` file where no IDE knows what `lang` means — and
+A script block written in TypeScript is marked with `lang="ts"` or with
+`type="text/typescript"` (the same mark; [which one your editor reads
+better](vite-plugin.md#which-mark-in-vs-code) is the only difference). It is
 compiled by the [Vite plugin](vite-plugin.md#script-langts--typescript), the same
 deal `<style lang="scss">` gets. Both kinds of script take it, and the prop
 signature in `:setup` is compiled with the body:
@@ -294,9 +294,11 @@ so it runs, assigns to `number` and leaves `count` undeclared and non-reactive
 in silence. That's why the runtime warns about any `<script>` still carrying
 either mark when it parses one. If a component must work unbundled, write plain JS.
 
-Stripping is not checking: there is no type-checker for `.html` components, and
-editors won't read these blocks as TypeScript without an extension. If you want
-a component your tooling really understands, a
+Stripping is not checking: there is no type-checker for `.html` components yet.
+VS Code colors these blocks as TypeScript only with [the extension in this
+repo](../editors/vscode/), and its own checks read them as JavaScript, or as
+TypeScript that doesn't know a setup script's implicit names. If you want a
+component your tooling really understands, a
 [factory script](#factory-scripts-export-default) is plain lexical JS with no
 `with` and no rewriting — TypeScript on one of those is the closest this gets
 to an ordinary typed module.

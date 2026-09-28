@@ -104,12 +104,10 @@ written (the prop signature has its own section below):
 </script>
 ```
 
-**`type="text/typescript"` is the same mark, and the one editors read.** A
-component is a plain `.html` file, not a `.vue`/`.svelte` SFC, so no IDE knows
-what `lang` means inside one: HTML tooling picks an embedded script's language
-from `type`, and a `lang="ts"` block gets linted as JavaScript — a red line under
-every annotation. Write whichever your editor is happiest with; the plugin
-compiles both, and drops whichever attribute carried the mark:
+**`type="text/typescript"` is the same mark.** The plugin compiles either one,
+and drops whichever attribute carried it. Which one to write is a question of
+[what your editor does with it](#which-mark-in-vs-code), not of what the plugin
+does:
 
 ```html
 <script :setup="{ step = 1 }: Props" type="text/typescript">
@@ -142,9 +140,8 @@ declares its props in its first parameter, which is in the body, so it is
 already covered by the body's own transform.
 
 **It strips types; it does not check them.** There is no `.html`-aware
-type-checker, and editors won't treat these blocks as TypeScript without an
-extension. What you get is annotations that survive the runtime, not a checked
-component.
+type-checker yet. What you get is annotations that survive the runtime, not a
+checked component.
 
 **`lang="ts"` ties a component to the bundler**, exactly as `lang="scss"` does —
 and the runtime says so, for a sharper reason than it does with styles. A
@@ -159,6 +156,34 @@ One known limitation: the script devtools shows is the compiled one, so for a
 typed block the [line numbers](setup-scripts.md#debugging-a-script) drift from
 the `.html`'s — a multi-line annotation collapses. The plugin doesn't emit a
 source map for the inlined source today.
+
+### Which mark, in VS Code
+
+A component is a plain `.html` file, not a `.vue` or `.svelte` SFC, so nothing
+in VS Code knows what `lang` means in one. It reads an inline script twice, and
+each pass looks at something different. Its coloring only knows the JavaScript
+`type`s. Its checking takes the language from `type`, and treats no `type` as
+JavaScript. So each mark gets half:
+
+| in VS Code | `lang="ts"` | `type="text/typescript"` |
+|---|---|---|
+| coloring | as JavaScript, which reads TypeScript well enough | none |
+| errors, completion | as JavaScript: a red line under every annotation | as TypeScript, each script on its own: props, `$:` targets and `$mounted` are "Cannot find name" |
+
+Neither gets checking that understands a setup script. That takes a language
+server that knows jq79's implicit names, and there isn't one yet.
+
+[The extension in this repo](../editors/vscode/) (not on the Marketplace yet)
+colors both marks as TypeScript, and `<style lang>` in the language it names.
+Paired with `lang="ts"`, it is what works today. With the extension installed,
+add this to your settings to drop the red lines:
+
+```json
+{ "html.validate.scripts": false }
+```
+
+That turns off VS Code's checks for every inline script in `.html` files,
+TypeScript or not.
 
 ## Using an imported component
 
