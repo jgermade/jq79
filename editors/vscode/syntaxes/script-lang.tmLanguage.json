@@ -1,0 +1,122 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "jq79.injection.script-lang",
+  "comment": "<script lang=\"ts\"> (or type=\"text/typescript\", when there is no lang) as TypeScript. Mirrors the <script> rule of VS Code's HTML grammar, with source.ts where it has source.js; which blocks count is the jq79/vite plugin's test (dev/vite.ts, typescriptAttr): a lang answers on its own, and type is only read when there is none.",
+  "injectionSelector": "L:text.html -comment -string",
+  "patterns": [
+    {
+      "include": "#script-typescript"
+    }
+  ],
+  "repository": {
+    "script-typescript": {
+      "begin": "(?i)(<)(script)\\b(?!-)(?:(?=(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\\blang\\s*=\\s*(?:\"\\s*(?:ts|typescript)\\s*\"|'\\s*(?:ts|typescript)\\s*'|(?:ts|typescript)(?![^\\s/>])))|(?=(?!(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\\blang\\s*=)(?:[^>\"']|\"[^\"]*\"|'[^']*')*?\\btype\\s*=\\s*(?:\"\\s*(?:(?:text|application)/(?:x-)?typescript)\\s*\"|'\\s*(?:(?:text|application)/(?:x-)?typescript)\\s*'|(?:(?:text|application)/(?:x-)?typescript)(?![^\\s/>]))))",
+      "beginCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.script.start.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        }
+      },
+      "end": "(/)((?i:script))(>)",
+      "endCaptures": {
+        "0": {
+          "name": "meta.tag.metadata.script.end.html"
+        },
+        "1": {
+          "name": "punctuation.definition.tag.begin.html"
+        },
+        "2": {
+          "name": "entity.name.tag.html"
+        },
+        "3": {
+          "name": "punctuation.definition.tag.end.html"
+        }
+      },
+      "name": "meta.embedded.block.html",
+      "patterns": [
+        {
+          "begin": "(>)",
+          "beginCaptures": {
+            "0": {
+              "name": "meta.tag.metadata.script.start.html"
+            },
+            "1": {
+              "name": "punctuation.definition.tag.end.html"
+            }
+          },
+          "end": "((<))(?=/(?i:script))",
+          "endCaptures": {
+            "0": {
+              "name": "meta.tag.metadata.script.end.html"
+            },
+            "1": {
+              "name": "punctuation.definition.tag.begin.html"
+            },
+            "2": {
+              "name": "source.ts-ignored-vscode"
+            }
+          },
+          "patterns": [
+            {
+              "begin": "\\G",
+              "end": "(?=</(?i:script))",
+              "name": "source.ts",
+              "patterns": [
+                {
+                  "comment": "a // comment ends at </script>, not at the end of the line, as it does in the HTML grammar's JS",
+                  "begin": "(^[ \\t]+)?(?=//)",
+                  "beginCaptures": {
+                    "1": {
+                      "name": "punctuation.whitespace.comment.leading.ts"
+                    }
+                  },
+                  "end": "(?!\\G)",
+                  "patterns": [
+                    {
+                      "begin": "//",
+                      "beginCaptures": {
+                        "0": {
+                          "name": "punctuation.definition.comment.ts"
+                        }
+                      },
+                      "end": "(?=</script)|\\n",
+                      "name": "comment.line.double-slash.ts"
+                    }
+                  ]
+                },
+                {
+                  "begin": "/\\*",
+                  "captures": {
+                    "0": {
+                      "name": "punctuation.definition.comment.ts"
+                    }
+                  },
+                  "end": "\\*/|(?=</script)",
+                  "name": "comment.block.ts"
+                },
+                {
+                  "include": "source.ts"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "begin": "\\G",
+          "end": "(?=>)",
+          "name": "meta.tag.metadata.script.start.html",
+          "patterns": [
+            {
+              "include": "text.html.basic#attribute"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

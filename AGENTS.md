@@ -24,6 +24,12 @@ tooling lives in [`dev/`](dev/), and runs on node: the
 [Vite plugin](dev/vite.ts), the [dev server](dev/dev.ts) behind `npx jq79 dev`,
 and its [CLI](dev/cli.ts). Nothing in `src/` may import from `dev/`.
 
+[`editors/vscode/`](editors/vscode/) is a VS Code extension, a package of its
+own with its own `npm test`: injection grammars that color `<script lang="ts">`,
+`<style lang="scss">` and the HTML in `` Component79(`…`) ``. Which scripts count
+as TypeScript is the Vite plugin's rule, copied, so a change to one belongs in
+the other. Its plan is [RECORD/2026-09-28.an-editor-extension.md](RECORD/2026-09-28.an-editor-extension.md).
+
 ## Commands
 
 ```sh

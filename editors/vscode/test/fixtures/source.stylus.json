@@ -1,0 +1,5 @@
+{
+  "comment": "a stand-in for an installed stylus extension's grammar - just enough to tell its scope was reached. source.sass is left unregistered on purpose, for the other case: a lang whose grammar isn't installed",
+  "scopeName": "source.stylus",
+  "patterns": [{ "match": "\\bcolor\\b", "name": "support.type.property-name.stylus" }]
+}

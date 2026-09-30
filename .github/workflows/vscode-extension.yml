@@ -1,0 +1,39 @@
+# Do the editor injections still color what they claim to?
+#
+# editors/vscode/ is grammars only, written against VS Code's own HTML, JS, TS
+# and CSS grammars - so its tests tokenize with those, pinned to one VS Code
+# release (editors/vscode/test/fetch-grammars.mjs). Nothing in src/ or dev/
+# reaches it, which is why it runs only when it or this file changes.
+
+name: VS Code extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'editors/vscode/**'
+      - '.github/workflows/vscode-extension.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'editors/vscode/**'
+      - '.github/workflows/vscode-extension.yml'
+
+jobs:
+  grammars:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - run: npm install
+
+      - run: npm test

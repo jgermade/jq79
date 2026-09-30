@@ -3179,10 +3179,10 @@ const parseComponentString = (component: string): ComponentParts => {
   return parts
 }
 
-// the media types an editor reads as TypeScript. A component is a plain .html
-// file, not an SFC, so no IDE knows what `lang` means inside one - embedded
-// script tooling picks a language from `type` - and the plugin compiles a block
-// marked either way. Either mark still here means the same thing
+// the media types that mark a script as TypeScript, the other spelling of
+// `lang="ts"` (dev/vite.ts, TS_TYPE_RE, says why there are two). The plugin
+// compiles a block marked either way, so either mark still here means the same
+// thing
 const TS_SCRIPT_TYPE_RE = /^(?:text|application)\/(?:x-)?typescript$/i
 
 // the mark a script is still carrying that says the plugin never compiled it,
