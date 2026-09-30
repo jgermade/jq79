@@ -277,3 +277,114 @@ test("not inside strings or comments, nor a name that only ends in a tag", async
   const tags = tokens.filter(({ scopes }) => has(scopes, "entity.name.tag.html"))
   assert.deepEqual(tags, [], dump(tokens))
 })
+
+// ------------------------------------------------------------------ template syntax
+
+test(":attr and @event values are JS; plain attributes stay strings", async () => {
+  const tokens = await html(`<button :disabled="isSaving" @click.stop="count = count + 1" title="count">go</button>`)
+  assertIn(tokens, "isSaving", "source.js")
+  assertIn(tokens, "isSaving", "variable.other.readwrite")
+  assertIn(tokens, "+", "keyword.operator.arithmetic")
+  assertIn(tokens, ":disabled", "entity.other.attribute-name.html")
+  assertIn(tokens, "@click.stop", "entity.other.attribute-name.html")
+  assertIn(tokens, "\"", "punctuation.definition.string.begin.html")
+  assertIn(tokens, "count", "string.quoted.double.html", 2)
+  assertNotIn(tokens, "count", "source.js", 2)
+})
+
+test("single-quoted, unquoted, and valueless", async () => {
+  const tokens = await html(`<p :class='{ on }' :if=ready :else ...props.user></p>`)
+  assertIn(tokens, "on", "source.js")
+  assertIn(tokens, "ready", "source.js")
+  assertIn(tokens, ":else", "entity.other.attribute-name.html")
+  assertIn(tokens, "...", "keyword.operator.spread")
+  assertIn(tokens, "user", "variable.other.property")
+  assertIn(tokens, "p", "entity.name.tag.html", 1)
+})
+
+test(":each names its bindings", async () => {
+  const tokens = await html(`<li :each="(value, key) in labels" :key="key">{{ value }}</li>`)
+  assertIn(tokens, "value", "variable.parameter", 0)
+  assertIn(tokens, "key", "variable.parameter", 0)
+  assertIn(tokens, "in", "keyword.operator.expression.in")
+  assertIn(tokens, "labels", "variable.other.readwrite")
+})
+
+test(":setup and :slot are parameters, with their TypeScript type", async () => {
+  const tokens = await html(`<script :setup="{ step = 1 }: Props" lang="ts">\n  let n: number = 0\n</script>\n<List :slot="{ item }"></List>`)
+  assertIn(tokens, "step", "variable.parameter")
+  assertIn(tokens, "Props", "entity.name.type")
+  assertIn(tokens, "item", "variable.parameter")
+  // the annotation is still open at the quote, and must not run past it
+  assertIn(tokens, "lang", "entity.other.attribute-name.html")
+  assertIn(tokens, "number", "source.ts")
+})
+
+test("a value that spans lines", async () => {
+  const tokens = await html(`<p :if="\n  items.length &&\n  ready\n" :title="t">x</p>`)
+  assertIn(tokens, "length", "source.js")
+  assertIn(tokens, "ready", "source.js")
+  assertIn(tokens, "t", "source.js")
+  assertIn(tokens, "x", "text.html.derivative")
+  assertNotIn(tokens, "x", "source.js")
+})
+
+test("{{ }} in text is JS, and ends at the first }}", async () => {
+  const tokens = await html(`<p>total: {{ price * qty }} }}</p>`)
+  assertIn(tokens, "{{", "punctuation.section.embedded.begin.jq79")
+  assertIn(tokens, "price", "source.js")
+  assertIn(tokens, "*", "keyword.operator.arithmetic")
+  assertNotIn(tokens, "}}", "source.js", 1)
+  assertIn(tokens, "p", "entity.name.tag.html", 1)
+})
+
+test("{{ }} over lines, and an object literal inside", async () => {
+  const tokens = await html(`<span>{{ items\n  .filter(i => i.on)\n  .length }}</span><b>{{ { a: 1 }.a }}</b>`)
+  assertIn(tokens, "filter", "source.js")
+  assertIn(tokens, "length", "source.js")
+  assertIn(tokens, "span", "entity.name.tag.html", 1)
+  assertIn(tokens, "a", "meta.object-literal.key")
+  assertIn(tokens, "b", "entity.name.tag.html", 1)
+})
+
+test("{{ }} only in text: not in a script, a style, a plain attribute, or a comment", async () => {
+  const tokens = await html([
+    `<script>let s = "{{ a }}"</script>`,
+    `<style>.a::after { content: "{{ b }}" }</style>`,
+    `<p title="{{ c }}"></p>`,
+    `<!-- {{ d }} -->`,
+  ].join("\n"))
+  assert.ok(!tokens.some(({ scopes }) => has(scopes, "meta.interpolation.jq79")), dump(tokens))
+})
+
+test("attributes in text are text", async () => {
+  const tokens = await html(`<p>write :if="x" on the tag</p>`)
+  assert.ok(!tokens.some(({ scopes }) => has(scopes, "meta.attribute.directive.jq79")), dump(tokens))
+})
+
+test("the template syntax inside Component79(`…`), ${…} included", async () => {
+  const tokens = await js([
+    "new Component79(`",
+    "  <li :each=\"user in users\" :class=\"${cls}\">{{ user.name }}</li>",
+    "`)",
+    "after",
+  ].join("\n"))
+  assertIn(tokens, "user", "variable.parameter")
+  assertIn(tokens, "cls", "meta.template.expression")
+  assertIn(tokens, "name", "variable.other.property")
+  assertIn(tokens, "{{", "punctuation.section.embedded.begin.jq79")
+  assertIn(tokens, "after", "variable.other.readwrite")
+  assertNotIn(tokens, "after", "text.html.basic")
+})
+
+test("…and in a component string in a <script> of an .html page", async () => {
+  const tokens = await html("<script type=\"module\">\n  new Component79(`<p :title=\"t\">{{ label }}</p>`)\n</script>")
+  assertIn(tokens, "t", "meta.embedded.expression.jq79")
+  assertIn(tokens, "label", "meta.interpolation.jq79")
+})
+
+test("…but not in that string's own <script>", async () => {
+  const tokens = await js("new Component79(`\n  <script :setup>\n    let s = '{{ a }}'\n  </script>\n  <p>{{ b }}</p>\n`)")
+  const interpolated = tokens.filter(({ scopes }) => has(scopes, "meta.interpolation.jq79")).map(({ text }) => text.trim()).filter(Boolean)
+  assert.deepEqual(interpolated, ["{{", "b", "}}"], dump(tokens))
+})

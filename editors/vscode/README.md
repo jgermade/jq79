@@ -5,13 +5,17 @@ grammar doesn't know are written in another language. Grammars only: nothing
 runs, nothing is configured.
 
 ```html
-<script :setup="{ step = 1 }: Props" lang="ts">   <!-- TypeScript -->
+<script :setup="{ step = 1 }: Props" lang="ts">   <!-- TypeScript, the :setup signature too -->
   let count: number = 0
 </script>
 
 <style lang="scss" scoped>                         <!-- SCSS -->
   $gap: 4px;
 </style>
+
+<li :each="user in users" @click="pick(user)">    <!-- JS: every :attr, @event and {{ }} -->
+  {{ user.name }}
+</li>
 ```
 
 ```js
@@ -32,6 +36,10 @@ html`<li class="${cls}">${label}</li>`             // html, svg, css, scss, less
 | `<style lang="sass">` / `"styl"` | CSS | Sass / Stylus, if an extension for it is installed |
 | `` Component79(`…`) `` | a string | HTML |
 | `` html`…` `` `` css`…` `` `` ts`…` `` … | a string | that language |
+| `{{ expr }}` in text | text | JavaScript |
+| `:attr="…"`, `@event="…"`, `...spread` | a string | JavaScript |
+| `:each="item, i in items"` | a string | JavaScript, with `item` and `i` as bindings |
+| `:setup="{ step = 1 }: Props"`, `:slot="{ item }"` | a string | TypeScript parameters, type included |
 
 Which blocks count is the [Vite plugin](../../docs/vite-plugin.md)'s rule: `lang="ts"`
 or `lang="typescript"`, or — only when there is no `lang` — a `type` of
@@ -73,9 +81,17 @@ in, which is where all of these come from:
   (`` html`<input` ``).
 - **A `//` comment after code on the closing line swallows `</script>`** — as
   it does for plain JS in VS Code's own HTML grammar.
+- **An attribute value or a `{{ }}` is read a line at a time.** That is what
+  keeps an expression from running past its closing quote or `}}`; the cost is
+  that a template string or a `/* */` comment that spans two lines of one value
+  is colored as if each line started afresh.
+- **The attribute name and its `=` must be on one line**, and `:each`'s
+  bindings on the line its value opens on.
 - **It applies to every `.html` file**, not only to components: there is no way
   for a grammar to tell one from the other. `lang` on a `<script>` means nothing
-  to a browser, so outside jq79 it is rarely there to be matched.
+  to a browser, so outside jq79 it is rarely there to be matched. `{{ }}`,
+  `:attr` and `@event` are there in Vue, Alpine and Angular-style templates
+  too, and hold JavaScript in them as well.
 
 ## Installing it
 
@@ -83,7 +99,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.0.1.vsix
+code --install-extension jq79-vscode-0.0.2.vsix
 ```
 
 ## Working on it

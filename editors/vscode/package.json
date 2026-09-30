@@ -1,8 +1,8 @@
 {
   "name": "jq79-vscode",
   "displayName": "jq79",
-  "description": "Syntax highlighting for jq79 components: <script lang=\"ts\">, <style lang=\"scss\">, and the HTML inside Component79(`…`) and tagged template literals",
-  "version": "0.0.1",
+  "description": "Syntax highlighting for jq79 components: {{ }}, :attr and @event as JS, <script lang=\"ts\">, <style lang=\"scss\">, and the HTML inside Component79(`…`) and tagged template literals",
+  "version": "0.0.2",
   "publisher": "jgermade",
   "license": "ISC",
   "private": true,
@@ -64,6 +64,23 @@
         "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
         "embeddedLanguages": {
           "meta.embedded.line.js": "javascript"
+        }
+      },
+      {
+        "scopeName": "jq79.injection.template-attribute",
+        "path": "./syntaxes/template-attribute.tmLanguage.json",
+        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "embeddedLanguages": {
+          "meta.embedded.expression.jq79": "javascript",
+          "meta.embedded.parameters.jq79": "typescript"
+        }
+      },
+      {
+        "scopeName": "jq79.injection.template-interpolation",
+        "path": "./syntaxes/template-interpolation.tmLanguage.json",
+        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "embeddedLanguages": {
+          "meta.embedded.expression.jq79": "javascript"
         }
       }
     ]

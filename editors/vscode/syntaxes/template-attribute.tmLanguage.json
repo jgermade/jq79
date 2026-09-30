@@ -1,0 +1,397 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "jq79.injection.template-attribute",
+  "comment": "The values of jq79's attributes as the code they are: :attr and @event hold a JS expression (src/precompile.ts, collectExpressions, is the list of what gets evaluated), :each a binding and an expression, :setup and :slot a parameter pattern that may carry a TypeScript type. And ...spread, which is an attribute with no value. Each rule replaces VS Code's attribute rule for the attribute it matches, copying its shape (text.html.basic#attribute-interior) with code where it has a string.",
+  "injectionSelector": "L:(text.html meta.tag) -(meta.tag source) -comment",
+  "patterns": [
+    {
+      "include": "#params"
+    },
+    {
+      "include": "#each"
+    },
+    {
+      "include": "#expression"
+    },
+    {
+      "include": "#spread"
+    }
+  ],
+  "repository": {
+    "params": {
+      "comment": ":setup=\"{ step = 1 }: Props\", :slot=\"{ item }\", :slot.row=\"{ item }\": a function's parameter, and read as TypeScript's, type annotation included",
+      "begin": "(?<![^\\s])((?i::(?:setup|slot(?:\\.[^\\s\"'<>/=]*)?)))(?=\\s*=)",
+      "beginCaptures": {
+        "1": {
+          "name": "entity.other.attribute-name.html"
+        }
+      },
+      "end": "(?=\\s*+[^=\\s])",
+      "name": "meta.attribute.directive.jq79",
+      "patterns": [
+        {
+          "begin": "=",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.separator.key-value.html"
+            }
+          },
+          "end": "(?<=[^\\s=])(?!\\s*=)|(?=/?>)",
+          "patterns": [
+            {
+              "begin": "\"",
+              "beginCaptures": {
+                "0": {
+                  "name": "string.quoted.double.html punctuation.definition.string.begin.html"
+                }
+              },
+              "end": "\"",
+              "endCaptures": {
+                "0": {
+                  "name": "string.quoted.double.html punctuation.definition.string.end.html"
+                }
+              },
+              "contentName": "meta.embedded.parameters.jq79 source.ts",
+              "patterns": [
+                {
+                  "match": "[^\"]+",
+                  "captures": {
+                    "0": {
+                      "patterns": [
+                        {
+                          "include": "source.ts#function-parameters-body"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "begin": "'",
+              "beginCaptures": {
+                "0": {
+                  "name": "string.quoted.single.html punctuation.definition.string.begin.html"
+                }
+              },
+              "end": "'",
+              "endCaptures": {
+                "0": {
+                  "name": "string.quoted.single.html punctuation.definition.string.end.html"
+                }
+              },
+              "contentName": "meta.embedded.parameters.jq79 source.ts",
+              "patterns": [
+                {
+                  "match": "[^']+",
+                  "captures": {
+                    "0": {
+                      "patterns": [
+                        {
+                          "include": "source.ts#function-parameters-body"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "comment": "unquoted: one token, so a capture's patterns read it and nothing can run past it",
+              "match": "([^\\s\"'=<>`/]|/(?!>))+",
+              "name": "meta.embedded.parameters.jq79 source.ts",
+              "captures": {
+                "0": {
+                  "patterns": [
+                    {
+                      "include": "source.ts#function-parameters-body"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "each": {
+      "comment": ":each=\"item, i in items\": the bindings (EACH_PATTERN in src/source.ts), then the expression. The bindings are only recognized on the line the value opens on",
+      "begin": "(?<![^\\s])((?i::each))(?=\\s*=)",
+      "beginCaptures": {
+        "1": {
+          "name": "entity.other.attribute-name.html"
+        }
+      },
+      "end": "(?=\\s*+[^=\\s])",
+      "name": "meta.attribute.directive.jq79",
+      "patterns": [
+        {
+          "begin": "=",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.separator.key-value.html"
+            }
+          },
+          "end": "(?<=[^\\s=])(?!\\s*=)|(?=/?>)",
+          "patterns": [
+            {
+              "begin": "\"",
+              "beginCaptures": {
+                "0": {
+                  "name": "string.quoted.double.html punctuation.definition.string.begin.html"
+                }
+              },
+              "end": "\"",
+              "endCaptures": {
+                "0": {
+                  "name": "string.quoted.double.html punctuation.definition.string.end.html"
+                }
+              },
+              "contentName": "meta.embedded.expression.jq79 source.js",
+              "patterns": [
+                {
+                  "match": "[^\"]+",
+                  "captures": {
+                    "0": {
+                      "patterns": [
+                        {
+                          "match": "(?<=^|[\"'=])\\s*(\\()?\\s*([\\w$]+)\\s*(?:(,)\\s*([\\w$]+))?\\s*(\\))?\\s+(in)(?![\\w$])",
+                          "captures": {
+                            "1": {
+                              "name": "meta.brace.round.js"
+                            },
+                            "2": {
+                              "name": "variable.parameter.js"
+                            },
+                            "3": {
+                              "name": "punctuation.separator.comma.js"
+                            },
+                            "4": {
+                              "name": "variable.parameter.js"
+                            },
+                            "5": {
+                              "name": "meta.brace.round.js"
+                            },
+                            "6": {
+                              "name": "keyword.operator.expression.in.js"
+                            }
+                          }
+                        },
+                        {
+                          "include": "source.js#expression"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "begin": "'",
+              "beginCaptures": {
+                "0": {
+                  "name": "string.quoted.single.html punctuation.definition.string.begin.html"
+                }
+              },
+              "end": "'",
+              "endCaptures": {
+                "0": {
+                  "name": "string.quoted.single.html punctuation.definition.string.end.html"
+                }
+              },
+              "contentName": "meta.embedded.expression.jq79 source.js",
+              "patterns": [
+                {
+                  "match": "[^']+",
+                  "captures": {
+                    "0": {
+                      "patterns": [
+                        {
+                          "match": "(?<=^|[\"'=])\\s*(\\()?\\s*([\\w$]+)\\s*(?:(,)\\s*([\\w$]+))?\\s*(\\))?\\s+(in)(?![\\w$])",
+                          "captures": {
+                            "1": {
+                              "name": "meta.brace.round.js"
+                            },
+                            "2": {
+                              "name": "variable.parameter.js"
+                            },
+                            "3": {
+                              "name": "punctuation.separator.comma.js"
+                            },
+                            "4": {
+                              "name": "variable.parameter.js"
+                            },
+                            "5": {
+                              "name": "meta.brace.round.js"
+                            },
+                            "6": {
+                              "name": "keyword.operator.expression.in.js"
+                            }
+                          }
+                        },
+                        {
+                          "include": "source.js#expression"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "comment": "unquoted: one token, so a capture's patterns read it and nothing can run past it",
+              "match": "([^\\s\"'=<>`/]|/(?!>))+",
+              "name": "meta.embedded.expression.jq79 source.js",
+              "captures": {
+                "0": {
+                  "patterns": [
+                    {
+                      "match": "(?<=^|[\"'=])\\s*(\\()?\\s*([\\w$]+)\\s*(?:(,)\\s*([\\w$]+))?\\s*(\\))?\\s+(in)(?![\\w$])",
+                      "captures": {
+                        "1": {
+                          "name": "meta.brace.round.js"
+                        },
+                        "2": {
+                          "name": "variable.parameter.js"
+                        },
+                        "3": {
+                          "name": "punctuation.separator.comma.js"
+                        },
+                        "4": {
+                          "name": "variable.parameter.js"
+                        },
+                        "5": {
+                          "name": "meta.brace.round.js"
+                        },
+                        "6": {
+                          "name": "keyword.operator.expression.in.js"
+                        }
+                      }
+                    },
+                    {
+                      "include": "source.js#expression"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "expression": {
+      "comment": ":attr, :class.x, :model.x, :html.allowed, @event.mod: a JS expression",
+      "begin": "(?<![^\\s])([:@][^\\s\"'<>/=]+)(?=\\s*=)",
+      "beginCaptures": {
+        "1": {
+          "name": "entity.other.attribute-name.html"
+        }
+      },
+      "end": "(?=\\s*+[^=\\s])",
+      "name": "meta.attribute.directive.jq79",
+      "patterns": [
+        {
+          "begin": "=",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.separator.key-value.html"
+            }
+          },
+          "end": "(?<=[^\\s=])(?!\\s*=)|(?=/?>)",
+          "patterns": [
+            {
+              "begin": "\"",
+              "beginCaptures": {
+                "0": {
+                  "name": "string.quoted.double.html punctuation.definition.string.begin.html"
+                }
+              },
+              "end": "\"",
+              "endCaptures": {
+                "0": {
+                  "name": "string.quoted.double.html punctuation.definition.string.end.html"
+                }
+              },
+              "contentName": "meta.embedded.expression.jq79 source.js",
+              "patterns": [
+                {
+                  "match": "[^\"]+",
+                  "captures": {
+                    "0": {
+                      "patterns": [
+                        {
+                          "include": "source.js#expression"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "begin": "'",
+              "beginCaptures": {
+                "0": {
+                  "name": "string.quoted.single.html punctuation.definition.string.begin.html"
+                }
+              },
+              "end": "'",
+              "endCaptures": {
+                "0": {
+                  "name": "string.quoted.single.html punctuation.definition.string.end.html"
+                }
+              },
+              "contentName": "meta.embedded.expression.jq79 source.js",
+              "patterns": [
+                {
+                  "match": "[^']+",
+                  "captures": {
+                    "0": {
+                      "patterns": [
+                        {
+                          "include": "source.js#expression"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "comment": "unquoted: one token, so a capture's patterns read it and nothing can run past it",
+              "match": "([^\\s\"'=<>`/]|/(?!>))+",
+              "name": "meta.embedded.expression.jq79 source.js",
+              "captures": {
+                "0": {
+                  "patterns": [
+                    {
+                      "include": "source.js#expression"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "spread": {
+      "comment": "<SdkInfo ...sdk />: an identifier or member path spread as props (ATTR_SPREAD_RE in src/source.ts)",
+      "match": "(?<![^\\s])(\\.\\.\\.)([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)(?=[\\s/>]|$)",
+      "name": "meta.attribute.spread.jq79",
+      "captures": {
+        "1": {
+          "name": "keyword.operator.spread.js"
+        },
+        "2": {
+          "name": "meta.embedded.expression.jq79 source.js",
+          "patterns": [
+            {
+              "include": "source.js#expression"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
