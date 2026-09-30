@@ -1,5 +1,9 @@
 test/**
-node_modules/**
+src/**
+build.mjs
+tsconfig.json
+dist/*.map
+dist/component.js
 package-lock.json
 .gitignore
 *.vsix

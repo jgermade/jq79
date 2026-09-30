@@ -170,20 +170,23 @@ JavaScript. So each mark gets half:
 | coloring | as JavaScript, which reads TypeScript well enough | none |
 | errors, completion | as JavaScript: a red line under every annotation | as TypeScript, each script on its own: props, `$:` targets and `$mounted` are "Cannot find name" |
 
-Neither gets checking that understands a setup script. That takes a language
-server that knows jq79's implicit names, and there isn't one yet.
+Neither gets checking that understands a setup script: VS Code's own
+service doesn't know jq79's implicit names.
 
 [The extension in this repo](../editors/vscode/) (not on the Marketplace yet)
-colors both marks as TypeScript, and `<style lang>` in the language it names.
-Paired with `lang="ts"`, it is what works today. With the extension installed,
-add this to your settings to drop the red lines:
+does. It colors both marks as TypeScript, and `<style lang>` in the language
+it names, and it runs a language server that checks, completes and hovers a
+component's scripts the way the runtime compiles them: the `:setup` pattern
+types the props, `$:` declares its target, the scripts of a component share
+their names, and the helpers (`$mounted`, `$emit`, …) are in scope, typed.
+A `lang="ts"` script is type-checked; a JavaScript one is when `checkJs` is on,
+as any JS file.
 
-```json
-{ "html.validate.scripts": false }
-```
-
-That turns off VS Code's checks for every inline script in `.html` files,
-TypeScript or not.
+It also turns VS Code's own script checks off (`html.validate.scripts`), which
+would otherwise report the same scripts again, wrongly. That goes for every
+inline script in `.html` files, pages included; set it back to `true` if you
+want it there. The same checks run from a terminal, for CI, with
+[`jq79-check`](../editors/vscode/README.md#checking-from-a-terminal).
 
 ## Using an imported component
 

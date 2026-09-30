@@ -1,8 +1,7 @@
 # jq79 for VS Code
 
-Syntax highlighting for the parts of a jq79 component that VS Code's HTML
-grammar doesn't know are written in another language. Grammars only: nothing
-runs, nothing is configured.
+jq79 components in VS Code: their scripts checked, completed and hovered as
+the runtime compiles them, and every part of them colored in its language.
 
 ```html
 <script :setup="{ step = 1 }: Props" lang="ts">   <!-- TypeScript, the :setup signature too -->
@@ -49,24 +48,73 @@ the plugin wouldn't compile keeps VS Code's own coloring.
 `${…}` inside a literal is colored as JavaScript at any depth, an attribute
 value included.
 
-## What it doesn't do
+## What it checks
 
-**It colors; it doesn't check.** The red squiggles come from VS Code's HTML
-language service, which no grammar reaches. That service reads a script's
-language from `type` and ignores `lang`, so:
+A language server reads each component's `<script>`s the way the runtime
+compiles them, and runs TypeScript over that. So a setup script is checked in
+its own terms:
 
-- `lang="ts"` is colored by this extension and *checked as JavaScript* by VS
-  Code: a squiggle under every annotation. Turn the check off with
-  `"html.validate.scripts": false` (it goes for every inline script).
-- `type="text/typescript"` is colored by this extension and checked as
-  TypeScript by VS Code — which doesn't know jq79's implicit names (props,
-  `$:` declarations, `$mounted`) and flags those instead.
+```html
+<script :setup="{ step = 1 }: Props" lang="ts">
+  interface Props { step?: number }
+  let count = 0
+  $: doubled = count * step          // doubled: number
+  $: schedule(count)                 // the arguments are dependencies, not an error
+  await $mounted()
+  $emit("changed", doubled)          // $emit, $self, $reactive… typed
+  count = "one"                      // ✗ Type 'string' is not assignable to type 'number'
+</script>
+```
 
-Checking a component in its own terms needs a language server that knows those
-names. That is the next phase, and its plan is in
-[RECORD/2026-09-28.an-editor-extension.md](../../RECORD/2026-09-28.an-editor-extension.md).
+| in the component | what the checker sees |
+|---|---|
+| `:setup="{ step = 1 }: Props"` | the props, destructured with that type (the error in the pattern is reported on the attribute) |
+| `$: x = expr`, `x` declared nowhere | `let x = expr`, typed |
+| a name another `<script>` of the component declares | in scope (`any`): they share one store |
+| an assignment to a name declared nowhere | in scope: it goes to the store |
+| a *read* of a name declared nowhere | an error: `Cannot find name` |
+| `$`, `$$`, `$create`, `$reactive`, `$toRaw`, `Component79`, `$mounted`, `$self`, `$$self`, `$emit`, `$updateModel`, `$slots` | in scope, typed from the `jq79` package when the project has it |
+| a `<template name="Row">` of the same file | in scope as a component, unless a prop takes the name |
+| `await import("./Card.html")` | a component; `import("./util")` resolves as in any module |
+| a static `import` in a setup script | an error, as it is at runtime; in a factory script, a module import |
+| `export default (props, ctx) => …` | `ctx` typed: `$data`, `$effect`, `$emit`, … |
+| `<style lang="scss">` / `"less"` | checked as SCSS / Less |
 
-## Limits
+A `lang="ts"` script is type-checked. A JavaScript one gets completion, hover
+and go-to-definition, and is type-checked when `checkJs` is on (in a
+`tsconfig.json`/`jsconfig.json`, or `// @ts-check` in the script), as any JS
+file. The project's `tsconfig.json` is used when it takes the `.html` files
+(`"include": ["src/**/*.ts", "src/**/*.html"]`).
+
+**It turns VS Code's own script checks off** (`"html.validate.scripts": false`),
+because those read the same scripts again as plain JavaScript and report every
+jq79 name as missing. That setting covers every inline script in `.html` files,
+pages included, where this server doesn't check (a file with `<!doctype>`,
+`<html>`, `<head>` or `<body>` is a page). Set it back to `true` to have them
+there.
+
+**What isn't checked yet:**
+
+- **The template.** `{{ usr.name }}`, `:if`, `@click` are colored, not checked.
+- **Pages, and components inside `` Component79(`…`) `` strings.** Only
+  `.html` component files.
+- **Plain `<style>`**, which VS Code already checks as CSS.
+
+## Checking from a terminal
+
+The same checks, for CI:
+
+```sh
+node editors/vscode/dist/check.js                  # every .html under the current directory
+node editors/vscode/dist/check.js --checkJs        # …type-checking JavaScript components too
+node editors/vscode/dist/check.js --project tsconfig.json
+```
+
+It prints one line per problem (`file:line:col - error TS2322: …`) and exits 1
+when there is an error. It isn't published on its own yet; build it with
+`npm run build` in this directory.
+
+## Limits of the coloring
 
 TextMate grammars read one line at a time and can only close the rule they are
 in, which is where all of these come from:
@@ -99,17 +147,30 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.0.2.vsix
+code --install-extension jq79-vscode-0.1.0.vsix
 ```
 
 ## Working on it
 
 ```sh
 npm install
-npm test                                         # fetches VS Code's grammars once, then tokenizes
+npm test          # builds, type-checks, then: the grammars, the checker, the server over LSP
 node test/tokenize.mjs text.html.derivative some-component.html   # every token and its scopes
 ```
 
-The tests tokenize with VS Code's own HTML, JS, TS and CSS grammars, pinned to
-one release in [`test/fetch-grammars.mjs`](test/fetch-grammars.mjs) and wired
-from this `package.json`'s `injectTo`, the way VS Code wires them.
+- **Grammars** (`syntaxes/`): the tests tokenize with VS Code's own HTML, JS,
+  TS and CSS grammars, pinned to one release in
+  [`test/fetch-grammars.mjs`](test/fetch-grammars.mjs) and wired from this
+  `package.json`'s `injectTo`, the way VS Code wires them.
+- **The checker** (`src/component.ts`): a component file becomes one virtual
+  `.ts`/`.js` with a mapping back to the `.html`. What counts as a store name,
+  a factory script or a prop is the runtime's own code, imported from
+  [`src/transform.ts`](../../src/transform.ts) and
+  [`src/source.ts`](../../src/source.ts). Every component in
+  [`tutorial/`](../../tutorial/) must check clean
+  ([`test/check.mjs`](test/check.mjs)), so a runtime change that the virtual
+  code doesn't follow fails there.
+- **The server** (`src/server.ts`, `src/language.ts`) is
+  [Volar](https://volarjs.dev)'s, with TypeScript 5.9 shipped inside the
+  extension: Volar needs TypeScript's JavaScript API, which the native
+  TypeScript 7 doesn't have.

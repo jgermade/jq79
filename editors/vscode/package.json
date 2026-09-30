@@ -1,8 +1,8 @@
 {
   "name": "jq79-vscode",
   "displayName": "jq79",
-  "description": "Syntax highlighting for jq79 components: {{ }}, :attr and @event as JS, <script lang=\"ts\">, <style lang=\"scss\">, and the HTML inside Component79(`…`) and tagged template literals",
-  "version": "0.0.2",
+  "description": "jq79 components in VS Code: the TypeScript in their scripts checked, completed and hovered as the runtime compiles it, and {{ }}, :attr, @event, <script lang=\"ts\">, <style lang=\"scss\"> and Component79(`…`) colored in their language",
+  "version": "0.1.0",
   "publisher": "jgermade",
   "license": "ISC",
   "private": true,
@@ -12,10 +12,11 @@
     "directory": "editors/vscode"
   },
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Linters"
   ],
   "keywords": [
     "jq79",
@@ -24,12 +25,26 @@
     "scss",
     "template literal"
   ],
+  "main": "./dist/extension.js",
+  "bin": {
+    "jq79-check": "./dist/check.js"
+  },
+  "activationEvents": [
+    "onLanguage:html"
+  ],
   "contributes": {
     "grammars": [
       {
         "scopeName": "jq79.injection.script-lang",
         "path": "./syntaxes/script-lang.tmLanguage.json",
-        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "injectTo": [
+          "text.html.derivative",
+          "text.html.basic",
+          "source.js",
+          "source.js.jsx",
+          "source.ts",
+          "source.tsx"
+        ],
         "embeddedLanguages": {
           "source.ts": "typescript"
         }
@@ -37,7 +52,14 @@
       {
         "scopeName": "jq79.injection.style-lang",
         "path": "./syntaxes/style-lang.tmLanguage.json",
-        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "injectTo": [
+          "text.html.derivative",
+          "text.html.basic",
+          "source.js",
+          "source.js.jsx",
+          "source.ts",
+          "source.tsx"
+        ],
         "embeddedLanguages": {
           "source.css.scss": "scss",
           "source.css.less": "less",
@@ -48,7 +70,14 @@
       {
         "scopeName": "jq79.injection.template-literal",
         "path": "./syntaxes/template-literal.tmLanguage.json",
-        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "injectTo": [
+          "text.html.derivative",
+          "text.html.basic",
+          "source.js",
+          "source.js.jsx",
+          "source.ts",
+          "source.tsx"
+        ],
         "embeddedLanguages": {
           "text.html.basic": "html",
           "source.css": "css",
@@ -61,7 +90,14 @@
       {
         "scopeName": "jq79.injection.template-substitution",
         "path": "./syntaxes/template-substitution.tmLanguage.json",
-        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "injectTo": [
+          "text.html.derivative",
+          "text.html.basic",
+          "source.js",
+          "source.js.jsx",
+          "source.ts",
+          "source.tsx"
+        ],
         "embeddedLanguages": {
           "meta.embedded.line.js": "javascript"
         }
@@ -69,7 +105,14 @@
       {
         "scopeName": "jq79.injection.template-attribute",
         "path": "./syntaxes/template-attribute.tmLanguage.json",
-        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "injectTo": [
+          "text.html.derivative",
+          "text.html.basic",
+          "source.js",
+          "source.js.jsx",
+          "source.ts",
+          "source.tsx"
+        ],
         "embeddedLanguages": {
           "meta.embedded.expression.jq79": "javascript",
           "meta.embedded.parameters.jq79": "typescript"
@@ -78,20 +121,49 @@
       {
         "scopeName": "jq79.injection.template-interpolation",
         "path": "./syntaxes/template-interpolation.tmLanguage.json",
-        "injectTo": ["text.html.derivative", "text.html.basic", "source.js", "source.js.jsx", "source.ts", "source.tsx"],
+        "injectTo": [
+          "text.html.derivative",
+          "text.html.basic",
+          "source.js",
+          "source.js.jsx",
+          "source.ts",
+          "source.tsx"
+        ],
         "embeddedLanguages": {
           "meta.embedded.expression.jq79": "javascript"
         }
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "html.validate.scripts": false
+    }
   },
   "scripts": {
-    "pretest": "node test/fetch-grammars.mjs",
-    "test": "node --test test/grammars.mjs",
+    "build": "node build.mjs",
+    "vscode:prepublish": "node build.mjs",
+    "typecheck": "tsc -p .",
+    "pretest": "node test/fetch-grammars.mjs && node build.mjs && tsc -p .",
+    "test": "node --test test/grammars.mjs test/check.mjs test/server.mjs",
+    "check": "node dist/check.js",
     "package": "npx --yes @vscode/vsce package --skip-license"
   },
+  "dependencies": {
+    "typescript": "~5.9.3"
+  },
   "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/vscode": "~1.82.0",
+    "@volar/kit": "~2.4.28",
+    "@volar/language-core": "~2.4.28",
+    "@volar/language-server": "~2.4.28",
+    "@volar/language-service": "~2.4.28",
+    "@volar/typescript": "~2.4.28",
+    "esbuild": "^0.28.2",
+    "volar-service-css": "^0.0.71",
+    "volar-service-typescript": "^0.0.71",
+    "vscode-languageclient": "^9.0.1",
     "vscode-oniguruma": "^2.0.1",
-    "vscode-textmate": "^9.3.2"
+    "vscode-textmate": "^9.3.2",
+    "vscode-uri": "^3.2.0"
   }
 }
