@@ -203,13 +203,17 @@ HTML attributes VS Code's own HTML service offers:
 <Card :|               :title   title: string        ← the props Card declares, typed
                        :count   count?: number
                        :model  :props  :slot
+<Card @|               @picked                       ← what Card emits ($emit("picked", …))
+<Card><template :|     :slot.header                  ← the named slots Card renders
 <script :|             :setup  :mounted  lang="ts"
 <style |               scoped  lang
 <C|                    Card  ← the components in scope
 ```
 
-An attribute already on the tag isn't offered again, and nothing is offered in
-a script's or style's code, a comment or an attribute's value (a value is an
+The same goes inside a component literal (`` new Component79(`…`) ``), in a
+script or a page. An attribute already on the tag isn't offered again, and
+nothing is offered in a script's or style's code, a comment or an attribute's
+value (a value is an
 expression, completed by TypeScript, with the store's names). Hovering a
 directive (`:each`, `@click.prevent`, `:class.active`) says what it does.
 
@@ -311,7 +315,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.9.0.vsix
+code --install-extension jq79-vscode-0.10.0.vsix
 ```
 
 ## Working on it

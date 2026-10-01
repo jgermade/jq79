@@ -191,7 +191,7 @@ const preamble = (module: string): string => [
   // error; NoInfer, so the props written can't widen what is taken. A
   // component whose props are unknown (\`any\`, or no brand) takes anything
   `declare function __jq79Props<P>(component: { readonly __jq79Props?: P } | null | undefined, props: NoInfer<Partial<P>>): void;`,
-  `type __Jq79PropsOf<C extends (...args: any) => any> = { readonly __jq79Props?: Awaited<ReturnType<C>>["props"] };`,
+  `type __Jq79PropsOf<C extends (...args: any) => any> = { readonly __jq79Props?: Awaited<ReturnType<C>>["props"]; readonly __jq79Emits?: Awaited<ReturnType<C>>["emits"]; readonly __jq79Slots?: Awaited<ReturnType<C>>["slots"] };`,
   `type __Jq79Injected = { $emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; $slots: Record<string, true> };`,
   `export {};`,
   "",

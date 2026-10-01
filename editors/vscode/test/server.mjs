@@ -198,9 +198,12 @@ const tagsLines = [
   `<C></C>`,
   `<template name="Card">`,
   `  <script :setup="{ title, count = 0 }: { title: string; count?: number }" lang="ts"></script>`,
-  `  <p :each="i in items">{{ title }}</p>`,
+  `  <p :each="i in items">{{ title }}</p><button @click="$emit('picked', 1)"></button><slot.header></slot.header>`,
   `</template>`,
   `<script ></script>`,
+  `<Card @></Card>`,
+  `<Card><template :></template></Card>`,
+  `<template ></template>`,
 ]
 const tagsText = tagsLines.join("\n")
 writeFileSync(tagsFile, tagsText)
@@ -260,4 +263,47 @@ test("completion in an expression: the store's names, not the virtual code's own
   assert.ok(!labels.includes("items"), "the file's own component's, not Card's")
   const scaffolding = labels.filter(label => /^__|^\$__/.test(label))
   assert.deepEqual(scaffolding, [])
+})
+
+test("completion: what a component emits, on its tag", async () => {
+  const items = await offered(13, "<Card @")
+  assert.deepEqual(items["@picked"], ["jq79 emitted event", '@picked="$1"'])
+  assert.equal(items["@click"], undefined, "a DOM event never reaches a component's tag")
+})
+
+test("completion: a component's named slots, on a <template> in its tag; `name` only at the top", async () => {
+  assert.deepEqual((await offered(14, "<Card><template :"))[":slot.header"], ["jq79 slot", ":slot.header"])
+  assert.equal((await offered(14, "<Card><template :"))["name"], undefined)
+  assert.ok((await offered(15, "<template "))["name"])
+})
+
+// a literal's tags get the same, through its own text: the script's own code
+// is still the editor's TypeScript's
+test("completion in a literal, in a script and in a page", async () => {
+  await tagsOpened
+  const ask = async (file, languageId, text, marker) => {
+    const uri = pathToFileURL(join(dir, file)).href
+    writeFileSync(join(dir, file), text)
+    connection.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId, version: 1, text } })
+    const line = text.split("\n").findIndex(l => l.includes(marker))
+    const character = text.split("\n")[line].indexOf(marker) + marker.length
+    const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri }, position: { line, character } })
+    return (Array.isArray(list) ? list : list?.items ?? []).map(i => i.label)
+  }
+  const script = [
+    "const Row = new Component79(`",
+    "  <script :setup>let rows = [1]</script>",
+    "  <li :key=\"1\" :></li>",
+    "  <Ro></Ro>",
+    "  <template name=\"Rows\"><script :setup=\"{ count }\"></script></template>",
+    "`)",
+  ].join("\n")
+  assert.ok((await ask("lit.js", "javascript", script, `:key="1" :`)).includes(":each"))
+  assert.ok((await ask("lit2.js", "javascript", script.replace(`<li :key="1" :></li>`, "<Rows :></Rows>"), "<Rows :")).includes(":count"))
+  assert.ok((await ask("lit3.js", "javascript", script, "<Ro")).includes("Rows"))
+  // outside the literal: nothing of jq79's
+  const outside = await ask("lit4.js", "javascript", script + "\nconst x = 1 ", "const x = 1 ")
+  assert.ok(!outside.includes(":each"))
+  const page = ["<!doctype html>", "<script type=\"module\">", "  new Component79(`<p :></p>`)", "</script>"].join("\n")
+  assert.ok((await ask("page.html", "html", page, "<p :")).includes(":if"))
 })

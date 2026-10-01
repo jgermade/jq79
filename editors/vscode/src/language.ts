@@ -66,7 +66,9 @@ const literalCodes = (ts: typeof TS, literal: Literal, n: number, fileName: stri
       snapshot: snapshotOf(template.code),
       mappings: toFile(template.mappings, literal) as CodeMapping[],
       linkedCodeMappings: template.links,
-    })
+      // positions in the literal's text, as completion.ts reads it
+      jq79Tags: template.tags,
+    } as VirtualCode)
   }
   return codes
 }
@@ -80,6 +82,14 @@ const pageLiterals = (ts: typeof TS, text: string): Literal[] =>
     const contentStart = match.index! + match[0].indexOf(">") + 1
     return findLiterals(ts, match[2], TS_MARK_RE.test(match[1]) ? ts.ScriptKind.TS : ts.ScriptKind.JS, contentStart)
   })
+
+// the component literals of a file, numbered as their codes are
+// (literal<n>_script / _template): a page's, or a script's. An .html
+// component has none - it is a component itself
+export const literalsIn = (ts: typeof TS, languageId: string, text: string): Literal[] => {
+  if (languageId === "html") return generate(ts, text) ? [] : pageLiterals(ts, text)
+  return findLiterals(ts, text, scriptKindOf(ts, languageId))
+}
 
 // `fileName` is the file's base name, which the templates' code imports
 export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, fileName: string): VirtualCode => {
@@ -142,7 +152,17 @@ export const createScriptVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot
     id: "root",
     languageId,
     snapshot,
-    mappings: [none as CodeMapping],
+    // and each literal's text with completion on, which nothing else turns
+    // on in a script: completion.ts offers attributes and tags there. The
+    // TypeScript service is asked too, and has nothing in a string to offer
+    mappings: [
+      none as CodeMapping,
+      ...literals.filter(l => l.at.length).map(literal => {
+        const first = literal.at.find(at => at !== -1) ?? 0
+        const last = [...literal.at].reverse().find(at => at !== -1) ?? first
+        return { sourceOffsets: [first], generatedOffsets: [first], lengths: [last + 1 - first], data: { completion: true } } as CodeMapping
+      }),
+    ],
     embeddedCodes: literals.flatMap((literal, n) => literalCodes(ts, literal, n, fileName)),
   }
 }

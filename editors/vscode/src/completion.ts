@@ -20,6 +20,8 @@ import type { CompletionItem, InsertTextFormat, LanguageServicePlugin, LanguageS
 import type * as TS from "typescript"
 import { URI } from "vscode-uri"
 import { componentScopes, splitComponents } from "./component"
+import { literalsIn } from "./language"
+import { parseTree, type TElement, type TNode } from "./template"
 
 const DOCS = "https://github.com/jgermade/jq79/blob/main/docs/template-syntax.md"
 
@@ -129,22 +131,33 @@ export const whereAt = (text: string, offset: number): Where | undefined => {
   return { kind: "attribute", tagStart: lt, tag: open[1], fragment: fragment[1], present }
 }
 
-// ------------------------------------------------------------------ the props a tag takes
+// ------------------------------------------------------------------ the text a position is in
 
-type Prop = { name: string; type: string; optional: boolean; doc: string }
+// a component's text the cursor is in - an .html component's, or a literal's
+// as the runtime receives it - with where the cursor is in it, the way back to
+// the document, and the template code TypeScript knows it by
+type Source = {
+  uri: URI
+  text: string
+  index: number
+  toDocument: (index: number) => number
+  templateId: string
+  templateFile: string
+}
 
-// what TypeScript says the component at a tag takes: the type its
-// __jq79Props carries, on the variable the template's code checks the tag's
-// props against (template.ts, componentTag)
-const propsOf = (ts: typeof TS, context: LanguageServiceContext, sourceUri: URI, tagStart: number): Prop[] | undefined => {
-  const script = context.language.scripts.get(sourceUri)
-  const template = script?.generated?.root.embeddedCodes?.find(code => code.id === "template") as { jq79Tags?: { start: number; variable: string }[] } | undefined
+// ------------------------------------------------------------------ what a tag's component carries
+
+// the brand on the variable the template's code checks a component tag
+// against (template.ts, componentTag): `__jq79Props`, `__jq79Emits` or
+// `__jq79Slots`, as TypeScript types it (component.ts, __Jq79Typed)
+const brandOf = (ts: typeof TS, context: LanguageServiceContext, source: Source, tagStart: number, property: string) => {
+  const script = context.language.scripts.get(source.uri)
+  const template = script?.generated?.root.embeddedCodes?.find(code => code.id === source.templateId) as { jq79Tags?: { start: number; variable: string }[] } | undefined
   const variable = template?.jq79Tags?.find(tag => tag.start === tagStart)?.variable
   const languageService = context.inject<{ "typescript/languageService": () => TS.LanguageService }>("typescript/languageService")
-  const asFileName = context.project.typescript?.uriConverter.asFileName
-  if (!variable || !languageService || !asFileName) return undefined
+  if (!variable || !languageService) return undefined
   const program = languageService.getProgram()
-  const file = program?.getSourceFile(`${asFileName(sourceUri)}.template.ts`)
+  const file = program?.getSourceFile(source.templateFile)
   if (!program || !file) return undefined
   let declaration: TS.VariableDeclaration | undefined
   const find = (node: TS.Node) => {
@@ -155,18 +168,54 @@ const propsOf = (ts: typeof TS, context: LanguageServiceContext, sourceUri: URI,
   find(file)
   if (!declaration) return undefined
   const checker = program.getTypeChecker()
-  const brand = checker.getTypeAtLocation(declaration.name).getProperty("__jq79Props")
+  const brand = checker.getTypeAtLocation(declaration.name).getProperty(property)
   if (!brand) return undefined
-  const props = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(brand, declaration))
-  if (props.flags & ts.TypeFlags.Any) return undefined
-  return checker.getPropertiesOfType(props)
+  const type = checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(brand, declaration))
+  if (type.flags & ts.TypeFlags.Any) return undefined
+  return { checker, declaration, type }
+}
+
+type Prop = { name: string; type: string; optional: boolean; doc: string }
+
+// the props the component at a tag takes, typed
+const propsOf = (ts: typeof TS, context: LanguageServiceContext, source: Source, tagStart: number): Prop[] | undefined => {
+  const found = brandOf(ts, context, source, tagStart, "__jq79Props")
+  if (!found) return undefined
+  const { checker, declaration, type } = found
+  return checker.getPropertiesOfType(type)
     .filter(p => !p.name.startsWith("__jq79"))
     .map(p => ({
       name: p.name,
-      type: checker.typeToString(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(p, declaration!))),
+      type: checker.typeToString(checker.getNonNullableType(checker.getTypeOfSymbolAtLocation(p, declaration))),
       optional: (p.flags & ts.SymbolFlags.Optional) !== 0,
       doc: ts.displayPartsToString(p.getDocumentationComment(checker)),
     }))
+}
+
+// the names a union of string literals holds: what the component at a tag
+// emits, or the slots it renders
+const namesOf = (ts: typeof TS, context: LanguageServiceContext, source: Source, tagStart: number, property: string): string[] => {
+  const found = brandOf(ts, context, source, tagStart, property)
+  if (!found || found.type.flags & ts.TypeFlags.Never) return []
+  const types = found.type.isUnion() ? found.type.types : [found.type]
+  return types.filter(t => t.isStringLiteral()).map(t => (t as TS.StringLiteralType).value)
+}
+
+// the element whose open tag starts at `start`, and the one it is in
+const parentOf = (nodes: TNode[], start: number, parent?: TElement): TElement | undefined | null => {
+  for (const node of nodes) {
+    if (!("tag" in node)) continue
+    if (node.start === start) return parent ?? null
+    if (node.start < start && (node.end ?? Infinity) > start) return parentOf(node.children, start, node)
+  }
+  return undefined
+}
+
+// the last place in the file a literal's characters up to `i` have (an escape
+// writes characters the file has no single place for)
+const lastKnown = (at: number[], i: number): number | undefined => {
+  for (let j = Math.min(i, at.length - 1); j >= 0; j--) if (at[j] !== -1) return at[j]
+  return undefined
 }
 
 // ------------------------------------------------------------------ the plugin
@@ -182,30 +231,52 @@ export const createJq79TemplateService = (ts: typeof TS): LanguageServicePlugin 
     hoverProvider: true,
   },
   create(context) {
-    // the source an embedded document of an .html file stands for, when this
-    // is that file's root code (the file itself)
-    const sourceOf = (uri: string): { uri: URI; text: string } | undefined => {
+    // the component text at `offset` of a root code: an .html component's
+    // whole text, or the literal the offset is in, in a page or a script
+    const sourceAt = (uri: string, offset: number): Source | undefined => {
       const decoded = context.decodeEmbeddedDocumentUri(URI.parse(uri))
       if (!decoded || decoded[1] !== "root") return undefined
       const script = context.language.scripts.get(decoded[0])
-      if (!script || script.languageId !== "html") return undefined
-      return { uri: decoded[0], text: script.snapshot.getText(0, script.snapshot.getLength()) }
+      const asFileName = context.project.typescript?.uriConverter.asFileName
+      if (!script || !asFileName) return undefined
+      const text = script.snapshot.getText(0, script.snapshot.getLength())
+      const fileName = asFileName(decoded[0])
+      if (script.languageId === "html" && script.generated?.root.embeddedCodes?.some(code => code.id === "template")) {
+        return { uri: decoded[0], text, index: offset, toDocument: i => i, templateId: "template", templateFile: `${fileName}.template.ts` }
+      }
+      const literals = literalsIn(ts, script.languageId, text)
+      for (const [n, literal] of literals.entries()) {
+        const at = literal.at
+        const end = (lastKnown(at, at.length - 1) ?? -2) + 1
+        const index = offset === end ? at.length : at.indexOf(offset)
+        if (index === -1) continue
+        return {
+          uri: decoded[0],
+          text: literal.text,
+          index,
+          // a position the literal's text has no character of (an escape) is
+          // the nearest one before it that it has
+          toDocument: i => (i >= at.length ? end : lastKnown(at, i) ?? at.find(a => a !== -1)!),
+          templateId: `literal${n}_template`,
+          templateFile: `${fileName}.literal${n}.template.ts`,
+        }
+      }
+      return undefined
     }
 
     return {
       provideCompletionItems(document, position) {
-        const source = sourceOf(document.uri)
+        const source = sourceAt(document.uri, document.offsetAt(position))
         if (!source) return undefined
-        const offset = document.offsetAt(position)
-        const where = whereAt(source.text, offset)
+        const where = whereAt(source.text, source.index)
         if (!where) return undefined
-        const range = { start: document.positionAt(offset - where.fragment.length), end: position }
+        const range = { start: document.positionAt(source.toDocument(source.index - where.fragment.length)), end: position }
         const items: CompletionItem[] = []
         const add = (label: string, kind: Kind, newText: string, doc?: string, detail?: string, sort = "1") =>
           items.push({ label, kind, detail, documentation: doc ? { kind: "markdown", value: doc } : undefined, insertTextFormat: SNIPPET, textEdit: { range, newText }, sortText: `${sort}${label}` })
 
         if (where.kind === "tag") {
-          // the components the file's components have in scope, by name
+          // the components the text's components have in scope, by name
           const names = new Set(componentScopes(ts, source.text).flatMap(scope => scope.names).filter(name => /^[A-Z]/.test(name)))
           names.forEach(name => add(name, KIND.class, name, undefined, "component"))
           return { isIncomplete: false, items }
@@ -218,8 +289,15 @@ export const createJq79TemplateService = (ts: typeof TS): LanguageServicePlugin 
 
         if (tag === "script") offer(SCRIPT_ATTRIBUTES)
         else if (tag === "style") offer(STYLE_ATTRIBUTES)
-        else if (tag === "template") offer(TEMPLATE_ATTRIBUTES)
-        else if (where.fragment.startsWith("@")) {
+        else if (tag === "template") {
+          // in a component's tag, the content for one of its named slots
+          const parent = parentOf(parseTree(source.text), where.tagStart)
+          if (parent && isComponentTag(parent.tag)) {
+            namesOf(ts, context, source, parent.start, "__jq79Slots")
+              .filter(name => !where.present.has(`:slot.${name}`.toLowerCase()))
+              .forEach(name => add(`:slot.${name}`, KIND.property, `:slot.${name}`, `The content for <${parent.tag}>'s \`<slot.${name}>\`. A value names the slot props it reads: \`:slot.${name}="{ item }"\`.`, "jq79 slot", "0"))
+          } else if (parent === null) offer(TEMPLATE_ATTRIBUTES)
+        } else if (where.fragment.startsWith("@")) {
           const dot = where.fragment.indexOf(".")
           if (dot !== -1) {
             // modifiers, after what is written so far
@@ -227,13 +305,18 @@ export const createJq79TemplateService = (ts: typeof TS): LanguageServicePlugin 
             const used = new Set(where.fragment.slice(dot + 1).split("."))
             Object.entries(MODIFIERS).filter(([m]) => !used.has(m))
               .forEach(([m, doc]) => add(`${written}${m}`, KIND.event, `${written}${m}`, doc, "jq79 modifier"))
-          } else if (!isComponentTag(where.tag)) {
+          } else if (isComponentTag(where.tag)) {
+            // on a component's tag, what it emits
+            namesOf(ts, context, source, where.tagStart, "__jq79Emits")
+              .filter(name => !where.present.has(`@${name}`.toLowerCase()))
+              .forEach(name => add(`@${name}`, KIND.event, `@${name}="$1"`, `What <${where.tag}> emits as \`$emit("${name}", …)\`; the payload is \`$event.detail\`.`, "jq79 emitted event", "0"))
+          } else {
             EVENTS.filter(e => !where.present.has(`@${e}`))
               .forEach(e => add(`@${e}`, KIND.event, `@${e}="$1"`, `Listens to \`${e}\`, with \`$event\` in scope.`, "jq79 event"))
           }
         } else {
           if (isComponentTag(where.tag)) {
-            const props = propsOf(ts, context, source.uri, where.tagStart)
+            const props = propsOf(ts, context, source, where.tagStart)
             const model = where.fragment.toLowerCase().startsWith(":model.")
             props?.filter(p => !where.present.has(`:${p.name}`.toLowerCase()) && !where.present.has(p.name.toLowerCase()))
               .forEach(p => {
@@ -248,12 +331,11 @@ export const createJq79TemplateService = (ts: typeof TS): LanguageServicePlugin 
       },
 
       provideHover(document, position) {
-        const source = sourceOf(document.uri)
+        const source = sourceAt(document.uri, document.offsetAt(position))
         if (!source) return undefined
-        const offset = document.offsetAt(position)
         // the attribute name the cursor is on: what is written up to it, and on to its end
-        const tail = /^[^\s"'<>/=]*/.exec(source.text.slice(offset))![0]
-        const where = whereAt(source.text, offset + tail.length)
+        const tail = /^[^\s"'<>/=]*/.exec(source.text.slice(source.index))![0]
+        const where = whereAt(source.text, source.index + tail.length)
         if (!where || where.kind !== "attribute") return undefined
         const name = where.fragment
         const tag = where.tag.toLowerCase()
@@ -269,9 +351,10 @@ export const createJq79TemplateService = (ts: typeof TS): LanguageServicePlugin 
             modifiers.filter(m => MODIFIERS[m]).map(m => `\n\n\`.${m}\`: ${MODIFIERS[m]}`).join("")
         }
         if (!value) return undefined
+        const end = source.index + tail.length
         return {
           contents: { kind: "markdown", value },
-          range: { start: document.positionAt(offset + tail.length - name.length), end: document.positionAt(offset + tail.length) },
+          range: { start: document.positionAt(source.toDocument(end - name.length)), end: document.positionAt(source.toDocument(end)) },
         }
       },
     }

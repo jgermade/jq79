@@ -59,7 +59,9 @@ export type Block = {
   contentEnd: number
 }
 
-export type ComponentDef = { name?: string; scripts: Block[]; styles: Block[] }
+// \`range\`: where a <template name> component is in the file, open tag to
+// close tag. The file's own component has none: it is what the others aren't
+export type ComponentDef = { name?: string; scripts: Block[]; styles: Block[]; range?: [number, number] }
 
 const ATTR_RE = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g
 
@@ -135,7 +137,11 @@ export const splitComponents = (text: string): ComponentDef[] => {
     TAG_RE.lastIndex = end + 1
 
     if (tag === "template") {
-      if (closing) { templates.pop(); continue }
+      if (closing) {
+        const closed = templates.pop()
+        if (closed && templates.length === 0) closed.range![1] = end + 1
+        continue
+      }
       if (text[end - 1] === "/") continue
       let started: ComponentDef | null = null
       if (templates.length === 0) {
@@ -143,7 +149,7 @@ export const splitComponents = (text: string): ComponentDef[] => {
           .find(a => a.name === "name")?.value
         if (name !== undefined && COMPONENT_NAME_RE.test(name) && !names.has(name)) {
           names.add(name)
-          started = { name, scripts: [], styles: [] }
+          started = { name, scripts: [], styles: [], range: [match.index, text.length] }
           components.push(started)
         }
       }
@@ -453,24 +459,26 @@ const preamble = (typescript: boolean): string => {
   // and take the props with it
   const plain = `unknown extends import("jq79").Component79 ? {} : import("jq79").Component79`
   const own = `Awaited<ReturnType<typeof __jq79Component0>>["props"]`
+  const ownEmits = `Awaited<ReturnType<typeof __jq79Component0>>["emits"]`
+  const ownSlots = `Awaited<ReturnType<typeof __jq79Component0>>["slots"]`
   if (typescript) {
     lines.push(`declare function __jq79Bindings<T>(returned: T): T extends object ? T : {};`)
     lines.push(`declare function $__import(url: string): Promise<any>;`)
     lines.push(`declare function __jq79DefaultOf<M>(module: M): M extends { default: infer D } ? D : any;`)
     lines.push(`type __Jq79Factory = (props: any, ctx: ${ctx}) => any;`)
     lines.push(`type __Jq79Plain = ${plain};`)
-    lines.push(`export type __Jq79Typed<P> = __Jq79Plain & { readonly __jq79Props?: P };`)
+    lines.push(`export type __Jq79Typed<P, E = never, S = never> = __Jq79Plain & { readonly __jq79Props?: P; readonly __jq79Emits?: E; readonly __jq79Slots?: S };`)
     lines.push(`type __Jq79NoProps = { readonly __jq79NoProps?: never };`)
-    lines.push(`declare const __jq79Component: __Jq79Typed<${own}>;`)
+    lines.push(`declare const __jq79Component: __Jq79Typed<${own}, ${ownEmits}, ${ownSlots}>;`)
   } else {
     lines.push(`/** @type {<T>(returned: T) => T extends object ? T : {}} */ const __jq79Bindings = /** @type {any} */ (null);`)
     lines.push(`/** @type {(url: string) => Promise<any>} */ const $__import = /** @type {any} */ (null);`)
     lines.push(`/** @type {<M>(module: M) => M extends { default: infer D } ? D : any} */ const __jq79DefaultOf = /** @type {any} */ (null);`)
     lines.push(`/** @typedef {(props: any, ctx: ${ctx}) => any} __Jq79Factory */`)
     lines.push(`/** @typedef {${plain}} __Jq79Plain */`)
-    lines.push(`/**\n * @template P\n * @typedef {__Jq79Plain & { readonly __jq79Props?: P }} __Jq79Typed\n */`)
+    lines.push(`/**\n * @template P, E, S\n * @typedef {__Jq79Plain & { readonly __jq79Props?: P; readonly __jq79Emits?: E; readonly __jq79Slots?: S }} __Jq79Typed\n */`)
     lines.push(`/** @typedef {{ readonly __jq79NoProps?: never }} __Jq79NoProps */`)
-    lines.push(`/** @type {__Jq79Typed<${own}>} */ const __jq79Component = /** @type {any} */ (null);`)
+    lines.push(`/** @type {__Jq79Typed<${own}, ${ownEmits}, ${ownSlots}>} */ const __jq79Component = /** @type {any} */ (null);`)
   }
   // \`import X from "./X.html"\` elsewhere gets this file's own component
   lines.push(`export default __jq79Component;`, "")
@@ -531,6 +539,31 @@ export const componentScopes = (ts: typeof TS, text: string): ComponentScope[] =
     ])
     return { def, names: [...names], permissive: signatures.every(sig => sig === null) }
   })
+}
+
+// the text that is a component's: a <template name>'s range, or for the
+// file's own, everything outside those
+const textOf = (text: string, def: ComponentDef, all: ComponentDef[]): string => {
+  if (def.range) return text.slice(def.range[0], def.range[1])
+  let own = text
+  // blanked rather than cut, so nothing joins across a gap
+  all.forEach(other => { if (other.range) own = own.slice(0, other.range[0]) + " ".repeat(other.range[1] - other.range[0]) + own.slice(other.range[1]) })
+  return own
+}
+
+const EMIT_RE = /\$emit\(\s*(["'\`])([^"'\`\s]+)\1/g
+const SLOT_TAG_RE = /<slot\.([\w$-]+)/gi
+
+// the events a component emits - every $emit("name") written in its scripts or
+// its template - and the named slots it renders (<slot.header>): what a tag
+// that uses it can listen to and fill, for an editor to offer (completion.ts).
+// Read off the text; an emit whose name is computed isn't known
+export const emitsAndSlots = (text: string, def: ComponentDef, all: ComponentDef[]): { emits: string[]; slots: string[] } => {
+  const own = textOf(text, def, all)
+  return {
+    emits: [...new Set([...own.matchAll(EMIT_RE)].map(m => m[2]))],
+    slots: [...new Set([...own.matchAll(SLOT_TAG_RE)].map(m => m[1]))],
+  }
 }
 
 // readSetupSignature (src/source.ts), on this file's blocks: no :setup is no
@@ -630,7 +663,12 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
     // anything at all when none declares one (components.md: permissive)
     const type = props.length ? props.join(" & ") : "any"
     const propsValue = typescript ? `${any} as ${type}` : `/** @type {${type}} */ (${any})`
-    out.text(`return { store: Object.assign(${seed}${stores.map(store => `, ${store}`).join("")}), props: ${propsValue} };\n}\n`)
+    // and what it emits and the slots it renders, as string literal types
+    const { emits, slots } = emitsAndSlots(text, component, components)
+    const union = (names: string[]) => (names.length ? names.map(n => JSON.stringify(n)).join(" | ") : "never")
+    const typed = (type: string) => (typescript ? `${any} as ${type}` : `/** @type {${type}} */ (${any})`)
+    out.text(`return { store: Object.assign(${seed}${stores.map(store => `, ${store}`).join("")}), props: ${propsValue}, ` +
+      `emits: ${typed(union(emits))}, slots: ${typed(union(slots))} };\n}\n`)
   })
   return { code: out.code, mappings: out.mappings, links: out.links, typescript }
 }
