@@ -1104,6 +1104,10 @@ export type EffectScope = {
   // the loop name is a plain scope var, so nothing it read can wake the
   // bindings, and the deps they hold are the old item's
   rerun: () => void
+  // registers this scope with the row owning `scope` as well (see OWNER):
+  // slot content's own chain is the parent's, but the slot props it reads
+  // come from wherever the child put the <slot>, which can be a keyed row
+  ownedBy: (scope: Record<string, any>) => void
   dispose: () => void
 }
 
@@ -1129,10 +1133,11 @@ class Scope implements EffectScope {
   private disposers: Unsubscribe[] | null = null
   private runs: Effect[] | null = null
   // the scopes created under this one's data scope, when this one owns it
-  // (see OWNER), and the owner this one registered with. Neither exists outside
-  // a keyed :each row
+  // (see OWNER), and the owners this one registered with - two for slot
+  // content written in one keyed row and placed in another (see ownedBy).
+  // Neither exists outside a keyed :each row
   private children: Set<Scope> | null = null
-  private owner: Scope | null = null
+  private owners: Scope[] | null = null
   // one options object for the whole scope instead of one per effect - $effect
   // destructures it on entry and keeps nothing. Left undefined on the common
   // path, which is $effect's own fast path
@@ -1143,11 +1148,14 @@ class Scope implements EffectScope {
     // it today): the stores this scope's effects belong to besides their own
     const alsoWakenBy: Record<string, any>[] | undefined = (scope as any)[ALSO_WAKEN_BY]
     this.options = deep || alsoWakenBy ? { deep, alsoWakenBy } : undefined
+    this.ownedBy(scope)
+  }
+
+  ownedBy(scope: Record<string, any>) {
     const owner: Scope | undefined = (scope as any)[OWNER]
-    if (owner) {
-      this.owner = owner
-      ;(owner.children ??= new Set()).add(this)
-    }
+    if (!owner || this.owners?.includes(owner)) return
+    ;(this.owners ??= []).push(owner)
+    ;(owner.children ??= new Set()).add(this)
   }
 
   // the effect record rather than `run`: a re-run through it tracks, so the
@@ -1185,8 +1193,8 @@ class Scope implements EffectScope {
     this.disposers = null
     this.runs = null
     this.children = null
-    this.owner?.children?.delete(this)
-    this.owner = null
+    this.owners?.forEach(owner => owner.children?.delete(this))
+    this.owners = null
     if (disposers) for (let i = 0; i < disposers.length; i++) disposers[i]()
   }
 }

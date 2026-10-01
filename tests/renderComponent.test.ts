@@ -1542,6 +1542,46 @@ describe(":each with :key, a new object for the same key", () => {
     jq79.destroy()
   })
 
+  // the other way round: the row is the child's, and the content reaching it
+  // through a slot prop was written in the parent, under the parent's names
+  it("reaches content the parent put in a <slot> that sits in the row", () => {
+    const jq79 = new Component79(`
+      <script :setup="{ rows }"></script>
+      <List :rows="rows" :slot="{ item }"><span class="cell">{{ item.label }}</span></List>
+      <template name="List">
+        <script :setup="{ rows }"></script>
+        <ul><li :each="row in rows" :key="row.id"><slot :item="row" /></li></ul>
+      </template>
+    `).render({ rows: ["a", "b", "c"].map(id => ({ id, label: id })) }).mount(container)
+    const data = jq79.data as any
+    const rows = data.rows
+    data.rows = [rows[2], rows[0], rows[1]]
+    const li = $(container, "li")
+
+    data.rows = [{ id: "c", label: "C" }, rows[0], rows[1]]
+
+    expect($(container, "li"), "the row was kept").toBe(li)
+    expect($$(container, ".cell").map(el => el.textContent)).toEqual(["C", "a", "b"])
+
+    jq79.destroy()
+  })
+
+  // a row with nothing in a scope of its own carries no OWNER mark - and loses
+  // nothing for it, since its bindings are all on the row's own scope
+  it("updates a row whose template nests no scope", () => {
+    const component = parseComponent(`<li :each="row in rows" :key="row.id"><b>{{ row.name }}</b></li>`)
+    const data = $reactive({ rows: ["x", "y", "z"].map(id => ({ id, name: id })) })
+    container.appendChild(renderComponent(component, data))
+    const rows = data.rows
+    data.rows = [rows[2], rows[0], rows[1]]
+    const li = $(container, "li")
+
+    data.rows = [{ id: "z", name: "Z" }, rows[0], rows[1]]
+
+    expect($(container, "li")).toBe(li)
+    expect($$(container, "b").map(el => el.textContent)).toEqual(["Z", "x", "y"])
+  })
+
   it("keeps the rows of a list a setup script derives from a shared store", () => {
     const store = $reactive({ items: [{ id: "x", n: 1 }, { id: "y", n: 1 }, { id: "z", n: 1 }] })
     ;(globalThis as any).__keyedStore = store

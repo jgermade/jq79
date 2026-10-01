@@ -974,6 +974,9 @@ const makeSlotRenderer = (content: SlotContent, parentScope: Record<string, any>
     Object.defineProperty(scope, ALSO_WAKEN_BY, { value: [...inherited, slotScope] })
 
     const contentFx = createEffectScope(scope)
+    // and the row the <slot> sits in, when it is a keyed one: the slot props
+    // read that row's names, so a new item there has to reach this content
+    contentFx.ownedBy(slotScope)
     // rule 3: the <slot> is the content's lifetime. When the child's subtree at
     // this position goes - an :if turning false, the instance being replaced,
     // the whole child being destroyed - the content's effects go with it
@@ -2313,6 +2316,17 @@ const mentionsAny = (node: TemplateNode | string, names: string[]): boolean => {
     node.children.some(child => mentionsAny(child, names))
 }
 
+// what renders into an effect scope of its own: a conditional chain, a list, a
+// component (a capitalized tag, or a dashed one - nothing else can resolve to
+// one, see componentKeyOf) and a <slot>, whose content does. Over-approximating
+// costs a defineProperty per row; missing one leaves its bindings on the old item
+const rendersScopes = (node: TemplateNode | string): boolean =>
+  typeof node !== "string" && (
+    ":if" in node.attrs || ":elseif" in node.attrs || ":else" in node.attrs || ":each" in node.attrs ||
+    node.component !== undefined || node.tag.includes("-") || isSlotTag(node.tag) ||
+    node.children.some(rendersScopes)
+  )
+
 // `name` as a whole word: `$index` must not match inside `$indexes`, and `i`
 // must not match inside `items`. `$` counts as a word character here, which is
 // why the boundaries are checked by hand rather than with \b - \b treats `$`
@@ -2350,6 +2364,9 @@ type EachPlan = {
   // can either loop name be mistaken for a component? Decided from the
   // template, so the item scope can be marked plain without being scanned
   namesComponent: boolean
+  // can a row render anything into an effect scope of its own? Only then does
+  // a keyed row need the OWNER mark that lets its re-run reach them
+  nestsScopes: boolean
 }
 
 const eachPlans = new WeakMap<TemplateNode, EachPlan | null>()
@@ -2396,7 +2413,8 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
   const readsPosition = mentionsAny(itemNode, positionalNames)
 
   const namesComponent = /^[A-Z]/.test(itemName) || (atName !== undefined && /^[A-Z]/.test(atName))
-  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent }
+  const nestsScopes = keyExpr !== undefined && rendersScopes(itemNode)
+  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes }
   eachPlans.set(node, plan)
   return plan
 }
@@ -2405,7 +2423,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const plan = eachPlanOf(node)
   if (!plan) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
 
-  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent } = plan
+  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes } = plan
 
   // `:key="row.id"`, or the loop variable itself, is what a key almost always
   // is - and reading one needs neither a scope to resolve names against nor a
@@ -2558,8 +2576,10 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         const itemFx = createEffectScope(scope)
         // a keyed row can be handed a new item later, and then everything
         // rendered inside it re-runs - including what lives in scopes of its
-        // own, which register with the row through this (see OWNER)
-        if (keyExpr !== undefined) Object.defineProperty(itemScope, OWNER, { value: itemFx })
+        // own, which register with the row through this (see OWNER). A row
+        // with none has nothing to register: a defineProperty per row was
+        // +3.9% on replacing 1,000 of them
+        if (nestsScopes) Object.defineProperty(itemScope, OWNER, { value: itemFx })
         // bounds captured before the positioning pass inserts the entry: a
         // component entry is a fragment, which empties on insertion (see boundsOf)
         const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
