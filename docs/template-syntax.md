@@ -180,7 +180,7 @@ A `:each` element between the branches breaks the chain like any other element, 
 <li :each="user in users" :key="user.id">{{ $index }}: {{ user.name }}</li>
 ```
 
-The list is diffed by key: unchanged items keep their DOM (and state) when the array is reordered, filtered or extended. Without `:key`, position is used — fine for append-only lists, wasteful for reordering. `$index` is available inside each item.
+The list is diffed by key: unchanged items keep their DOM (and state) when the array is reordered, filtered or extended. The key is the row's identity, not the object: a new object under a key the list already had keeps that row's DOM and updates its bindings, so a list rebuilt from copies — `rows = items.map(item => ({ ...item }))` — doesn't lose focus, scroll or input. Without `:key`, position is used — fine for append-only lists, wasteful for reordering — and a new object at a position is rendered again. `$index` is available inside each item.
 
 A second binding names the array index — handy where nested loops would shadow `$index` — and plain objects iterate as their entries, the second binding being the property key (parens optional):
 

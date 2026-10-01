@@ -1450,6 +1450,133 @@ describe(":each and in-place array mutation", () => {
   })
 })
 
+// the key names the row: a new object under a key the list already had is
+// the same row with new content, so it keeps its DOM - focus, scroll, what a
+// user typed - and its bindings move over to the new object. A list derived
+// with `items.map(item => ({ ...item }))` hands every row a new object on
+// every pass, and used to rebuild all of them
+describe(":each with :key, a new object for the same key", () => {
+  let container: HTMLDivElement
+
+  beforeEach(() => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+  })
+
+  it("keeps the rows and updates their bindings", () => {
+    const component = parseComponent(`<li :each="row in rows" :key="row.id" :title="row.name">{{ row.name }}</li>`)
+    const data = $reactive({ rows: [{ id: "x", name: "a" }, { id: "y", name: "b" }, { id: "z", name: "c" }] })
+    container.appendChild(renderComponent(component, data))
+    const before = $$(container, "li")
+
+    data.rows = data.rows.map((row: any) => ({ ...row, name: row.name.toUpperCase() }))
+
+    const after = $$(container, "li")
+    expect(after.map(li => li.textContent)).toEqual(["A", "B", "C"])
+    expect(after.map(li => li.getAttribute("title"))).toEqual(["A", "B", "C"])
+    after.forEach((li, index) => expect(li, `row ${index}`).toBe(before[index]))
+  })
+
+  it("keeps them through a reorder, and refreshes $index", () => {
+    const component = parseComponent(`<li :each="row in rows" :key="row.id">{{ $index }}:{{ row.id }}</li>`)
+    const data = $reactive({ rows: [{ id: "x" }, { id: "y" }, { id: "z" }] })
+    container.appendChild(renderComponent(component, data))
+    const [x, y, z] = $$(container, "li")
+
+    data.rows = [{ id: "z" }, { id: "x" }, { id: "y" }]
+
+    const after = $$(container, "li")
+    expect(after.map(li => li.textContent)).toEqual(["0:z", "1:x", "2:y"])
+    expect(after).toEqual([z, x, y])
+  })
+
+  it("tracks the new object, and lets go of the old one", () => {
+    const component = parseComponent(`<li :each="row in rows" :key="row.id">{{ row.name }}</li>`)
+    const data = $reactive({ rows: [{ id: 1, name: "a" }] })
+    container.appendChild(renderComponent(component, data))
+    const old = data.rows[0]
+
+    data.rows = [{ id: 1, name: "b" }]
+    expect(container.textContent).toBe("b")
+
+    data.rows[0].name = "c"
+    expect(container.textContent).toBe("c")
+    old.name = "stale"
+    expect(container.textContent).toBe("c")
+  })
+
+  // a reorder leaves each object tracked under the path it was first read at,
+  // so once `z` has moved to the front, swapping it for a new object wakes the
+  // list and nothing of z's row: whatever the row rendered in a scope of its
+  // own is reached by the row's re-run or not at all
+  it("reaches what the row renders in scopes of its own: :if, a nested :each, a component and its slot", () => {
+    const jq79 = new Component79(`
+      <ul><li :each="row in rows" :key="row.id"
+        ><b :if="row.on">{{ row.name }}</b
+        ><i :each="tag in row.tags">{{ row.name }}-{{ tag }}</i
+        ><Badge :label="row.name"><u>{{ row.name }}</u></Badge
+      ></li></ul>
+      <template name="Badge"><script :setup="{ label }"></script><em>{{ label }}</em><slot /></template>
+    `).render({
+      rows: ["x", "y", "z"].map(id => ({ id, name: id, on: true, tags: ["t"] })),
+    }).mount(container)
+    const text = (selector: string) => $$(container, selector).map(el => el.textContent)
+    const rows = jq79.data!.rows
+    jq79.data!.rows = [rows[2], rows[0], rows[1]]
+    const li = $(container, "li")
+
+    jq79.data!.rows = [{ id: "z", name: "Z", on: true, tags: ["t"] }, rows[0], rows[1]]
+
+    expect($(container, "li"), "the row was kept").toBe(li)
+    expect(text("b")).toEqual(["Z", "x", "y"])
+    expect(text("i")).toEqual(["Z-t", "x-t", "y-t"])
+    expect(text("em")).toEqual(["Z", "x", "y"])
+    expect(text("u")).toEqual(["Z", "x", "y"])
+
+    // and from then on, the row follows the new object
+    jq79.data!.rows[0].on = false
+    expect(text("b")).toEqual(["x", "y"])
+    jq79.data!.rows[0].name = "ZZ"
+    expect(text("u")).toEqual(["ZZ", "x", "y"])
+
+    jq79.destroy()
+  })
+
+  it("keeps the rows of a list a setup script derives from a shared store", () => {
+    const store = $reactive({ items: [{ id: "x", n: 1 }, { id: "y", n: 1 }, { id: "z", n: 1 }] })
+    ;(globalThis as any).__keyedStore = store
+    const jq79 = new Component79(`
+      <script :setup>
+        const store = globalThis.__keyedStore
+        $: rows = store.items.map(item => ({ ...item }))
+      </script>
+      <ul><li :each="row in rows" :key="row.id">{{ row.id }}{{ row.n }}</li></ul>
+    `).mount(container, {})
+    const before = $$(container, "li")
+
+    store.items[1].n = 2
+
+    const after = $$(container, "li")
+    expect(after.map(li => li.textContent)).toEqual(["x1", "y2", "z1"])
+    after.forEach((li, index) => expect(li, `row ${index}`).toBe(before[index]))
+
+    jq79.destroy()
+    delete (globalThis as any).__keyedStore
+  })
+
+  it("still renders a changed item again without :key, where position is all there is", () => {
+    const component = parseComponent(`<li :each="row in rows">{{ row.name }}</li>`)
+    const data = $reactive({ rows: [{ name: "a" }, { name: "b" }] })
+    container.appendChild(renderComponent(component, data))
+    const [first] = $$(container, "li")
+
+    data.rows = [{ name: "c" }, { name: "b" }]
+
+    expect($$(container, "li").map(li => li.textContent)).toEqual(["c", "b"])
+    expect($$(container, "li")[0]).not.toBe(first)
+  })
+})
+
 // a list inside something that gets torn down, and a list over a store the
 // component was handed rather than one it owns
 describe(":each and :if, nested and shared", () => {

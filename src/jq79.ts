@@ -1,7 +1,7 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl, QueryAll, QueryOne } from "./dom"
-import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
+import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
 import {
@@ -2288,10 +2288,14 @@ const isPlainObject = (value: any): value is Record<string, any> => {
 // :each="item in items" (or "item, i in items" / "(value, key) in props"),
 // optionally keyed with :key="expr". Only depends on what the list expression
 // reads, and on each run diffs by key: unchanged items (same key, same item
-// reference) keep their DOM/effects, changed/added ones are (re)rendered,
-// removed ones are disposed. Without :key, an array uses position - fine for
+// reference) keep their DOM/effects, added ones are rendered, removed ones are
+// disposed. A changed item - a different object under the same key - keeps its
+// row when the key was given with :key, which is what :key says: this is the
+// same row. Its DOM stays, and its bindings re-run against the new item
+// (see EffectScope.rerun). Without :key, an array uses position - fine for
 // append-only lists, wasteful for reordering - and an object uses the
-// property key, which is already the stable identity. Each item gets its own
+// property key, which is already the stable identity; there a changed item is
+// rendered again. Each item gets its own
 // scope via Object.create(scope), so the bindings and `$index` shadow
 // same-named outer names without copying the parent scope's keys
 // does anything in this subtree name one of `names` as an identifier? Attribute
@@ -2457,6 +2461,8 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
 
       const seen = new Set<any>()
       const moved: EachEntry[] = []
+      // keyed rows handed a new item: kept, and re-run once they are in place
+      const swapped: EachEntry[] = []
       const nextEntries: EachEntry[] = []
       // each entry's position in the previous pass, in the new order, for the
       // positioning walk below - -1 for one rendered here, which has none
@@ -2519,6 +2525,25 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
           continue
         }
 
+        // the same row with a new item in it: `rows = items.map(i => ({ ...i }))`
+        // hands every row a new object on every pass, and rendering them all
+        // again threw away the DOM - and with it focus, scroll and anything a
+        // user had typed - of a list whose content had not changed. Writing the
+        // loop name is a plain assignment, for the reason the reuse path above
+        // gives; the re-run that brings the bindings over to the new item waits
+        // until the rows are in place
+        if (existing && keyExpr !== undefined) {
+          const entryScope = existing.scope
+          entryScope[itemName] = item
+          if (entryScope.$index !== index) entryScope.$index = index
+          if (atName && entryScope[atName] !== at) entryScope[atName] = at
+          existing.item = item
+          swapped.push(existing)
+          nextEntries.push(existing)
+          positions.push(existing.pos)
+          continue
+        }
+
         if (existing) {
           existing.fx.dispose()
           removeRange(existing.range)
@@ -2531,6 +2556,10 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         // one WeakSet write per row against one Object.keys per element in it
         if (!namesComponent) plainScopes.add(itemScope)
         const itemFx = createEffectScope(scope)
+        // a keyed row can be handed a new item later, and then everything
+        // rendered inside it re-runs - including what lives in scopes of its
+        // own, which register with the row through this (see OWNER)
+        if (keyExpr !== undefined) Object.defineProperty(itemScope, OWNER, { value: itemFx })
         // bounds captured before the positioning pass inserts the entry: a
         // component entry is a fragment, which empties on insertion (see boundsOf)
         const range = boundsOf(renderNode(itemNode, itemScope, itemFx, shadow))
@@ -2566,6 +2595,10 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       // the named key tracked nothing - refresh them so the move reaches those
       // too. Untracked, so these runs don't feed this list effect's own deps
       moved.forEach(entry => untracked(() => entry.fx.refresh()))
+      // after the moves, so a binding that measures its row finds it where it
+      // ends up. A row both moved and swapped is re-run here alone: rerun
+      // covers everything refresh does
+      swapped.forEach(entry => untracked(() => entry.fx.rerun()))
 
       entries = nextEntries
     } finally {
