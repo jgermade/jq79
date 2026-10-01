@@ -1,18 +1,42 @@
 // DOM helpers: tiny query/create utilities, also injected into component
 // scripts as $, $$ and $create
 
+// what a query answers with (RECORD/2026-10-01.typed-queries.md): a tag name
+// gives its own element, HTML first and then SVG, as querySelector's types
+// do; any other selector an HTMLElement - not querySelector's Element, because
+// what a component looks up is HTML almost every time - or whatever the type
+// argument says. Exported for $self / $$self, typed the same way
+export type QueryOne = {
+  <K extends keyof HTMLElementTagNameMap>(selector: K): HTMLElementTagNameMap[K] | null
+  <K extends keyof SVGElementTagNameMap>(selector: K): SVGElementTagNameMap[K] | null
+  <E extends Element = HTMLElement>(selector: string): E | null
+}
+export type QueryAll = {
+  <K extends keyof HTMLElementTagNameMap>(selector: K): HTMLElementTagNameMap[K][]
+  <K extends keyof SVGElementTagNameMap>(selector: K): SVGElementTagNameMap[K][]
+  <E extends Element = HTMLElement>(selector: string): E[]
+}
+
 // $(selector) queries the document; $(el, selector) queries within el. The
 // selector is required in the element form - an empty one is a SyntaxError
-export function $(selector: string): Element | null
-export function $(el: Element, selector: string): Element | null
+export function $<K extends keyof HTMLElementTagNameMap>(selector: K): HTMLElementTagNameMap[K] | null
+export function $<K extends keyof SVGElementTagNameMap>(selector: K): SVGElementTagNameMap[K] | null
+export function $<E extends Element = HTMLElement>(selector: string): E | null
+export function $<K extends keyof HTMLElementTagNameMap>(el: Element, selector: K): HTMLElementTagNameMap[K] | null
+export function $<K extends keyof SVGElementTagNameMap>(el: Element, selector: K): SVGElementTagNameMap[K] | null
+export function $<E extends Element = HTMLElement>(el: Element, selector: string): E | null
 export function $(selectorOrEl: string | Element, selector?: string): Element | null {
   return typeof selectorOrEl === "string"
     ? document.querySelector(selectorOrEl)
     : selectorOrEl.querySelector(selector!)
 }
 
-export function $$(selector: string): Element[]
-export function $$(el: Element, selector: string): Element[]
+export function $$<K extends keyof HTMLElementTagNameMap>(selector: K): HTMLElementTagNameMap[K][]
+export function $$<K extends keyof SVGElementTagNameMap>(selector: K): SVGElementTagNameMap[K][]
+export function $$<E extends Element = HTMLElement>(selector: string): E[]
+export function $$<K extends keyof HTMLElementTagNameMap>(el: Element, selector: K): HTMLElementTagNameMap[K][]
+export function $$<K extends keyof SVGElementTagNameMap>(el: Element, selector: K): SVGElementTagNameMap[K][]
+export function $$<E extends Element = HTMLElement>(el: Element, selector: string): E[]
 export function $$(selectorOrEl: string | Element, selector?: string): Element[] {
   return Array.from(
     typeof selectorOrEl === "string"

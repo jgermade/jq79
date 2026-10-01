@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "jq79.injection.template-interpolation",
+  "comment": "{{ expression }} in a template's text as JS (INTERPOLATION_RE in src/source.ts). Text only: jq79 reads {{ }} in text nodes and nowhere else, so not in a tag, a <script>/<style> (source.*), or a comment.",
+  "injectionSelector": "L:text.html -meta.embedded.template-literal.jq79 -comment -(text.html meta.tag) -(text.html source), L:meta.embedded.template-literal.jq79 text.html -comment -(meta.embedded.template-literal.jq79 text.html meta.tag) -(meta.embedded.template-literal.jq79 text.html source)",
+  "patterns": [
+    {
+      "begin": "\\{\\{",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.begin.jq79"
+        }
+      },
+      "end": "\\}\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.end.jq79"
+        }
+      },
+      "name": "meta.interpolation.jq79",
+      "contentName": "meta.embedded.expression.jq79 source.js",
+      "patterns": [
+        {
+          "match": "(?:[^}]|\\}(?!\\}))+",
+          "captures": {
+            "0": {
+              "patterns": [
+                {
+                  "include": "source.js#expression"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

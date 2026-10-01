@@ -80,30 +80,36 @@ const has = (table: Record<string, string>, name: string) => Object.prototype.ha
 const fromCodePoint = (code: number): string =>
   code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? "�" : String.fromCodePoint(code)
 
-const CHARACTER_REFERENCE_RE = /&(#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;?)/g
+export const CHARACTER_REFERENCE_RE = /&(#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;?)/g
 const ALPHANUMERIC_RE = /[A-Za-z0-9]/
 
+// what one match of CHARACTER_REFERENCE_RE in `text`, at `offset`, decodes to.
 // In an attribute a legacy reference with no semicolon stays literal when the
 // next character is `=` or alphanumeric - `?a=1&copy=2` is a query string, not
-// a copyright sign. In text it decodes, and what follows the name stays
+// a copyright sign. In text it decodes, and what follows the name stays.
+// Exported for the editor extension, which decodes an attribute value while
+// keeping where each character came from (editors/vscode/src/entities.ts)
+export const decodeReference = (text: string, whole: string, ref: string, offset: number, inAttribute: boolean): string => {
+  if (ref[0] === "#") {
+    const hex = ref[1] === "x" || ref[1] === "X"
+    const digits = ref.slice(hex ? 2 : 1).replace(/;$/, "")
+    return fromCodePoint(parseInt(digits, hex ? 16 : 10))
+  }
+  const semicolon = ref.endsWith(";")
+  const name = semicolon ? ref.slice(0, -1) : ref
+  if (semicolon && has(LEGACY_REFERENCES, name)) return LEGACY_REFERENCES[name]
+  if (semicolon && has(NAMED_REFERENCES, name)) return NAMED_REFERENCES[name]
+  const legacy = LEGACY_NAMES.find(candidate => name.startsWith(candidate))
+  if (legacy === undefined) return whole
+  const after = name.length > legacy.length ? name[legacy.length] : semicolon ? ";" : text[offset + whole.length]
+  if (inAttribute && after !== undefined && (after === "=" || ALPHANUMERIC_RE.test(after))) return whole
+  return LEGACY_REFERENCES[legacy] + ref.slice(legacy.length)
+}
+
 const decode = (text: string, inAttribute: boolean): string => {
   if (!text.includes("&")) return text
-  return text.replace(CHARACTER_REFERENCE_RE, (whole: string, ref: string, offset: number) => {
-    if (ref[0] === "#") {
-      const hex = ref[1] === "x" || ref[1] === "X"
-      const digits = ref.slice(hex ? 2 : 1).replace(/;$/, "")
-      return fromCodePoint(parseInt(digits, hex ? 16 : 10))
-    }
-    const semicolon = ref.endsWith(";")
-    const name = semicolon ? ref.slice(0, -1) : ref
-    if (semicolon && has(LEGACY_REFERENCES, name)) return LEGACY_REFERENCES[name]
-    if (semicolon && has(NAMED_REFERENCES, name)) return NAMED_REFERENCES[name]
-    const legacy = LEGACY_NAMES.find(candidate => name.startsWith(candidate))
-    if (legacy === undefined) return whole
-    const after = name.length > legacy.length ? name[legacy.length] : semicolon ? ";" : text[offset + whole.length]
-    if (inAttribute && after !== undefined && (after === "=" || ALPHANUMERIC_RE.test(after))) return whole
-    return LEGACY_REFERENCES[legacy] + ref.slice(legacy.length)
-  })
+  return text.replace(CHARACTER_REFERENCE_RE, (whole: string, ref: string, offset: number) =>
+    decodeReference(text, whole, ref, offset, inAttribute))
 }
 
 const TAG_NAME_RE = /[^\s/>]*/y

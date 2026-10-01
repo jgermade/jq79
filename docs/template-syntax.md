@@ -23,6 +23,12 @@ Expressions may span several lines — both here and in every directive (`:if`, 
   .length }}</span>
 ```
 
+In VS Code, [the extension in this repo](../editors/vscode/README.md#the-template)
+checks every expression in a template against the component's store before
+anything renders: a name that doesn't exist, a property its type doesn't have,
+an `:each` binding read outside its element, a prop the child component
+doesn't declare or of the wrong type.
+
 An expression that throws renders as nothing rather than tearing down the render, because it is re-evaluated constantly — once per effect run, once per `:each` item. It doesn't stay a secret, though: it reaches the console as an error, once per expression. That includes a value that simply hasn't loaded yet, so write `{{ user?.name }}` (or gate the element with `:if`) when you expect one to be late. See [debugging a script](setup-scripts.md#debugging-a-script).
 
 ## Whitespace

@@ -1,9 +1,13 @@
-# Do the editor injections still color what they claim to?
+# Does the editor extension still color and check what it claims to?
 #
-# editors/vscode/ is grammars only, written against VS Code's own HTML, JS, TS
-# and CSS grammars - so its tests tokenize with those, pinned to one VS Code
-# release (editors/vscode/test/fetch-grammars.mjs). Nothing in src/ or dev/
-# reaches it, which is why it runs only when it or this file changes.
+# Its grammars are written against VS Code's own HTML, JS, TS and CSS grammars,
+# so their tests tokenize with those, pinned to one VS Code release
+# (editors/vscode/test/fetch-grammars.mjs). Its language server reads a
+# component with the runtime's own src/transform.ts, src/source.ts and
+# src/html.ts (its character references), and is
+# held to every component in tutorial/ checking clean - so a change to any of
+# those runs it too, and nothing else in the repo reaches it. editors/check/
+# is that checker as the jq79-check package, built from here.
 
 name: VS Code extension
 
@@ -12,15 +16,25 @@ on:
     branches: [main]
     paths:
       - 'editors/vscode/**'
+      - 'editors/check/**'
+      - 'src/transform.ts'
+      - 'src/source.ts'
+      - 'src/html.ts'
+      - 'tutorial/**'
       - '.github/workflows/vscode-extension.yml'
   pull_request:
     branches: [main]
     paths:
       - 'editors/vscode/**'
+      - 'editors/check/**'
+      - 'src/transform.ts'
+      - 'src/source.ts'
+      - 'src/html.ts'
+      - 'tutorial/**'
       - '.github/workflows/vscode-extension.yml'
 
 jobs:
-  grammars:
+  extension:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,3 +51,9 @@ jobs:
       - run: npm install
 
       - run: npm test
+
+      # jq79-check is this extension's checker, published on its own: that it
+      # still packs (build, the files it ships) is checked with the rest
+      - name: jq79-check packs
+        working-directory: editors/check
+        run: npm pack --dry-run

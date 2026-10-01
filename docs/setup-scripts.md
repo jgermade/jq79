@@ -294,14 +294,13 @@ so it runs, assigns to `number` and leaves `count` undeclared and non-reactive
 in silence. That's why the runtime warns about any `<script>` still carrying
 either mark when it parses one. If a component must work unbundled, write plain JS.
 
-Stripping is not checking: there is no type-checker for `.html` components yet.
-VS Code colors these blocks as TypeScript only with [the extension in this
-repo](../editors/vscode/), and its own checks read them as JavaScript, or as
-TypeScript that doesn't know a setup script's implicit names. If you want a
-component your tooling really understands, a
-[factory script](#factory-scripts-export-default) is plain lexical JS with no
-`with` and no rewriting — TypeScript on one of those is the closest this gets
-to an ordinary typed module.
+Stripping is not checking: the plugin removes the types and never looks at
+them. What checks them is [the extension in this repo](../editors/vscode/), in
+VS Code, and its `jq79-check` in a terminal: a language server that reads a
+setup script as the runtime compiles it, so props, `$:` targets, the other
+scripts' names and the helpers are all known to it. It checks the template
+against the same store, so a typo in `{{ usr.name }}` is found before anything
+renders.
 
 ## Debugging a script
 

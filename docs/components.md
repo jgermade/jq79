@@ -92,6 +92,8 @@ jq79: :extra is not declared by <Field> - add it to the :setup signature, or dro
 
 A **spread's** extra keys are not — narrowing `...sdk` to the few a component takes is the normal case, and the reason to write it.
 
+In VS Code, [the extension in this repo](../editors/vscode/README.md#props-against-the-childs-signature) reports the same thing before anything renders, on the attribute — along with a prop whose value doesn't match the type the signature gives it.
+
 Two things are never filtered:
 
 - **A component with no signature.** A factory's `_`, or `<script :setup="_">`, declares nothing and stays permissive, taking whatever the parent passes.
@@ -293,6 +295,20 @@ neither the file's own nor anything the parent passed, so it
 [throws](template-syntax.md#a-tag-that-names-no-component-throws) and names the
 components that *were* in scope.
 
+In TypeScript, the declaration can also say what the component must take.
+The editor extension then checks both sides: the props given to `<Button>`
+here, and the component a parent passes as `Button`:
+
+```html
+<script :setup="{ Button }: { Button: Component<{ label: string }> }" lang="ts">
+  import type { Component } from "jq79"
+</script>
+```
+
+`Component<{ label: string }, "pressed", "icon">` also says which events it
+listens for and which slots it fills: the component passed has to emit and
+render at least those.
+
 ### Styles stop at each template
 
 A named template is a shadow root inside a shadow root: the file is a container,
@@ -385,6 +401,10 @@ jq79.mount("#app", { title: "Hello" })
 It does exactly what the constructor does — parse the source, build the AST,
 prepare the definition. Useful when you want to be explicit about what the
 expression does, or when the name `Component79` feels heavy for inline use.
+
+In VS Code, [the extension in this repo](../editors/vscode/README.md#components-written-as-literals)
+colors a literal passed to either one as HTML, and checks it like a `.html`
+file — as long as it is a literal with no `${…}` in it.
 
 ## Which build am I running?
 

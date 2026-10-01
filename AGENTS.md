@@ -26,9 +26,24 @@ and its [CLI](dev/cli.ts). Nothing in `src/` may import from `dev/`.
 
 [`editors/vscode/`](editors/vscode/) is a VS Code extension, a package of its
 own with its own `npm test`: injection grammars that color `<script lang="ts">`,
-`<style lang="scss">` and the HTML in `` Component79(`…`) ``. Which scripts count
-as TypeScript is the Vite plugin's rule, copied, so a change to one belongs in
-the other. Its plan is [RECORD/2026-09-28.an-editor-extension.md](RECORD/2026-09-28.an-editor-extension.md).
+`<style lang="scss">`, the HTML in `` Component79(`…`) ``, and the template
+syntax as JS; and a language server ([Volar](https://volarjs.dev)) that checks a
+component's scripts as the runtime compiles them, and its template's expressions
+against the store those scripts build - in `.html` files, and in the
+`` new Component79(`…`) `` literals of scripts and pages. The server imports
+`src/transform.ts`, `src/source.ts` and `src/html.ts` (its decoding of
+character references) to read a component, and holds every
+component in `tutorial/` to checking clean - so a change to how the runtime reads
+a script or evaluates a template can fail the extension's tests, and the fix
+belongs in `editors/vscode/src/component.ts` (scripts) or `template.ts`
+(templates). The tutorial's starting files are allowed exactly the errors their
+exercise is about, listed in `test/check.mjs`. Which scripts count as TypeScript is the Vite
+plugin's rule, copied, so a change to one belongs in the other. TypeScript and
+Volar are the extension's dependencies and never the library's - which is why
+the checker's command line is a package of its own, [`editors/check/`](editors/check/)
+(`jq79-check`): the extension's `dist/check.js` and TypeScript, released by the
+*Release jq79-check* workflow. Its plan is
+[RECORD/2026-09-28.an-editor-extension.md](RECORD/2026-09-28.an-editor-extension.md).
 
 ## Commands
 
