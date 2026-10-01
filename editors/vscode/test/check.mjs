@@ -200,11 +200,13 @@ test("the helpers are in scope, typed", async () => {
     `  const off: () => void = $destroyed(() => clearTimeout(0))`,
     `  const double = $computed(() => n * 2)`,
     `  const d: number = double.value`,
+    `  const up = $computed(state, s => s.n + 1)`,
+    `  const u: number = up.value`,
     `  $emit()`,
     `</script>`,
   ].join("\n"))
   assert.equal(errors.length, 1, errors.join("\n"))
-  assert.match(errors[0], /^13:3 TS2554 /)
+  assert.match(errors[0], /^15:3 TS2554 /)
 })
 
 test("a sibling component is in scope, unless a prop takes its name", async () => {

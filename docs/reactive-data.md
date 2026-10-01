@@ -228,6 +228,26 @@ total.value                  // 3
 <p>Total: {{ total.value }}</p>
 ```
 
+It also takes a source and a function of it, which is handy when one named
+function derives from several stores. If the first argument is a function,
+it's the one-argument form:
+
+```js
+const o = $reactive({ foo: "Bar" })
+
+const fooUp  = $computed(o, o => o.foo.toUpperCase())    // (source, fn)
+const fooLow = $computed(() => o.foo.toLowerCase())      // (get)
+
+const totalOf = cart => cart.items.reduce((sum, item) => sum + item.price, 0)
+const totalA = $computed(cartA, totalOf)
+const totalB = $computed(cartB, totalOf)
+```
+
+The source is handed to `fn` and nothing more: it doesn't restrict what's
+tracked. Whatever `fn` reads counts, in the source or in any other store. A
+source that isn't reactive (a plain object) can never update the value, so it
+warns.
+
 - **It's a store**, so it does what a store does: `total.$on("value", …)`,
   `total.$effect(…)`, being passed as a prop, or held in another store and
   [shared](#shared-state-pass-a-store-not-an-object) from there.

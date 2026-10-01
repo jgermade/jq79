@@ -1209,7 +1209,25 @@ export const createEffectScope = (scope: Record<string, any>, deep = false): Eff
 // instead (see RECORD/2026-10-01.computed.md)
 export type Computed<T> = ReactiveDeepData<{ readonly value: T }>
 
-export const $computed = <T>(get: () => T): Computed<T> => {
+// two forms, told apart by the first argument alone: a function is `get`, and
+// anything else is a source handed to `fn` - `$computed(cart, totalOf)` - so a
+// named function can derive from more than one store. Sugar, not a narrower
+// tracker: whatever `fn` reads counts, in the source or anywhere else, since
+// leaving a read out would make a value go stale without a word. A source that
+// isn't reactive can wake nothing, which is an authoring mistake and says so
+export function $computed<T>(get: () => T): Computed<T>
+export function $computed<S, T>(source: S, fn: (source: S) => T): Computed<T>
+export function $computed<T>(...args: [get: () => T] | [source: any, fn: (source: any) => T]): Computed<T> {
+  let get: () => T
+  if (typeof args[0] === "function") get = args[0]
+  else {
+    const [source, fn] = args as [any, (source: any) => T]
+    if (typeof fn !== "function") throw new TypeError("jq79: $computed(source, fn) expects fn to be a function")
+    if (source === null || typeof source !== "object" || !source[RAW]) {
+      console.warn("jq79: the source handed to $computed is not reactive, so the value will never update - pass a $reactive")
+    }
+    get = () => fn(source)
+  }
   const box = $reactive({ value: undefined as T })
   box.$effect(() => {
     let value: T
