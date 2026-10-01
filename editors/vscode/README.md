@@ -76,7 +76,7 @@ its own terms:
 | a *read* of a name declared nowhere | an error: `Cannot find name` |
 | `$`, `$$`, `$create`, `$reactive`, `$toRaw`, `Component79`, `$mounted`, `$self`, `$$self`, `$emit`, `$updateModel`, `$slots` | in scope, typed from the `jq79` package when the project has it |
 | a `<template name="Row">` of the same file | in scope as a component, unless a prop takes the name |
-| `await import("./Card.html")` | a component; `import("./util")` resolves as in any module |
+| `await import("./Card.html")` | that file's component, with the props it takes (a missing file is an error); `import("./util")` resolves as in any module |
 | a static `import` in a setup script | an error, as it is at runtime; in a factory script, a module import |
 | `export default (props, ctx) => …` | `ctx` typed: `$data`, `$effect`, `$emit`, … |
 | `<style lang="scss">` / `"less"` | checked as SCSS / Less |
@@ -134,10 +134,48 @@ script without `:setup`, no script at all) takes whatever its parent passes, so
 a name its template reads and nobody declares may be a prop: it isn't reported.
 One that declares a signature takes only those props, so it is.
 
+### Props, against the child's signature
+
+A component tag's props are checked against the props that component declares,
+when the checker can see it: a `<template name>` of the same file, or a
+component imported from another one (`await import("./Card.html")` in a setup
+script, `import Card from "./Card.html"` in a factory).
+
+```html
+<!-- Card.html -->
+<script :setup="{ title, count = 0 }: Props" lang="ts">
+  interface Props { title: string; count?: number }
+</script>
+```
+
+```html
+<script :setup>
+  const Card = await import("./Card.html")
+</script>
+
+<Card :title="1" />          <!-- ✗ Type 'number' is not assignable to type 'string' -->
+<Card :titel="'x'" />        <!-- ✗ 'titel' does not exist… Did you mean to write 'title'? -->
+<Card count="3" />           <!-- ✗ a plain attribute is a string prop -->
+<Card ...sdk />              <!-- spreads narrow: their extra keys are fine -->
+<Crad />                     <!-- ✗ Cannot find name 'Crad' -->
+```
+
+They are read as the runtime reads them (`renderNestedComponent`): `:x` is
+prop `x` (`:user-name` is `userName`), `:model.x` is prop `x`, a plain
+attribute is a string prop, and `:props`/`...x` are spreads, whose extra keys
+the runtime drops without a word. A prop left out is not an error: the child
+sees `undefined`, which its default fills. A child without a signature takes
+anything, as it does at runtime; a closed one (`:setup`, `:setup="{}"`) takes
+nothing. The props' types are what the child's pattern says: its annotation,
+or what TypeScript infers from it (`{ step = 1 }` takes a `number`). A factory's
+first parameter gives the names and no types, since that is all it says.
+
 **What isn't checked yet:**
 
-- **Props against the child's signature.** `<Card :titel="x">` is checked as an
-  expression in the parent, not as a prop `Card` declares.
+- **A component that arrives as a prop** (`:setup="{ Button }"`): its props are
+  the parent's business, unknown here.
+- **Two bindings of one prop** (`:user` and `:model.user`): the runtime warns
+  (`:model.user` wins); the checker doesn't.
 - **Pages, and components inside `` Component79(`…`) `` strings.** Only
   `.html` component files.
 - **Plain `<style>`**, which VS Code already checks as CSS.
@@ -191,7 +229,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.2.0.vsix
+code --install-extension jq79-vscode-0.3.0.vsix
 ```
 
 ## Working on it

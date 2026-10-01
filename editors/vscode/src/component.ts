@@ -151,7 +151,9 @@ export const splitComponents = (text: string): ComponentDef[] => {
       if (!attr(block, "src")) owner.scripts.push(block)
     } else owner.styles.push(block)
   }
-  return components.filter(c => c.scripts.length || c.styles.length || c.name)
+  // the file's own component stays even with no script or style: its
+  // template is still checked, and it is what the file's default export is
+  return components
 }
 
 // the jq79/vite plugin's typescriptAttr (dev/vite.ts), rule for rule: a lang
@@ -173,6 +175,8 @@ export type Mapping = {
   sourceOffsets: number[]
   generatedOffsets: number[]
   lengths: number[]
+  // when the generated text is not the source's (a kebab name written camelCase)
+  generatedLengths?: number[]
   data: Record<string, boolean>
 }
 export const FULL = { verification: true, completion: true, semantic: true, navigation: true, structure: true, format: false }
@@ -196,6 +200,11 @@ export class Writer {
     if (end <= start) return
     this.mappings.push({ sourceOffsets: [start], generatedOffsets: [this.code.length], lengths: [end - start], data })
     this.code += this.source.slice(start, end)
+  }
+  // `text` in place of the source's [start, end), mapped to it
+  mapText(start: number, end: number, text: string, data: Mapping["data"] = FULL) {
+    this.mappings.push({ sourceOffsets: [start], generatedOffsets: [this.code.length], lengths: [end - start], generatedLengths: [text.length], data })
+    this.code += text
   }
   // a copy mapped with `data`, except `marks` (sorted), mapped with their own
   copyMarked(start: number, end: number, marks: Mark[], data: Mapping["data"] = FULL) {
@@ -269,14 +278,16 @@ const assignedNames = (ts: typeof TS, file: TS.SourceFile): Set<string> => {
   return names
 }
 
-// `import(spec)` that the runtime's $__import answers with something other
-// than the module TypeScript would resolve: a component (.html), or a URL.
-// A relative or bare specifier to anything else is left to TypeScript, which
-// then knows the module's types
-const isRuntimeImport = (ts: typeof TS, call: TS.CallExpression): boolean => {
+// how an `import(spec)` is read. The runtime's $__import answers a `.html`
+// with the component itself, not a module, so that one keeps its import -
+// TypeScript resolves the file and knows the component's props - and is
+// unwrapped to the module's default export. A URL or a computed specifier is
+// the runtime's to answer ($__import, any). Anything else is a module, left
+// to TypeScript, which then knows its types
+const importKind = (ts: typeof TS, call: TS.CallExpression): "component" | "runtime" | "module" => {
   const spec = call.arguments[0]
-  if (!spec || !ts.isStringLiteralLike(spec)) return true
-  return /\.html(?:[?#]|$)/i.test(spec.text) || /^[a-z][a-z0-9+.-]*:/i.test(spec.text)
+  if (!spec || !ts.isStringLiteralLike(spec) || /^[a-z][a-z0-9+.-]*:/i.test(spec.text)) return "runtime"
+  return /\.html(?:[?#]|$)/i.test(spec.text) ? "component" : "module"
 }
 
 type ScriptPlan = {
@@ -385,18 +396,32 @@ const preamble = (typescript: boolean): string => {
   for (const name of HELPERS) {
     lines.push(typescript ? `declare const ${name}: ${types[name]};` : `/** @type {${types[name]}} */ const ${name} = /** @type {any} */ (null);`)
   }
+  // a component carries the props it takes, for a tag that uses it to be
+  // checked against (template.ts, __jq79Props). Component79 when the project
+  // resolves jq79 - and {} when it doesn't, because \`any & …\` would be any
+  // and take the props with it
+  const plain = `unknown extends import("jq79").Component79 ? {} : import("jq79").Component79`
+  const own = `Awaited<ReturnType<typeof __jq79Component0>>["props"]`
   if (typescript) {
     lines.push(`declare function __jq79Bindings<T>(returned: T): T extends object ? T : {};`)
     lines.push(`declare function $__import(url: string): Promise<any>;`)
+    lines.push(`declare function __jq79DefaultOf<M>(module: M): M extends { default: infer D } ? D : any;`)
     lines.push(`type __Jq79Factory = (props: any, ctx: ${ctx}) => any;`)
-    lines.push(`declare const __jq79Component: import("jq79").Component79;`)
+    lines.push(`type __Jq79Plain = ${plain};`)
+    lines.push(`export type __Jq79Typed<P> = __Jq79Plain & { readonly __jq79Props?: P };`)
+    lines.push(`type __Jq79NoProps = { readonly __jq79NoProps?: never };`)
+    lines.push(`declare const __jq79Component: __Jq79Typed<${own}>;`)
   } else {
     lines.push(`/** @type {<T>(returned: T) => T extends object ? T : {}} */ const __jq79Bindings = /** @type {any} */ (null);`)
     lines.push(`/** @type {(url: string) => Promise<any>} */ const $__import = /** @type {any} */ (null);`)
+    lines.push(`/** @type {<M>(module: M) => M extends { default: infer D } ? D : any} */ const __jq79DefaultOf = /** @type {any} */ (null);`)
     lines.push(`/** @typedef {(props: any, ctx: ${ctx}) => any} __Jq79Factory */`)
-    lines.push(`/** @type {import("jq79").Component79} */ const __jq79Component = /** @type {any} */ (null);`)
+    lines.push(`/** @typedef {${plain}} __Jq79Plain */`)
+    lines.push(`/**\n * @template P\n * @typedef {__Jq79Plain & { readonly __jq79Props?: P }} __Jq79Typed\n */`)
+    lines.push(`/** @typedef {{ readonly __jq79NoProps?: never }} __Jq79NoProps */`)
+    lines.push(`/** @type {__Jq79Typed<${own}>} */ const __jq79Component = /** @type {any} */ (null);`)
   }
-  // `import X from "./X.html"` elsewhere gets a component
+  // \`import X from "./X.html"\` elsewhere gets this file's own component
   lines.push(`export default __jq79Component;`, "")
   return lines.join("\n")
 }
@@ -412,13 +437,19 @@ export type Generated = { code: string; mappings: Mapping[]; typescript: boolean
 export type ComponentScope = { def: ComponentDef; names: string[]; permissive: boolean }
 
 // a factory's store names that can be read off its source: the keys of the
-// object its default export returns, and every `$data.x =` / `$props.x =`
+// object its default export returns (`return { … }`, or an arrow's `=> ({ … })`),
+// and every `$data.x =` / `$props.x =`
 const factoryNames = (ts: typeof TS, file: TS.SourceFile): string[] => {
   const names = new Set<string>()
+  const keys = (expression: TS.Expression) => {
+    while (ts.isParenthesizedExpression(expression)) expression = expression.expression
+    if (!ts.isObjectLiteralExpression(expression)) return
+    for (const p of expression.properties) if (p.name && ts.isIdentifier(p.name)) names.add(p.name.text)
+  }
   const visit = (node: TS.Node) => {
-    if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
-      for (const p of node.expression.properties) if (p.name && ts.isIdentifier(p.name)) names.add(p.name.text)
-    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    if (ts.isReturnStatement(node) && node.expression) keys(node.expression)
+    else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) keys(node.body)
+    else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       ts.isPropertyAccessExpression(node.left) && ts.isIdentifier(node.left.expression) &&
       (node.left.expression.text === "$data" || node.left.expression.text === "$props")) {
       names.add(node.left.name.text)
@@ -491,16 +522,33 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
     out.text(`\n// component ${component.name ?? "(the file's own)"}\nexport async function __jq79Component${c}() {\n`)
     const shared = new Set([...scripts.flatMap(p => [...p.storeNames, ...p.undeclared])].filter(name => !HELPERS.includes(name)))
     const inScope = siblings.filter(name => !declaredProps.has(name))
-    inScope.forEach(name => { shared.delete(name); out.text(`const ${name} = __jq79Component;\n`) })
+    // a sibling is a plain component here: typing it with its props would make
+    // this function's return type depend on itself (a component that renders
+    // itself, Folder in Folder). The template types the tags (template.ts)
+    inScope.forEach(name => {
+      shared.delete(name)
+      out.text(typescript ? `const ${name} = ${any} as __Jq79Plain;\n` : `/** @type {__Jq79Plain} */ const ${name} = ${any};\n`)
+    })
     shared.forEach(name => out.text(typescript ? `let ${name}: any;\n` : `/** @type {any} */ let ${name};\n`))
     const stores: string[] = []
+    const props: string[] = []
     scripts.forEach(plan => {
-      const fn = plan.factory ? `__jq79Factory${n++}` : `__jq79Setup${n++}`
+      const i = n++
+      const fn = plan.factory ? `__jq79Factory${i}` : `__jq79Setup${i}`
       out.text(plan.factory ? `async function ${fn}() {\n` : `async function ${fn}(${typescript ? "__props: any" : "__props"}) {\n`)
-      if (!plan.factory) writeProps(out, plan.block, typescript)
+      if (!plan.factory) writeProps(out, text, plan.block, typescript)
       writeBody(ts, out, text, plan, typescript)
       out.text("\n}\n")
-      stores.push(plan.factory ? `__jq79Bindings(await (await ${fn}())(${any}, ${any}))` : `await ${fn}(${any})`)
+      if (plan.factory) {
+        stores.push(`__jq79Bindings(await (await ${fn}())(${any}, ${any}))`)
+        const declared = parseFactoryProps(text.slice(plan.block.contentStart, plan.block.contentEnd))
+        if (declared) props.push(declared.length ? `{ ${declared.map(d => `${d.name}?: any`).join("; ")} }` : "__Jq79NoProps")
+      } else {
+        out.text(`const __r${i} = await ${fn}(${any});\n`)
+        stores.push(`__r${i}.store`)
+        const declared = readSignature(plan.block)
+        if (declared) props.push(declared.length ? `Parameters<typeof __r${i}.signature>[0]` : "__Jq79NoProps")
+      }
     })
     // the store: what every script returns, over the siblings in scope and
     // the names no script returns typed (an assignment to a name declared
@@ -508,10 +556,14 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
     const returned = new Set(scripts.flatMap(p => (p.factory ? [] : returnedNames(ts, p))))
     const base = [
       ...[...shared].filter(name => !returned.has(name)).map(name => `${name}: any`),
-      ...inScope.map(name => `${name}: typeof __jq79Component`),
+      ...inScope.map(name => `${name}: __Jq79Plain`),
     ]
     const seed = typescript ? `({} as { ${base.join("; ")} })` : `/** @type {{ ${base.join("; ")} }} */ ({})`
-    out.text(`return Object.assign(${seed}${stores.map(store => `, ${store}`).join("")});\n}\n`)
+    // the props it takes: what each declaring script's signature says, and
+    // anything at all when none declares one (components.md: permissive)
+    const type = props.length ? props.join(" & ") : "any"
+    const propsValue = typescript ? `${any} as ${type}` : `/** @type {${type}} */ (${any})`
+    out.text(`return { store: Object.assign(${seed}${stores.map(store => `, ${store}`).join("")}), props: ${propsValue} };\n}\n`)
   })
   return { code: out.code, mappings: out.mappings, typescript }
 }
@@ -519,9 +571,18 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
 // `let <pattern> = __props;`, the pattern mapped from the :setup attribute.
 // A JavaScript file can't carry the `: Type` a TypeScript component writes
 // after it - the runtime ignores it too (parsePropsPattern stops at the `}`)
-const writeProps = (out: Writer, block: Block, typescript: boolean) => {
+//
+// And the same pattern again, unmapped, as the parameter of an arrow that is
+// never called: what TypeScript infers for that parameter is the props type
+// (\`{ step = 1, label }\` is \`{ step?: number; label: any }\`, an annotation is
+// itself). It sits in the body, not on the setup function, because an
+// \`interface Props\` the script declares is only visible inside it
+const writeProps = (out: Writer, text: string, block: Block, typescript: boolean) => {
   const setup = attr(block, ":setup")
-  if (!setup?.value?.trim() || setup.valueStart === undefined) return
+  if (!setup?.value?.trim() || setup.valueStart === undefined) {
+    out.text("const __jq79Signature = undefined;\n")
+    return
+  }
   let length = setup.value.length
   if (!typescript) {
     const end = patternEnd(setup.value)
@@ -530,6 +591,7 @@ const writeProps = (out: Writer, block: Block, typescript: boolean) => {
   out.text("let ")
   out.copy(setup.valueStart, setup.valueStart + length)
   out.text(" = __props;\n")
+  out.text(`const __jq79Signature = (${text.slice(setup.valueStart, setup.valueStart + length)}) => {};\n`)
 }
 
 // the names a :setup pattern binds, read the way the checker reads it
@@ -617,8 +679,10 @@ const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, t
   }
 
   const visit = (node: TS.Node) => {
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && isRuntimeImport(ts, node)) {
-      edits.push({ start: node.expression.getStart(file), end: node.expression.end, text: "$__import" })
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const kind = importKind(ts, node)
+      if (kind === "runtime") edits.push({ start: node.expression.getStart(file), end: node.expression.end, text: "$__import" })
+      else if (kind === "component") edits.push({ start: node.end, end: node.end, text: ".then(__jq79DefaultOf)" })
     }
     ts.forEachChild(node, visit)
   }
@@ -643,6 +707,6 @@ const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, t
   // return - and a getter reads the variable's declared type
   if (!factory) {
     const names = returnedNames(ts, plan)
-    out.text(`\n;return { ${names.map(name => `get ${name}() { return ${name} }`).join(", ")} };`)
+    out.text(`\n;return { store: { ${names.map(name => `get ${name}() { return ${name} }`).join(", ")} }, signature: __jq79Signature };`)
   } else if (hasDefault) out.text(`\n;return __jq79Default;`)
 }

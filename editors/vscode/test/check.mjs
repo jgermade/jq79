@@ -4,7 +4,7 @@
 // Needs the build: `npm test` runs it first
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -64,7 +64,7 @@ const corpus = async options => {
   const found = []
   for (const file of files) {
     for (const d of await checker.check(file)) {
-      if (d.severity === 1 || d.severity === 2) found.push({ d, line: `${relative(repo, file)}:${d.range.start.line + 1} TS${d.code} ${d.message}` })
+      if (d.severity === 1 || d.severity === 2) found.push({ d, file, line: `${relative(repo, file)}:${d.range.start.line + 1} TS${d.code} ${d.message}` })
     }
   }
   return found
@@ -77,9 +77,21 @@ test("every tutorial component checks clean, but for the exercises", async () =>
   assert.ok(found.every(line => !line.includes("/solution/")))
 })
 
+// and a solution's import of a component the tutorial serves from elsewhere:
+// the exercise's own files, one folder up (a solution is mounted over them),
+// or the shared examples in tutorial/_app/ - a layout of the tutorial's that
+// the filesystem doesn't have. In JavaScript, an unresolved import is only
+// reported under checkJs
+const exerciseFile = ({ d, file }) => {
+  const missing = /Cannot find module '\.\/([^']+)'/.exec(d.message)?.[1]
+  return d.code === 2307 && file.includes("/solution/") && !!missing &&
+    (existsSync(join(dirname(file), "..", missing)) || existsSync(join(repo, "tutorial/_app", missing)))
+}
+
 test("…and with checkJs, only DOM typing is added", async () => {
   const found = (await corpus({ ...TYPED, checkJs: true }))
     .filter(({ d }) => !(d.code === 2339 && /on type '(Element|ChildNode)'/.test(d.message)))
+    .filter(f => !exerciseFile(f))
     .map(f => f.line)
   assert.deepEqual(found.sort(), [...EXERCISES].sort())
 })
@@ -464,4 +476,120 @@ test("not in comments, scripts or styles", async () => {
     `<p>{{ a }}</p>`,
   ].join("\n"), TYPED)
   assert.deepEqual(errors, [])
+})
+
+// ------------------------------------------------------------------ props against the child's signature
+
+const ROW = `<template name="Row">\n  <script :setup="{ label, count = 0, onPick }: RowProps" lang="ts">\n    interface RowProps { label: string; count?: number; onPick?: (id: number) => void }\n  </script>\n  <p>{{ label }}</p>\n</template>`
+
+test("a prop is checked against the type the child declares", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">let n = 1</script>`,
+    `<Row :label="n" :count="n" />`,
+    `<Row label="plain" count="3" />`,
+    `<Row :on-pick="id => id.toUpperCase()" />`,
+    ROW,
+  ].join("\n"))
+  assert.deepEqual(errors, [
+    "2:7 TS2322 Type 'number' is not assignable to type 'string'.",
+    "3:20 TS2322 Type 'string' is not assignable to type 'number'.",
+    "4:25 TS2339 Property 'toUpperCase' does not exist on type 'number'.",
+  ])
+})
+
+test("a prop the child doesn't declare is reported where it is written; a missing one is not", async () => {
+  const errors = await one([
+    `<script :setup lang="ts"></script>`,
+    `<Row :lable="'x'" class="wide" />`,
+    `<Row />`,
+    ROW,
+  ].join("\n"))
+  assert.equal(errors.length, 2, errors.join("\n"))
+  assert.match(errors[0], /^2:7 TS2561 .*'lable' does not exist.*Did you mean to write 'label'/)
+  assert.match(errors[1], /^2:19 TS2353 .*'class' does not exist/)
+})
+
+test("a kebab prop is its camelCase name, reported on the attribute", async () => {
+  const errors = await one([
+    `<script :setup lang="ts"></script>`,
+    `<Card :user-name="1" :user-nmae="'x'" />`,
+    `<template name="Card"><script :setup="{ userName }: { userName: string }" lang="ts"></script></template>`,
+  ].join("\n"))
+  assert.equal(errors.length, 2, errors.join("\n"))
+  assert.match(errors[0], /^2:8 TS2322 Type 'number' is not assignable to type 'string'/)
+  assert.match(errors[1], /^2:23 TS2561 .*'userNmae' does not exist.*Did you mean to write 'userName'/)
+})
+
+test("a JavaScript child's props are what its pattern infers", async () => {
+  const errors = await one([
+    `<script :setup></script>`,
+    `<Counter :step="'two'" :start="1" />`,
+    `<template name="Counter"><script :setup="{ step = 1 }"></script></template>`,
+  ].join("\n"), TYPED)
+  assert.equal(errors.length, 2, errors.join("\n"))
+  assert.match(errors[0], /^2:11 TS2322 Type 'string' is not assignable to type 'number'/)
+  assert.match(errors[1], /^2:25 TS2353 .*'start' does not exist/)
+})
+
+test("a closed signature takes no props, a permissive one takes any", async () => {
+  const errors = await one([
+    `<script :setup></script>`,
+    `<Closed :a="1" />`,
+    `<Open :a="1" anything="x" />`,
+    `<template name="Closed"><script :setup></script></template>`,
+    `<template name="Open"><script :setup="_"></script></template>`,
+  ].join("\n"), TYPED)
+  assert.equal(errors.length, 1, errors.join("\n"))
+  assert.match(errors[0], /^2:10 TS2353 .*'a' does not exist/)
+})
+
+test("spreads narrow, :model binds a prop, and directives aren't props", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">let sdk = { label: "x", extra: 1 }; let rows = [1]; let v = "a"</script>`,
+    `<Row ...sdk :props="sdk" />`,
+    `<Row :each="r in rows" :key="r" :if="r" :class="'a'" :model.label="v" />`,
+    `<Row :model.count="v" />`,
+    ROW,
+  ].join("\n"))
+  assert.deepEqual(errors, ["4:13 TS2322 Type 'string' is not assignable to type 'number'."])
+})
+
+test("a component imported from another file carries its props", async () => {
+  const errors = await check({
+    "app.html": [
+      `<script :setup lang="ts">`,
+      `  const Card = await import("./Card.html")`,
+      `  const Crad = await import("./Crad.html")`,
+      `</script>`,
+      `<Card :title="1" />`,
+    ].join("\n"),
+    "factory.html": [
+      `<script lang="ts">`,
+      `  import Card from "./Card.html"`,
+      `  export default () => ({ Card })`,
+      `</script>`,
+      `<Card :titel="'x'" />`,
+    ].join("\n"),
+    "Card.html": `<script :setup="{ title }: { title: string }" lang="ts"></script><h2>{{ title }}</h2>`,
+  })
+  assert.deepEqual(errors["app.html"].map(e => e.split(" ").slice(0, 2).join(" ")), ["3:29 TS2307", "5:8 TS2322"])
+  assert.match(errors["factory.html"][0], /^5:8 TS2561 .*'titel' does not exist.*Did you mean to write 'title'/)
+  assert.deepEqual(errors["Card.html"], [])
+})
+
+test("a factory child's props are the names its first parameter declares", async () => {
+  const errors = await one([
+    `<script :setup></script>`,
+    `<Badge :label="1" :lable="2" />`,
+    `<template name="Badge"><script>export default ({ label }, { $data }) => {}</script></template>`,
+  ].join("\n"), TYPED)
+  assert.equal(errors.length, 1, errors.join("\n"))
+  assert.match(errors[0], /^2:20 TS2561 .*'lable' does not exist.*Did you mean to write 'label'/)
+})
+
+test("a tag that names nothing in scope", async () => {
+  const closed = await one(`<script :setup></script>\n<Buton :a="1" />\n<Button /><template name="Button"></template>`, TYPED)
+  assert.deepEqual(closed, ["2:2 TS2552 Cannot find name 'Buton'. Did you mean 'Button'?"])
+  // a parent may pass a component to a permissive one
+  assert.deepEqual(await one(`<script :setup="_"></script>\n<Buton :a="1" />`, TYPED), [])
 })

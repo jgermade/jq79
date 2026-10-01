@@ -92,6 +92,8 @@ jq79: :extra is not declared by <Field> - add it to the :setup signature, or dro
 
 A **spread's** extra keys are not — narrowing `...sdk` to the few a component takes is the normal case, and the reason to write it.
 
+In VS Code, [the extension in this repo](../editors/vscode/README.md#props-against-the-childs-signature) reports the same thing before anything renders, on the attribute — along with a prop whose value doesn't match the type the signature gives it.
+
 Two things are never filtered:
 
 - **A component with no signature.** A factory's `_`, or `<script :setup="_">`, declares nothing and stays permissive, taking whatever the parent passes.

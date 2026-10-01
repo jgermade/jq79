@@ -168,6 +168,13 @@ const preamble = (module: string): string => [
   // what an @event's value may be: a statement-like expression, or a function
   // called with the event - typed by it, so an inline arrow's parameter is
   `declare function __jq79On<E>(event: E, handler: ((event: E) => unknown) | {} | null | undefined | void): void;`,
+  // a component tag's props, checked against the props the component takes
+  // (component.ts, the \`props\` each component function returns). Partial,
+  // because a prop the parent leaves out is \`undefined\` in the child, not an
+  // error; NoInfer, so the props written can't widen what is taken. A
+  // component whose props are unknown (\`any\`, or no brand) takes anything
+  `declare function __jq79Props<P>(component: { readonly __jq79Props?: P } | null | undefined, props: NoInfer<Partial<P>>): void;`,
+  `type __Jq79PropsOf<C extends (...args: any) => any> = { readonly __jq79Props?: Awaited<ReturnType<C>>["props"] };`,
   `type __Jq79Injected = { $emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; $slots: Record<string, true> };`,
   `export {};`,
   "",
@@ -184,14 +191,20 @@ export const generateTemplate = (ts: typeof TS, text: string, module: string): G
   const trees = templates(parseTree(text), scopes.map(s => s.def.name))
   const out = new Writer(text)
   out.text(preamble(module))
+  const siblingIndex = new Map(scopes.flatMap((scope, c) => (scope.def.name ? [[scope.def.name, c] as const] : [])))
 
   scopes.forEach((scope, c) => {
     const injected = ["$emit", "$updateModel", "$slots"].filter(name => !scope.names.includes(name))
     out.text(`\n// template of ${scope.def.name ?? "the file's own component"}\nasync function __jq79Template${c}() {\n`)
-    out.text(`const __s = null as any as Awaited<ReturnType<typeof __jq79Scripts.__jq79Component${c}>>;\n`)
+    out.text(`const __s = null as any as Awaited<ReturnType<typeof __jq79Scripts.__jq79Component${c}>>["store"];\n`)
     if (injected.length) out.text(`let { ${injected.join(", ")} } = null as any as __Jq79Injected;\n`)
+    // the file's other components in scope, typed with the props they take -
+    // which the scripts' store leaves out (see generate, component.ts)
+    const siblings = scope.names.filter(name => siblingIndex.has(name))
+    siblings.forEach(name => out.text(`let ${name} = null as any as __Jq79PropsOf<typeof __jq79Scripts.__jq79Component${siblingIndex.get(name)}>;\n`))
     // `let`: a template assigns to the store (@click="count = count + 1")
-    if (scope.names.length) out.text(`let { ${scope.names.join(", ")} } = __s;\n`)
+    const stored = scope.names.filter(name => !siblingIndex.has(name))
+    if (stored.length) out.text(`let { ${stored.join(", ")} } = __s;\n`)
     const gen = new TemplateWriter(ts, out, scope.permissive, scope.names)
     trees[c].forEach(node => gen.node(node))
     out.text("}\n")
@@ -200,6 +213,18 @@ export const generateTemplate = (ts: typeof TS, text: string, module: string): G
 }
 
 const EACH_RE = new RegExp(EACH_PATTERN.source, "d")
+
+// whether an attribute on a component tag is one of its props: a \`:x\` that is
+// no directive, a \`:model\`, or a plain attribute (renderNestedComponent).
+// Spreads (\`:props\`, \`...x\`) are not: their extra keys are dropped, silently
+const isProp = (a: TAttr): boolean => {
+  const name = a.name.toLowerCase()
+  if (name.startsWith("@") || a.name.startsWith("...")) return false
+  if (name === ":model" || name.startsWith(":model.")) return true
+  if (name === ":props" || name.startsWith(":props.") || name === ":slot" || name.startsWith(":slot.")) return false
+  if (CONTROL_ATTRS.has(name) || name.startsWith(":class.")) return false
+  return true
+}
 
 // the names an expression reads from its scope: identifiers that are neither
 // a property (`a.b`, `{ b: 1 }`) nor bound inside the expression itself (an
@@ -234,6 +259,7 @@ class TemplateWriter {
   // how many :with regions the writer is inside, and has opened
   private withDepth = 0
   private withCount = 0
+  private tagCount = 0
   private names: Set<string>
   constructor(private ts: typeof TS, private out: Writer, private permissive: boolean, names: string[]) {
     this.names = new Set(names)
@@ -330,7 +356,10 @@ class TemplateWriter {
       this.withDepth++
     }
 
-    for (const a of el.attrs) this.attribute(a, component)
+    if (component) this.componentTag(el)
+    for (const a of el.attrs) {
+      if (!component || !isProp(a)) this.attribute(a, component)
+    }
 
     // a slot binder declares names for the content it fills
     const binder = el.attrs.find(a => /^:slot(\.|$)/i.test(a.name))
@@ -347,6 +376,50 @@ class TemplateWriter {
     if (bound) this.out.text("}\n")
     if (withAttr?.value !== undefined && withAttr.valueStart !== undefined) this.withDepth--
     this.out.text("}\n".repeat(blocks))
+  }
+
+  // the name in scope a component tag resolves to: a capitalized one that
+  // equals the tag once dashes and case are gone (findComponentKey, jq79.ts)
+  private resolve(tag: string): string | undefined {
+    const normal = tag.replace(/-/g, "").toLowerCase()
+    return [...this.names].find(name => /^[A-Z]/.test(name) && name.replace(/-/g, "").toLowerCase() === normal)
+  }
+
+  // a component tag's props as one object, checked against the component's:
+  // \`:x\` and \`:model.x\` with their expression (\`:x\` alone reads \`x\`), a plain
+  // attribute as the string it is - renderNestedComponent's reading. Each key is
+  // mapped to its attribute's name, where an undeclared or mistyped prop is
+  // reported. A tag that names nothing in scope is reported as the name it
+  // reads, where it is an identifier: \`<Buton>\` is "Cannot find name"
+  private componentTag(el: TElement) {
+    const resolved = this.resolve(el.tag)
+    const tagStart = el.start + 1
+    const c = `__c${this.tagCount++}`
+    this.out.text(`const ${c} = `)
+    if (resolved === el.tag) this.out.copy(tagStart, tagStart + el.tag.length, this.data)
+    else if (resolved) this.out.text(resolved)
+    else if (/^[A-Z][\w$]*$/.test(el.tag)) this.out.copy(tagStart, tagStart + el.tag.length, this.data)
+    else this.out.text("null")
+    this.out.text(";\n")
+    // one object per prop: TypeScript reports only the first unknown key of
+    // an object literal, and every misspelt prop should be
+    for (const a of el.attrs) {
+      if (!isProp(a)) continue
+      const name = a.name.toLowerCase()
+      const written = name.startsWith(":model.") ? a.name.slice(":model.".length) : name === ":model" ? "model" : name.startsWith(":") ? a.name.slice(1) : a.name
+      const keyStart = a.nameStart + a.name.length - written.length
+      const key = kebabToCamel(written)
+      this.out.text(`__jq79Props(${c}, { `)
+      if (/^[A-Za-z_$][\w$]*$/.test(key)) this.out.mapText(keyStart, keyStart + written.length, key, this.data)
+      else this.out.text(JSON.stringify(key))
+      this.out.text(": ")
+      const hasValue = a.value !== undefined && a.valueStart !== undefined && a.value.trim() !== ""
+      if (!name.startsWith(":")) this.out.text(JSON.stringify(a.value ?? ""))
+      else if (hasValue) { this.out.text("("); this.out.copy(a.valueStart!, a.valueStart! + a.value!.length, this.data); this.out.text("\n)") }
+      else if (key === written) { this.out.text("("); this.out.copy(keyStart, keyStart + written.length, this.data); this.out.text(")") }
+      else this.out.text(`(${key})`)
+      this.out.text(" });\n")
+    }
   }
 
   private attribute(a: TAttr, component: boolean) {
