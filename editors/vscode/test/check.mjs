@@ -795,3 +795,35 @@ test("…and a factory's ctx.$self the same", async () => {
   ].join("\n"))
   assert.deepEqual(errors, [])
 })
+
+// ------------------------------------------------------------------ a factory's props, typed
+
+test("a factory child's props have the types its first parameter gives them", async () => {
+  const lines = [
+    `<script :setup></script>`,
+    `<Badge :label="1" :count="'any'" />`,
+    `<Counter :step="'two'" />`,
+    `<template name="Badge"><script>export default ({ label = "Total", count }) => ({})</script></template>`,
+    `<template name="Counter"><script lang="ts">`,
+    `  interface Props { step: number }`,
+    `  export default ({ step }: Props, { $data }) => { $data.n = step }`,
+    `</script></template>`,
+  ]
+  const errors = await one(lines.join("\n"), TYPED)
+  assert.deepEqual(errors, [
+    `2:${lines[1].indexOf("label") + 1} TS2322 Type 'number' is not assignable to type 'string'.`,
+    `3:${lines[2].indexOf("step") + 1} TS2322 Type 'string' is not assignable to type 'number'.`,
+  ])
+})
+
+test("…and in its own template, as they are bound", async () => {
+  const lines = [
+    `<script>export default ({ label = "Total", user: who }) => ({ ready: true })</script>`,
+    `<p>{{ label.toFixed() }} {{ user }} {{ ready.toUpperCase() }}</p>`,
+  ]
+  const errors = await one(lines.join("\n"), TYPED)
+  assert.deepEqual(errors, [
+    `2:${lines[1].indexOf("toFixed") + 1} TS2551 Property 'toFixed' does not exist on type 'string'. Did you mean 'fixed'?`,
+    `2:${lines[1].indexOf("toUpperCase") + 1} TS2339 Property 'toUpperCase' does not exist on type 'boolean'.`,
+  ])
+})

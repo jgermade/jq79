@@ -2,7 +2,7 @@
   "name": "jq79-vscode",
   "displayName": "jq79",
   "description": "jq79 components in VS Code: their scripts and templates checked, completed and hovered as the runtime compiles them, and {{ }}, :attr, @event, <script lang=\"ts\">, <style lang=\"scss\"> and Component79(`…`) colored in their language",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "jgermade",
   "license": "ISC",
   "private": true,

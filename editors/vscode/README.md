@@ -175,8 +175,9 @@ the runtime drops without a word. A prop left out is not an error: the child
 sees `undefined`, which its default fills. A child without a signature takes
 anything, as it does at runtime; a closed one (`:setup`, `:setup="{}"`) takes
 nothing. The props' types are what the child's pattern says: its annotation,
-or what TypeScript infers from it (`{ step = 1 }` takes a `number`). A factory's
-first parameter gives the names and no types, since that is all it says.
+or what TypeScript infers from it (`{ step = 1 }` takes a `number`) - a
+`:setup` pattern or a factory's first parameter alike, which also types those
+props in the child's own template.
 
 **What isn't checked yet:**
 
@@ -288,7 +289,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.7.0.vsix
+code --install-extension jq79-vscode-0.8.0.vsix
 ```
 
 ## Working on it

@@ -604,9 +604,12 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
       values.forEach((value, name) => { const at = sharedAt.get(name); if (at !== undefined) out.link(at, value, name.length) })
       out.text("\n}\n")
       if (plan.factory) {
-        stores.push(`__jq79Bindings(await (await ${fn}())(${any}, ${any}))`)
+        // its props on the store first, as declareProps seeds them before it
+        // runs, then what it returns, which wins
+        out.text(`const __f${i} = await ${fn}();\n`)
+        stores.push(`__f${i}.signature(${any})`, `__jq79Bindings(await __f${i}.run(${any}, ${any}))`)
         const declared = parseFactoryProps(text.slice(plan.block.contentStart, plan.block.contentEnd))
-        if (declared) props.push(declared.length ? `{ ${declared.map(d => `${d.name}?: any`).join("; ")} }` : "__Jq79NoProps")
+        if (declared) props.push(declared.length ? `Parameters<typeof __f${i}.signature>[0]` : "__Jq79NoProps")
       } else {
         out.text(`const __r${i} = await ${fn}(${any});\n`)
         stores.push(`__r${i}.store()`)
@@ -778,6 +781,33 @@ const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, t
     out.text(` }), signature: __jq79Signature };`)
     return values
   }
-  if (hasDefault) out.text(`\n;return __jq79Default;`)
+  // a factory: what it exports, and its props' signature. The same trick as
+  // a setup script's (writeProps): its first parameter again, unmapped, on an
+  // arrow with no context - the export's own parameters are contextually typed
+  // by __Jq79Factory, whose props are \`any\`, so an unannotated pattern would
+  // be \`any\` there. Here \`{ label = "Total" }\` is \`{ label?: string }\`, an
+  // annotation is itself, and what the arrow returns - the props as they are
+  // bound - types them on the store
+  const first = factoryParameter(ts, file)
+  const declared = parseFactoryProps(file.text) ?? []
+  const bound = declared.map(d => `${d.name}: ${d.as ?? d.name}`).join(", ")
+  out.text(`\n;const __jq79Signature = (${first?.getText(file) ?? ""}) => ({ ${bound} });`)
+  out.text(hasDefault
+    ? `\n;return { run: __jq79Default, signature: __jq79Signature };`
+    : `\n;return { run: () => ({}), signature: __jq79Signature };`)
   return new Map<string, number>()
+}
+
+// the first parameter of the function a factory script exports, if it writes one
+const factoryParameter = (ts: typeof TS, file: TS.SourceFile): TS.ParameterDeclaration | undefined => {
+  for (const statement of file.statements) {
+    if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      let expression = statement.expression
+      while (ts.isParenthesizedExpression(expression)) expression = expression.expression
+      if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) return expression.parameters[0]
+    } else if (ts.isFunctionDeclaration(statement) && statement.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword)) {
+      return statement.parameters[0]
+    }
+  }
+  return undefined
 }
