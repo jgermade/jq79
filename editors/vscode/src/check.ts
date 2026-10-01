@@ -11,7 +11,7 @@ import { createTypeScriptChecker, createTypeScriptInferredChecker } from "@volar
 import { create as createCssService } from "volar-service-css"
 import { create as createTypeScriptServices } from "volar-service-typescript"
 import * as ts from "typescript"
-import { createJq79LanguagePlugin } from "./language"
+import { createJq79LanguagePlugin, jq79Resolver } from "./language"
 
 const IGNORED = new Set(["node_modules", ".git", "dist"])
 
@@ -37,12 +37,21 @@ export const INFERRED_OPTIONS: ts.CompilerOptions = {
   noEmit: true,
 }
 
+// a tsconfig's compiler options, as TypeScript reads them
+const projectOptions = (project: string): ts.CompilerOptions => {
+  const config = ts.readConfigFile(project, ts.sys.readFile)
+  return ts.parseJsonConfigFileContent(config.config ?? {}, ts.sys, path.dirname(project)).options
+}
+
 // `setup` reaches Volar's project (its TypeScript host), for a test that needs
 // to see past what the checker maps back to the .html
 type Setup = Parameters<typeof createTypeScriptInferredChecker>[4]
 
 export const createChecker = (files: string[] | { project: string }, options: ts.CompilerOptions = INFERRED_OPTIONS, setup?: Setup) => {
-  const languages = [createJq79LanguagePlugin(ts)]
+  // with the options the files are checked with: a tsconfig's paths can be
+  // where "jq79" resolves
+  const resolving = Array.isArray(files) ? options : projectOptions(files.project)
+  const languages = [createJq79LanguagePlugin(ts, jq79Resolver(ts, resolving))]
   const services = [createCssService(), ...createTypeScriptServices(ts)]
   return Array.isArray(files)
     ? createTypeScriptInferredChecker(languages, services, () => files, options, setup)

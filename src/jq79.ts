@@ -4717,6 +4717,15 @@ export class PendingComponent79 {
 
 export { Component79 as C79 }
 
+// a component that takes the props P: what a signature writes for a component
+// it takes as a prop - `:setup="{ Button }: { Button: Component<{ label: string }> }"` -
+// so a type-checker can hold the tags that use it, and the parents that pass
+// one, to P (RECORD/2026-10-01.component-as-prop.md). "~props" is a phantom:
+// never set, only in the types. A function of P, because props are passed *to*
+// a component: one that takes more than P (optionally) is a Component<P>, one
+// that requires something P doesn't have is not
+export type Component<P = any> = Component79 & { readonly "~props"?: (props: P) => void }
+
 export const parseComponent = (component: string): Component79 => new Component79(component)
 
 // library helpers injected into setup scripts. They behave like extra

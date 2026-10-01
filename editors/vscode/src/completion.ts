@@ -7,7 +7,7 @@
 //   <li :|          the directives, as snippets (:if="…", :each="… in …", :class="…")
 //   <li @|          events, and after `@click.` the modifiers
 //   <Card :|        the props Card declares, typed: TypeScript's own answer for
-//                   the __jq79Props check the template's code already makes
+//                   the "~props" check the template's code already makes
 //   <script :|      :setup, :mounted, lang="ts"      <style |   scoped, lang="scss"
 //   <C|             the components in scope
 //
@@ -148,8 +148,8 @@ type Source = {
 // ------------------------------------------------------------------ what a tag's component carries
 
 // the brand on the variable the template's code checks a component tag
-// against (template.ts, componentTag): `__jq79Props`, `__jq79Emits` or
-// `__jq79Slots`, as TypeScript types it (component.ts, __Jq79Typed)
+// against (template.ts, componentTag): `"~props"`, `"~emits"` or `"~slots"`,
+// as TypeScript types it (component.ts, Jq79Component; jq79's Component<P>)
 const brandOf = (ts: typeof TS, context: LanguageServiceContext, source: Source, tagStart: number, property: string) => {
   const script = context.language.scripts.get(source.uri)
   const template = script?.generated?.root.embeddedCodes?.find(code => code.id === source.templateId) as { jq79Tags?: { start: number; variable: string }[] } | undefined
@@ -177,11 +177,16 @@ const brandOf = (ts: typeof TS, context: LanguageServiceContext, source: Source,
 
 type Prop = { name: string; type: string; optional: boolean; doc: string }
 
-// the props the component at a tag takes, typed
+// the props the component at a tag takes, typed: the parameter of its
+// "~props", a function so that props are checked the way they flow, into it
 const propsOf = (ts: typeof TS, context: LanguageServiceContext, source: Source, tagStart: number): Prop[] | undefined => {
-  const found = brandOf(ts, context, source, tagStart, "__jq79Props")
+  const found = brandOf(ts, context, source, tagStart, "~props")
   if (!found) return undefined
-  const { checker, declaration, type } = found
+  const { checker, declaration } = found
+  const parameter = found.type.getCallSignatures()[0]?.getParameters()[0]
+  if (!parameter) return undefined
+  const type = checker.getTypeOfSymbolAtLocation(parameter, declaration)
+  if (type.flags & ts.TypeFlags.Any) return undefined
   return checker.getPropertiesOfType(type)
     .filter(p => !p.name.startsWith("__jq79"))
     .map(p => ({
@@ -293,7 +298,7 @@ export const createJq79TemplateService = (ts: typeof TS): LanguageServicePlugin 
           // in a component's tag, the content for one of its named slots
           const parent = parentOf(parseTree(source.text), where.tagStart)
           if (parent && isComponentTag(parent.tag)) {
-            namesOf(ts, context, source, parent.start, "__jq79Slots")
+            namesOf(ts, context, source, parent.start, "~slots")
               .filter(name => !where.present.has(`:slot.${name}`.toLowerCase()))
               .forEach(name => add(`:slot.${name}`, KIND.property, `:slot.${name}`, `The content for <${parent.tag}>'s \`<slot.${name}>\`. A value names the slot props it reads: \`:slot.${name}="{ item }"\`.`, "jq79 slot", "0"))
           } else if (parent === null) offer(TEMPLATE_ATTRIBUTES)
@@ -307,7 +312,7 @@ export const createJq79TemplateService = (ts: typeof TS): LanguageServicePlugin 
               .forEach(([m, doc]) => add(`${written}${m}`, KIND.event, `${written}${m}`, doc, "jq79 modifier"))
           } else if (isComponentTag(where.tag)) {
             // on a component's tag, what it emits
-            namesOf(ts, context, source, where.tagStart, "__jq79Emits")
+            namesOf(ts, context, source, where.tagStart, "~emits")
               .filter(name => !where.present.has(`@${name}`.toLowerCase()))
               .forEach(name => add(`@${name}`, KIND.event, `@${name}="$1"`, `What <${where.tag}> emits as \`$emit("${name}", …)\`; the payload is \`$event.detail\`.`, "jq79 emitted event", "0"))
           } else {

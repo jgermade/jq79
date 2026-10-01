@@ -26,7 +26,7 @@
 
 import type * as TS from "typescript"
 import { CONTROL_ATTRS, EACH_PATTERN, INTERPOLATION_RE, VOID_ELEMENTS, kebabToCamel } from "../../../src/source"
-import { FULL, Writer, componentScopes, type Mapping } from "./component"
+import { FULL, Writer, componentScopes, type GenerateOptions, type Mapping } from "./component"
 import { copyDecoded, decodeAt, type Decoded } from "./entities"
 
 // ------------------------------------------------------------------ the tree
@@ -168,7 +168,7 @@ const PERMISSIVE: Mapping["data"] = {
   verification: { shouldReport: (_source: unknown, code: unknown) => ![2304, 2552, 18004].includes(Number(code)) } as unknown as boolean,
 }
 
-const preamble = (module: string): string => [
+const preamble = (module: string, jq79: boolean): string => [
   `// jq79: what a template's expressions are evaluated against (src/source.ts, withBody)`,
   `import type * as __jq79Scripts from ${JSON.stringify(module)};`,
   // :each takes an array (items, index) or a plain object (values, keys), and
@@ -190,8 +190,14 @@ const preamble = (module: string): string => [
   // because a prop the parent leaves out is \`undefined\` in the child, not an
   // error; NoInfer, so the props written can't widen what is taken. A
   // component whose props are unknown (\`any\`, or no brand) takes anything
-  `declare function __jq79Props<P>(component: { readonly __jq79Props?: P } | null | undefined, props: NoInfer<Partial<P>>): void;`,
-  `type __Jq79PropsOf<C extends (...args: any) => any> = { readonly __jq79Props?: Awaited<ReturnType<C>>["props"]; readonly __jq79Emits?: Awaited<ReturnType<C>>["emits"]; readonly __jq79Slots?: Awaited<ReturnType<C>>["slots"] };`,
+  `declare function __jq79Props<P>(component: { readonly "~props"?: (props: P) => void } | null | undefined, props: NoInfer<Partial<P>>): void;`,
+  // a sibling, typed as a component of a file is (component.ts, Jq79Component):
+  // Component79 with what it takes, so it is a jq79 Component<P> where one is
+  // asked for (a component passed as a prop). Named, because the name is what
+  // an error about it shows: Jq79Component<{ label: number }, never, never>
+  // (whether jq79 can be named at all is GenerateOptions', component.ts)
+  `type __Jq79Plain = ${jq79 ? `import("jq79").Component79` : "{}"};`,
+  `type Jq79Component<P, E = never, S = never> = __Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: E; readonly "~slots"?: S };`,
   `type __Jq79Injected = { $emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; $slots: Record<string, true> };`,
   `export {};`,
   "",
@@ -209,13 +215,13 @@ export type GeneratedTemplate = { code: string; mappings: Mapping[]; links: Mapp
 // the keys of \`.mount(el, { … })\` after a literal (literal.ts): a root reads
 // its mount data whatever its signature says (components.md, "Two things are
 // never filtered"), so those names are in its scope, as \`any\`
-export const generateTemplate = (ts: typeof TS, text: string, module: string, rootData: string[] = []): GeneratedTemplate | null => {
+export const generateTemplate = (ts: typeof TS, text: string, module: string, rootData: string[] = [], options: GenerateOptions = {}): GeneratedTemplate | null => {
   const scopes = componentScopes(ts, text)
   if (!scopes.length) return null
   scopes[0].names = [...new Set([...scopes[0].names, ...rootData])]
   const trees = templates(parseTree(text), scopes.map(s => s.def.name))
   const out = new Writer(text)
-  out.text(preamble(module))
+  out.text(preamble(module, options.jq79 !== false))
   const tags: GeneratedTemplate["tags"] = []
   const siblingIndex = new Map(scopes.flatMap((scope, c) => (scope.def.name ? [[scope.def.name, c] as const] : [])))
 
@@ -227,7 +233,10 @@ export const generateTemplate = (ts: typeof TS, text: string, module: string, ro
     // the file's other components in scope, typed with the props they take -
     // which the scripts' store leaves out (see generate, component.ts)
     const siblings = scope.names.filter(name => siblingIndex.has(name))
-    siblings.forEach(name => out.text(`let ${name} = null as any as __Jq79PropsOf<typeof __jq79Scripts.__jq79Component${siblingIndex.get(name)}>;\n`))
+    siblings.forEach(name => {
+      const of = `Awaited<ReturnType<typeof __jq79Scripts.__jq79Component${siblingIndex.get(name)}>>`
+      out.text(`let ${name} = null as any as Jq79Component<${of}["props"], ${of}["emits"], ${of}["slots"]>;\n`)
+    })
     // `let`: a template assigns to the store (@click="count = count + 1")
     const stored = scope.names.filter(name => !siblingIndex.has(name))
     // each name linked to the store's property, so a rename crosses over

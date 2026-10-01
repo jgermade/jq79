@@ -4,7 +4,7 @@
 import { test, after } from "node:test"
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
@@ -306,4 +306,28 @@ test("completion in a literal, in a script and in a page", async () => {
   assert.ok(!outside.includes(":each"))
   const page = ["<!doctype html>", "<script type=\"module\">", "  new Component79(`<p :></p>`)", "</script>"].join("\n")
   assert.ok((await ask("page.html", "html", page, "<p :")).includes(":if"))
+})
+
+test("completion: the props of a component that arrives as a prop, declared with Component<P>", async () => {
+  await tagsOpened
+  // a project with jq79 installed, as far as these types go (the real ones
+  // are held to it in check.mjs): without it, Component<P> is any
+  const project = join(dir, "with-jq79")
+  mkdirSync(join(project, "node_modules/jq79"), { recursive: true })
+  writeFileSync(join(project, "node_modules/jq79/package.json"), JSON.stringify({ name: "jq79", types: "index.d.ts" }))
+  writeFileSync(join(project, "node_modules/jq79/index.d.ts"),
+    `export declare class Component79 { mount(target: Element): this }\nexport type Component<P = any> = Component79 & { readonly "~props"?: (props: P) => void }\n`)
+  const file = join(project, "Toolbar.html")
+  const uri = pathToFileURL(file).href
+  const lines = [
+    `<script :setup="{ Button }: { Button: Component<{ label: string; size?: number }> }" lang="ts">`,
+    `  import type { Component } from "jq79"`,
+    `</script>`,
+    `<Button :></Button>`,
+  ]
+  writeFileSync(file, lines.join("\n"))
+  connection.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId: "html", version: 1, text: lines.join("\n") } })
+  const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri }, position: { line: 3, character: lines[3].indexOf(":") + 1 } })
+  const props = Object.fromEntries((Array.isArray(list) ? list : list.items).filter(i => i.kind === 10).map(i => [i.label, i.detail]))
+  assert.deepEqual(props, { ":label": "label: string", ":size": "size?: number" })
 })

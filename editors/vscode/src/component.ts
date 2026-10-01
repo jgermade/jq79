@@ -430,7 +430,13 @@ const QUERY_ALL = "{ <K extends keyof HTMLElementTagNameMap>(selector: K): HTMLE
   "<K extends keyof SVGElementTagNameMap>(selector: K): SVGElementTagNameMap[K][]; " +
   "<E extends Element = HTMLElement>(selector: string): E[] }"
 
-const preamble = (typescript: boolean): string => {
+// `jq79`: whether the file's project resolves the jq79 package. When it
+// doesn't, nothing may name it in a type: an unresolved import is an error
+// type, which turns everything it touches into `any` - even `0 extends 1 & T`,
+// the usual test for any - and a component's props with it
+export type GenerateOptions = { jq79?: boolean }
+
+const preamble = (typescript: boolean, jq79: boolean): string => {
   const ctx = "{ $data: any; $props: any; $effect: (run: () => void) => void; $mounted: () => Promise<void>; " +
     `$self: ${QUERY_ONE}; $$self: ${QUERY_ALL}; ` +
     "$emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; " +
@@ -454,10 +460,12 @@ const preamble = (typescript: boolean): string => {
     lines.push(typescript ? `declare const ${name}: ${types[name]};` : `/** @type {${types[name]}} */ const ${name} = /** @type {any} */ (null);`)
   }
   // a component carries the props it takes, for a tag that uses it to be
-  // checked against (template.ts, __jq79Props). Component79 when the project
+  // checked against (template.ts, __jq79Props) - on the key jq79's own
+  // Component<P> type carries, so a component of a file *is* a Component<P> to
+  // TypeScript (RECORD/2026-10-01.component-as-prop.md). Component79 when the project
   // resolves jq79 - and {} when it doesn't, because \`any & …\` would be any
-  // and take the props with it
-  const plain = `unknown extends import("jq79").Component79 ? {} : import("jq79").Component79`
+  // and take the props with it (GenerateOptions)
+  const plain = jq79 ? `import("jq79").Component79` : "{}"
   const own = `Awaited<ReturnType<typeof __jq79Component0>>["props"]`
   const ownEmits = `Awaited<ReturnType<typeof __jq79Component0>>["emits"]`
   const ownSlots = `Awaited<ReturnType<typeof __jq79Component0>>["slots"]`
@@ -467,18 +475,18 @@ const preamble = (typescript: boolean): string => {
     lines.push(`declare function __jq79DefaultOf<M>(module: M): M extends { default: infer D } ? D : any;`)
     lines.push(`type __Jq79Factory = (props: any, ctx: ${ctx}) => any;`)
     lines.push(`type __Jq79Plain = ${plain};`)
-    lines.push(`export type __Jq79Typed<P, E = never, S = never> = __Jq79Plain & { readonly __jq79Props?: P; readonly __jq79Emits?: E; readonly __jq79Slots?: S };`)
+    lines.push(`export type Jq79Component<P, E = never, S = never> = __Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: E; readonly "~slots"?: S };`)
     lines.push(`type __Jq79NoProps = { readonly __jq79NoProps?: never };`)
-    lines.push(`declare const __jq79Component: __Jq79Typed<${own}, ${ownEmits}, ${ownSlots}>;`)
+    lines.push(`declare const __jq79Component: Jq79Component<${own}, ${ownEmits}, ${ownSlots}>;`)
   } else {
     lines.push(`/** @type {<T>(returned: T) => T extends object ? T : {}} */ const __jq79Bindings = /** @type {any} */ (null);`)
     lines.push(`/** @type {(url: string) => Promise<any>} */ const $__import = /** @type {any} */ (null);`)
     lines.push(`/** @type {<M>(module: M) => M extends { default: infer D } ? D : any} */ const __jq79DefaultOf = /** @type {any} */ (null);`)
     lines.push(`/** @typedef {(props: any, ctx: ${ctx}) => any} __Jq79Factory */`)
     lines.push(`/** @typedef {${plain}} __Jq79Plain */`)
-    lines.push(`/**\n * @template P, E, S\n * @typedef {__Jq79Plain & { readonly __jq79Props?: P; readonly __jq79Emits?: E; readonly __jq79Slots?: S }} __Jq79Typed\n */`)
+    lines.push(`/**\n * @template P, E, S\n * @typedef {__Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: E; readonly "~slots"?: S }} Jq79Component\n */`)
     lines.push(`/** @typedef {{ readonly __jq79NoProps?: never }} __Jq79NoProps */`)
-    lines.push(`/** @type {__Jq79Typed<${own}, ${ownEmits}, ${ownSlots}>} */ const __jq79Component = /** @type {any} */ (null);`)
+    lines.push(`/** @type {Jq79Component<${own}, ${ownEmits}, ${ownSlots}>} */ const __jq79Component = /** @type {any} */ (null);`)
   }
   // \`import X from "./X.html"\` elsewhere gets this file's own component
   lines.push(`export default __jq79Component;`, "")
@@ -578,7 +586,7 @@ const readSignature = (block: Block): PropDecl[] | null => {
 // the virtual code for the scripts of a whole .html file: each component an
 // exported function that runs its scripts and returns its store, which is
 // what the template's code (template.ts) imports the type of. null for a page
-export const generate = (ts: typeof TS, text: string): Generated | null => {
+export const generate = (ts: typeof TS, text: string, options: GenerateOptions = {}): Generated | null => {
   const components = splitComponents(text)
   if (!components.length) return null
   const typescript = components.some(c => c.scripts.some(isTypeScript))
@@ -587,7 +595,7 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
   const any = typescript ? "(null as any)" : "/** @type {any} */ (null)"
 
   const out = new Writer(text)
-  out.text(preamble(typescript))
+  out.text(preamble(typescript, options.jq79 !== false))
 
   // a factory's static imports, and a setup script's `import type`, at the
   // top of the module where TypeScript resolves them. A setup script's other

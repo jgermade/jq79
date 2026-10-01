@@ -295,6 +295,16 @@ neither the file's own nor anything the parent passed, so it
 [throws](template-syntax.md#a-tag-that-names-no-component-throws) and names the
 components that *were* in scope.
 
+In TypeScript, the declaration can also say what the component must take.
+The editor extension then checks both sides: the props given to `<Button>`
+here, and the component a parent passes as `Button`:
+
+```html
+<script :setup="{ Button }: { Button: Component<{ label: string }> }" lang="ts">
+  import type { Component } from "jq79"
+</script>
+```
+
 ### Styles stop at each template
 
 A named template is a shadow root inside a shadow root: the file is a container,

@@ -827,3 +827,61 @@ test("…and in its own template, as they are bound", async () => {
     `2:${lines[1].indexOf("toUpperCase") + 1} TS2339 Property 'toUpperCase' does not exist on type 'boolean'.`,
   ])
 })
+
+// ------------------------------------------------------------------ a component that arrives as a prop
+
+// its signature declares what it takes, with jq79's Component<P>, and both the
+// child's tags and the parents that pass one are held to it
+// (RECORD/2026-10-01.component-as-prop.md)
+const TOOLBAR = [
+  `<template name="Toolbar">`,
+  `  <script :setup="{ Button }: { Button: Component<{ label: string }> }" lang="ts">`,
+  `    import type { Component } from "jq79"`,
+  `  </script>`,
+  `  <Button :label="1" /><Button :lable="'x'" /><Button :label="'ok'" />`,
+  `</template>`,
+]
+
+test("a component prop declared with Component<P>: the child's tags are checked against P", async () => {
+  const lines = [`<script :setup lang="ts"></script>`, ...TOOLBAR]
+  const errors = await one(lines.join("\n"))
+  const tags = lines[5]
+  assert.equal(errors.length, 2, errors.join("\n"))
+  assert.equal(errors[0], `6:${tags.indexOf(":label") + 2} TS2322 Type 'number' is not assignable to type 'string'.`)
+  assert.match(errors[1], new RegExp(`^6:${tags.indexOf(":lable") + 2} TS2561 .*'lable'`))
+})
+
+test("…and what a parent passes for it has to take P", async () => {
+  const lines = [
+    `<script :setup lang="ts"></script>`,
+    `<Toolbar :Button="Wide" /><Toolbar :Button="Numeric" /><Toolbar :Button="Titled" />`,
+    `<template name="Wide"><script :setup="{ label, size }: { label: string; size?: number }" lang="ts"></script></template>`,
+    `<template name="Numeric"><script :setup="{ label }: { label: number }" lang="ts"></script></template>`,
+    `<template name="Titled"><script :setup="{ label, title }: { label: string; title: string }" lang="ts"></script></template>`,
+    ...TOOLBAR.map(line => line.replace(`<Button :label="1" /><Button :lable="'x'" />`, "")),
+  ]
+  const errors = await one(lines.join("\n"))
+  const tags = lines[1]
+  // Wide takes more than Toolbar passes it, optionally: fine. Numeric types
+  // label otherwise, Titled requires a title Toolbar never passes
+  assert.deepEqual(errors, [
+    `2:${tags.indexOf(`:Button="Numeric"`) + 2} TS2322 Type 'Jq79Component<{ label: number; }, never, never>' is not assignable to type 'Component<{ label: string; }> | undefined'.`,
+    `2:${tags.indexOf(`:Button="Titled"`) + 2} TS2322 Type 'Jq79Component<{ label: string; title: string; }, never, never>' is not assignable to type 'Component<{ label: string; }> | undefined'.`,
+  ])
+})
+
+test("a component prop declared without a type is still anything", async () => {
+  const errors = await one([`<script :setup lang="ts"></script>`, `<template name="Toolbar"><script :setup="{ Button }"></script><Button :anything="1" /></template>`].join("\n"))
+  assert.deepEqual(errors, [])
+})
+
+// a project without jq79 installed (it loads it from a CDN, say): a type can't
+// name it there, and must not try - an unresolved import is an error type,
+// which turns a component's props into any. They are checked all the same
+test("without jq79 installed, an imported component's props are still checked", async () => {
+  const errors = await check({
+    "app.html": `<script :setup lang="ts">\n  const Card = await import("./Card.html")\n</script>\n<Card :title="1" />`,
+    "Card.html": `<script :setup="{ title }: { title: string }" lang="ts"></script><h2>{{ title }}</h2>`,
+  }, { ...INFERRED_OPTIONS, strict: true })
+  assert.deepEqual(errors["app.html"], ["4:8 TS2322 Type 'number' is not assignable to type 'string'."])
+})

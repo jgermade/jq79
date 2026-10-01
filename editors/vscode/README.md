@@ -179,10 +179,28 @@ or what TypeScript infers from it (`{ step = 1 }` takes a `number`) - a
 `:setup` pattern or a factory's first parameter alike, which also types those
 props in the child's own template.
 
+A component that arrives as a prop is checked once its type says what it
+takes, with `Component<P>` from `jq79`:
+
+```html
+<!-- Toolbar.html -->
+<script :setup="{ Button }: { Button: Component<{ label: string }> }" lang="ts">
+  import type { Component } from "jq79"
+</script>
+
+<Button :label="1" />        <!-- ✗ Type 'number' is not assignable to type 'string' -->
+```
+
+```html
+<Toolbar :Button="Fancy" />  <!-- ✗ if Fancy needs a prop Toolbar never passes,
+                                  or types `label` otherwise -->
+```
+
+Without a type it is `any`, as before: the parent's business.
+
 **What isn't checked yet:**
 
-- **A component that arrives as a prop** (`:setup="{ Button }"`): its props are
-  the parent's business, unknown here.
+- **A component prop's events and slots**: `Component<P>` says only its props.
 - **Two bindings of one prop** (`:user` and `:model.user`): the runtime warns
   (`:model.user` wins); the checker doesn't.
 - **A page's own scripts.** Only the components a page writes as literals

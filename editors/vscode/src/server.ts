@@ -7,7 +7,7 @@ import { create as createCssService } from "volar-service-css"
 import { create as createTypeScriptServices } from "volar-service-typescript"
 import * as ts from "typescript"
 import { createJq79TemplateService } from "./completion"
-import { createJq79LanguagePlugin } from "./language"
+import { createJq79LanguagePlugin, jq79Resolver } from "./language"
 
 const connection = createConnection()
 const server = createServer(connection)
@@ -40,7 +40,11 @@ const withoutScaffolding = (plugin: LanguageServicePlugin): LanguageServicePlugi
 connection.onInitialize(params =>
   server.initialize(
     params,
-    createTypeScriptProject(ts, undefined, () => ({ languagePlugins: [createJq79LanguagePlugin(ts)] })),
+    // whether a file can name jq79 in a type is its project's resolution's
+    // answer, paths and all (GenerateOptions in component.ts)
+    createTypeScriptProject(ts, undefined, ({ projectHost, sys }) => ({
+      languagePlugins: [createJq79LanguagePlugin(ts, jq79Resolver(ts, () => projectHost.getCompilationSettings(), sys))],
+    })),
     [createCssService(), ...createTypeScriptServices(ts).map(withoutScaffolding), createJq79TemplateService(ts)],
   )
 )

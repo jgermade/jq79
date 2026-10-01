@@ -19,7 +19,7 @@ import type { CodeMapping, LanguagePlugin, IScriptSnapshot, VirtualCode } from "
 import type {} from "@volar/typescript"
 import type * as TS from "typescript"
 import type { URI } from "vscode-uri"
-import { FULL, attr, generate, splitComponents, type Mapping } from "./component"
+import { FULL, attr, generate, splitComponents, type GenerateOptions, type Mapping } from "./component"
 import { findLiterals, toFile, type Literal } from "./literal"
 import { generateTemplate } from "./template"
 
@@ -47,8 +47,8 @@ const scriptKindOf = (ts: typeof TS, languageId: string): TS.ScriptKind =>
   ({ javascript: ts.ScriptKind.JS, javascriptreact: ts.ScriptKind.JSX, typescript: ts.ScriptKind.TS, typescriptreact: ts.ScriptKind.TSX })[languageId] ?? ts.ScriptKind.JS
 
 // the two codes of one literal's component, ids prefixed `literal<n>_`
-const literalCodes = (ts: typeof TS, literal: Literal, n: number, fileName: string): VirtualCode[] => {
-  const generated = generate(ts, literal.text)
+const literalCodes = (ts: typeof TS, literal: Literal, n: number, fileName: string, options: GenerateOptions): VirtualCode[] => {
+  const generated = generate(ts, literal.text, options)
   if (!generated) return []
   const codes: VirtualCode[] = [{
     id: `literal${n}_script`,
@@ -58,7 +58,7 @@ const literalCodes = (ts: typeof TS, literal: Literal, n: number, fileName: stri
     linkedCodeMappings: generated.links,
   }]
   // the scripts' code is <file>.literal<n>.ts|js; `.js` reaches either
-  const template = generateTemplate(ts, literal.text, `./${fileName}.literal${n}.js`, literal.data)
+  const template = generateTemplate(ts, literal.text, `./${fileName}.literal${n}.js`, literal.data, options)
   if (template) {
     codes.push({
       id: `literal${n}_template`,
@@ -92,10 +92,10 @@ export const literalsIn = (ts: typeof TS, languageId: string, text: string): Lit
 }
 
 // `fileName` is the file's base name, which the templates' code imports
-export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, fileName: string): VirtualCode => {
+export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, fileName: string, options: GenerateOptions = {}): VirtualCode => {
   const text = snapshot.getText(0, snapshot.getLength())
   const embeddedCodes: VirtualCode[] = []
-  const generated = generate(ts, text)
+  const generated = generate(ts, text, options)
   if (generated) {
     embeddedCodes.push({
       id: "script",
@@ -104,7 +104,7 @@ export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, file
       mappings: generated.mappings as CodeMapping[],
       linkedCodeMappings: generated.links,
     })
-    const template = generateTemplate(ts, text, `./${fileName}`)
+    const template = generateTemplate(ts, text, `./${fileName}`, [], options)
     if (template) {
       embeddedCodes.push({
         id: "template",
@@ -118,7 +118,7 @@ export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, file
     }
   } else {
     // a page: its components are the literals its scripts hand to Component79
-    pageLiterals(ts, text).forEach((literal, n) => embeddedCodes.push(...literalCodes(ts, literal, n, fileName)))
+    pageLiterals(ts, text).forEach((literal, n) => embeddedCodes.push(...literalCodes(ts, literal, n, fileName, options)))
   }
   splitComponents(text).flatMap(c => c.styles).forEach((block, i) => {
     const lang = STYLE_LANGS[attr(block, "lang")?.value?.trim().toLowerCase() ?? ""]
@@ -143,7 +143,7 @@ export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, file
 // Even with none it gets a code, mapped with nothing on: without one, Volar's
 // own TypeScript service would serve the file - every script the editor
 // sends here - and say everything the editor's TypeScript already says
-export const createScriptVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, languageId: string, fileName: string): VirtualCode => {
+export const createScriptVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, languageId: string, fileName: string, options: GenerateOptions = {}): VirtualCode => {
   const text = snapshot.getText(0, snapshot.getLength())
   const literals = findLiterals(ts, text, scriptKindOf(ts, languageId))
   // the file's own code, mapped with nothing on: the editor's TypeScript has it
@@ -163,18 +163,37 @@ export const createScriptVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot
         return { sourceOffsets: [first], generatedOffsets: [first], lengths: [last + 1 - first], data: { completion: true } } as CodeMapping
       }),
     ],
-    embeddedCodes: literals.flatMap((literal, n) => literalCodes(ts, literal, n, fileName)),
+    embeddedCodes: literals.flatMap((literal, n) => literalCodes(ts, literal, n, fileName, options)),
   }
 }
 
-export const createJq79LanguagePlugin = (ts: typeof TS): LanguagePlugin<URI> => ({
+// whether "jq79" resolves from a file, with the options of the project it is
+// in - by default a bundler's resolution from where the file is. One answer
+// per directory: it is the same for every file in it
+// The options may be a function, asked when a file is read: a language
+// server's project has none yet when its plugins are made
+export const jq79Resolver = (ts: typeof TS, options: TS.CompilerOptions | (() => TS.CompilerOptions) = { moduleResolution: ts.ModuleResolutionKind.Bundler, module: ts.ModuleKind.ESNext }, sys: TS.ModuleResolutionHost = ts.sys) => {
+  const byDirectory = new Map<string, boolean>()
+  return (fileName: string): boolean => {
+    const directory = fileName.slice(0, fileName.lastIndexOf("/") + 1)
+    let found = byDirectory.get(directory)
+    if (found === undefined) {
+      found = !!ts.resolveModuleName("jq79", fileName, typeof options === "function" ? options() : options, sys).resolvedModule
+      byDirectory.set(directory, found)
+    }
+    return found
+  }
+}
+
+export const createJq79LanguagePlugin = (ts: typeof TS, resolvesJq79: (fileName: string) => boolean = jq79Resolver(ts)): LanguagePlugin<URI> => ({
   getLanguageId: uri => {
     const extension = extensionOf(uri.path)
     return extension === "html" ? "html" : SCRIPT_LANGUAGES[extension]
   },
   createVirtualCode: (uri, languageId, snapshot) => {
-    if (languageId === "html") return createVirtualCode(ts, snapshot, baseName(uri.path))
-    if (Object.values(SCRIPT_LANGUAGES).includes(languageId)) return createScriptVirtualCode(ts, snapshot, languageId, baseName(uri.path))
+    const options = { jq79: resolvesJq79(uri.fsPath.replace(/\\/g, "/")) }
+    if (languageId === "html") return createVirtualCode(ts, snapshot, baseName(uri.path), options)
+    if (Object.values(SCRIPT_LANGUAGES).includes(languageId)) return createScriptVirtualCode(ts, snapshot, languageId, baseName(uri.path), options)
     return undefined
   },
   typescript: {
