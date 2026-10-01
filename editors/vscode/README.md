@@ -234,17 +234,20 @@ business.
 
 ## Checking from a terminal
 
-The same checks, for CI:
+The same checks, for CI, are the [`jq79-check`](../check/README.md) package:
 
 ```sh
-node editors/vscode/dist/check.js                  # every .html, and every script with a component literal
-node editors/vscode/dist/check.js --checkJs        # …type-checking JavaScript components too
-node editors/vscode/dist/check.js --project tsconfig.json
+npx jq79-check                          # every .html, and every script with a component literal
+npx jq79-check src --checkJs            # …type-checking JavaScript scripts too
+npx jq79-check --project tsconfig.json  # what a tsconfig includes, with its options
+npx jq79-check src --format github      # annotations on a pull request
 ```
 
 It prints one line per problem (`file:line:col - error TS2322: …`) and exits 1
-when there is an error. It isn't published on its own yet; build it with
-`npm run build` in this directory.
+when there is an error, 2 when the command line is wrong. It is this
+extension's checker, built here (`npm run build` → `dist/check.js`) and shipped
+from [`editors/check/`](../check/). Until it is on npm, run it from a clone:
+`node editors/vscode/dist/check.js`.
 
 ## Limits of the coloring
 

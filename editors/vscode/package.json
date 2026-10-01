@@ -143,7 +143,7 @@
     "vscode:prepublish": "node build.mjs",
     "typecheck": "tsc -p .",
     "pretest": "node test/fetch-grammars.mjs && node build.mjs && tsc -p .",
-    "test": "node --test test/grammars.mjs test/check.mjs test/server.mjs",
+    "test": "node --test test/grammars.mjs test/check.mjs test/server.mjs test/cli.mjs",
     "check": "node dist/check.js",
     "package": "npx --yes @vscode/vsce package --skip-license"
   },

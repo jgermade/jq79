@@ -5,7 +5,8 @@
 # (editors/vscode/test/fetch-grammars.mjs). Its language server reads a
 # component with the runtime's own src/transform.ts and src/source.ts, and is
 # held to every component in tutorial/ checking clean - so a change to any of
-# those runs it too, and nothing else in the repo reaches it.
+# those runs it too, and nothing else in the repo reaches it. editors/check/
+# is that checker as the jq79-check package, built from here.
 
 name: VS Code extension
 
@@ -14,6 +15,7 @@ on:
     branches: [main]
     paths:
       - 'editors/vscode/**'
+      - 'editors/check/**'
       - 'src/transform.ts'
       - 'src/source.ts'
       - 'tutorial/**'
@@ -22,6 +24,7 @@ on:
     branches: [main]
     paths:
       - 'editors/vscode/**'
+      - 'editors/check/**'
       - 'src/transform.ts'
       - 'src/source.ts'
       - 'tutorial/**'
@@ -45,3 +48,9 @@ jobs:
       - run: npm install
 
       - run: npm test
+
+      # jq79-check is this extension's checker, published on its own: that it
+      # still packs (build, the files it ships) is checked with the rest
+      - name: jq79-check packs
+        working-directory: editors/check
+        run: npm pack --dry-run

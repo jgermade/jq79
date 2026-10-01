@@ -38,7 +38,10 @@ belongs in `editors/vscode/src/component.ts` (scripts) or `template.ts`
 (templates). The tutorial's starting files are allowed exactly the errors their
 exercise is about, listed in `test/check.mjs`. Which scripts count as TypeScript is the Vite
 plugin's rule, copied, so a change to one belongs in the other. TypeScript and
-Volar are the extension's dependencies and never the library's. Its plan is
+Volar are the extension's dependencies and never the library's - which is why
+the checker's command line is a package of its own, [`editors/check/`](editors/check/)
+(`jq79-check`): the extension's `dist/check.js` and TypeScript, released by the
+*Release jq79-check* workflow. Its plan is
 [RECORD/2026-09-28.an-editor-extension.md](RECORD/2026-09-28.an-editor-extension.md).
 
 ## Commands

@@ -1,0 +1,40 @@
+{
+  "name": "jq79-check",
+  "version": "0.1.0",
+  "description": "Type-check jq79 components from a terminal or CI: their scripts, templates and props, as the runtime compiles them",
+  "license": "ISC",
+  "author": "Jesus Germade <jesus@germade.dev>",
+  "homepage": "https://github.com/jgermade/jq79/tree/main/editors/check#readme",
+  "bugs": {
+    "url": "https://github.com/jgermade/jq79/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jgermade/jq79.git",
+    "directory": "editors/check"
+  },
+  "keywords": [
+    "jq79",
+    "typescript",
+    "type-check",
+    "components",
+    "cli"
+  ],
+  "bin": {
+    "jq79-check": "./dist/check.js"
+  },
+  "files": [
+    "dist/check.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "npm --prefix ../vscode run build && node copy.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "typescript": "~5.9.3"
+  }
+}

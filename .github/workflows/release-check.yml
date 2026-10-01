@@ -1,0 +1,96 @@
+# Publishes jq79-check (editors/check/) to npm: the editor extension's checker
+# as a command line, released on its own schedule and with its own versions -
+# the jq79 package must not depend on TypeScript or Volar, so it can't carry it.
+#
+# Tags are jq79-check@<version>, beside jq79's own v<version>.
+#
+# npm auth: trusted publishing (OIDC, as release.yml) once the package exists
+# on npm and this workflow is its trusted publisher; until then - the first
+# publish - an NPM_TOKEN secret in the production environment.
+
+name: Release jq79-check
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write # push the version commit and tag
+  id-token: write # npm provenance, and trusted publishing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+          registry-url: https://registry.npmjs.org
+
+      # the checker is built and tested where it lives, in the extension
+      - name: Test the checker
+        working-directory: editors/vscode
+        run: |
+          npm ci
+          npm test
+
+      - name: Configure Git
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+
+      # the version first: the build writes it into the CLI (--version)
+      - name: Bump version
+        id: bump_version
+        working-directory: editors/check
+        run: |
+          VERSION=$(npm version "${{ inputs.bump }}" --no-git-tag-version)
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        working-directory: editors/check
+        run: npm pack
+
+      # what a user gets: the tarball, installed into an empty project beside
+      # jq79, run on a component with an error it has to find
+      - name: Install and run the tarball
+        run: |
+          VERSION=${{ steps.bump_version.outputs.version }}
+          SMOKE=$(mktemp -d)
+          cd "$SMOKE"
+          npm init -y > /dev/null
+          npm install jq79 "$GITHUB_WORKSPACE/editors/check/jq79-check-$VERSION.tgz"
+          test "$(npx jq79-check --version)" = "$VERSION"
+          mkdir src
+          printf '<script :setup>let count = 0</script>\n<p>{{ cuont }}</p>\n' > src/Card.html
+          if npx jq79-check; then echo "jq79-check missed an error"; exit 1; fi
+          npx jq79-check | grep -q "Cannot find name 'cuont'"
+
+      - name: Publish to npm
+        working-directory: editors/check
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish "jq79-check-${{ steps.bump_version.outputs.version }}.tgz" --provenance --access public
+
+      - name: Commit and tag
+        run: |
+          VERSION=${{ steps.bump_version.outputs.version }}
+          git add editors/check/package.json
+          git commit -m "chore(release): jq79-check@$VERSION"
+          # annotated: --follow-tags pushes no other kind
+          git tag -a "jq79-check@$VERSION" -m "jq79-check@$VERSION"
+          git push origin HEAD --follow-tags
