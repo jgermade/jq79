@@ -191,6 +191,28 @@ props in the child's own template.
   isn't a literal at all (`new Component79(source)`).
 - **Plain `<style>`**, which VS Code already checks as CSS.
 
+### Completion and hover in tags
+
+In a component's tags the server offers what jq79 reads there, beside the
+HTML attributes VS Code's own HTML service offers:
+
+```html
+<li :|                 :if  :each  :key  :with  :class  :text  :html  :value …   (snippets: :each="item in items")
+<button @|             @click  @input  @submit  @keydown …
+<button @click.|       .prevent  .stop  .self  .once  .capture
+<Card :|               :title   title: string        ← the props Card declares, typed
+                       :count   count?: number
+                       :model  :props  :slot
+<script :|             :setup  :mounted  lang="ts"
+<style |               scoped  lang
+<C|                    Card  ← the components in scope
+```
+
+An attribute already on the tag isn't offered again, and nothing is offered in
+a script's or style's code, a comment or an attribute's value (a value is an
+expression, completed by TypeScript, with the store's names). Hovering a
+directive (`:each`, `@click.prevent`, `:class.active`) says what it does.
+
 ### Components written as literals
 
 A component handed to `new Component79(\`…\`)`, `C79(\`…\`)` or
@@ -289,7 +311,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.8.0.vsix
+code --install-extension jq79-vscode-0.9.0.vsix
 ```
 
 ## Working on it

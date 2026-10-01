@@ -182,3 +182,82 @@ test("a script: only its component literals are this server's", async () => {
   const outside = await connection.sendRequest("textDocument/hover", { textDocument: { uri: pathToFileURL(withLiteral).href }, position: { line: 0, character: 7 } })
   assert.equal(outside, null)
 })
+
+// ------------------------------------------------------------------ completion and hover in tags
+
+const tagsFile = join(dir, "Tags.html")
+const tagsUri = pathToFileURL(tagsFile).href
+const tagsLines = [
+  `<script :setup lang="ts">`,
+  `  let items = [1]`,
+  `</script>`,
+  `<li :key="1" :></li>`,
+  `<button @></button>`,
+  `<button @click.></button>`,
+  `<Card :title="'x'" :></Card>`,
+  `<C></C>`,
+  `<template name="Card">`,
+  `  <script :setup="{ title, count = 0 }: { title: string; count?: number }" lang="ts"></script>`,
+  `  <p :each="i in items">{{ title }}</p>`,
+  `</template>`,
+  `<script ></script>`,
+]
+const tagsText = tagsLines.join("\n")
+writeFileSync(tagsFile, tagsText)
+const tagsOpened = ready.then(() => connection.sendNotification("textDocument/didOpen", { textDocument: { uri: tagsUri, languageId: "html", version: 1, text: tagsText } }))
+
+// what is offered right after `marker` on `line`, as label → [detail, inserted text]
+const offered = async (line, marker) => {
+  await tagsOpened
+  const character = tagsLines[line].indexOf(marker) + marker.length
+  const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri: tagsUri }, position: { line, character } })
+  const items = Array.isArray(list) ? list : list?.items ?? []
+  return Object.fromEntries(items.filter(i => i.detail?.startsWith("jq79") || i.kind === 10 || i.kind === 7).map(i => [i.label, [i.detail, i.textEdit?.newText ?? i.insertText]]))
+}
+
+test("completion: the directives, in an element's tag, as snippets - and not one already there", async () => {
+  const items = await offered(3, `:key="1" :`)
+  assert.deepEqual(items[":each"], ["jq79", ':each="${1:item} in ${2:items}"'])
+  assert.deepEqual(items[":if"], ["jq79", ':if="$1"'])
+  assert.equal(items[":key"], undefined)
+  assert.equal(items[":model"], undefined, "a component's, not an element's")
+})
+
+test("completion: events, and after a dot their modifiers", async () => {
+  assert.deepEqual((await offered(4, "@"))["@click"], ["jq79 event", '@click="$1"'])
+  const modifiers = await offered(5, "@click.")
+  assert.deepEqual(Object.keys(modifiers).sort(), ["@click.capture", "@click.once", "@click.prevent", "@click.self", "@click.stop"])
+})
+
+test("completion: a component's props, typed, from its signature - and not one already there", async () => {
+  const items = await offered(6, `:title="'x'" :`)
+  assert.deepEqual(items[":count"], ["count?: number", ':count="$1"'])
+  assert.equal(items[":title"], undefined)
+  assert.ok(items[":model"] && items[":if"])
+})
+
+test("completion: the components in scope, after <", async () => {
+  assert.deepEqual((await offered(7, "<C"))["Card"], ["component", "Card"])
+})
+
+test("completion: a script's attributes; and nothing of jq79's in a script's code", async () => {
+  assert.ok((await offered(12, "<script "))[":setup"])
+  assert.deepEqual(await offered(1, "  let "), {})
+})
+
+test("hover: a directive says what it does", async () => {
+  await tagsOpened
+  const hover = await connection.sendRequest("textDocument/hover", { textDocument: { uri: tagsUri }, position: { line: 10, character: tagsLines[10].indexOf(":each") + 2 } })
+  assert.match(hover?.contents?.value ?? "", /\*\*:each\*\* - Renders the element once per item/)
+})
+
+test("completion in an expression: the store's names, not the virtual code's own", async () => {
+  await tagsOpened
+  const character = tagsLines[10].indexOf("{{ ") + 3
+  const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri: tagsUri }, position: { line: 10, character } })
+  const labels = (Array.isArray(list) ? list : list.items).map(item => item.label)
+  assert.ok(labels.includes("title") && labels.includes("count") && labels.includes("$emit"), labels.slice(0, 30).join(", "))
+  assert.ok(!labels.includes("items"), "the file's own component's, not Card's")
+  const scaffolding = labels.filter(label => /^__|^\$__/.test(label))
+  assert.deepEqual(scaffolding, [])
+})

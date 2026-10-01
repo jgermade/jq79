@@ -102,7 +102,9 @@ export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, file
         snapshot: snapshotOf(template.code),
         mappings: template.mappings as CodeMapping[],
         linkedCodeMappings: template.links,
-      })
+        // the component tags, for completion.ts to find a tag's props
+        jq79Tags: template.tags,
+      } as VirtualCode)
     }
   } else {
     // a page: its components are the literals its scripts hand to Component79

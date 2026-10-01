@@ -34,7 +34,9 @@ import { copyDecoded, decodeAt, type Decoded } from "./entities"
 // \`value\` and \`text\` are decoded, as the runtime reads them (\`&amp;\` is \`&\`);
 // \`decoded\` says where each part of them is in the file (entities.ts)
 export type TAttr = { name: string; nameStart: number; value?: string; valueStart?: number; decoded?: Decoded }
-export type TElement = { tag: string; start: number; attrs: TAttr[]; children: TNode[] }
+// \`end\`: where the element ends in the file - after its end tag, or where
+// what encloses it ends (an implied end) - for an editor to ask what it is in
+export type TElement = { tag: string; start: number; end?: number; attrs: TAttr[]; children: TNode[] }
 export type TText = { text: string; start: number; decoded: Decoded }
 export type TNode = TElement | TText
 
@@ -108,10 +110,13 @@ export const parseTree = (text: string): TNode[] => {
 
     if (match[1] === "/") {
       const open = stack.map(el => el.tag.toLowerCase()).lastIndexOf(lower)
-      if (open > 0) stack.length = open
+      if (open > 0) {
+        stack.slice(open).forEach(el => { el.end = at })
+        stack.length = open
+      }
       continue
     }
-    if (CLOSED_BY[top().tag.toLowerCase()]?.includes(lower)) stack.pop()
+    if (CLOSED_BY[top().tag.toLowerCase()]?.includes(lower)) stack.pop()!.end = match.index
     const attrsText = text.slice(match.index + match[0].length, text[end - 1] === "/" ? end - 1 : end)
     const el: TElement = { tag, start: match.index, attrs: readAttrs(attrsText, match.index + match[0].length), children: [] }
     top().children.push(el)
@@ -120,14 +125,16 @@ export const parseTree = (text: string): TNode[] => {
       close.lastIndex = at
       const closed = close.exec(text)
       at = closed ? closed.index + closed[0].length : text.length
+      el.end = at
       TAG_RE.lastIndex = at
       continue
     }
     // jq79 expands `<X />` to `<X></X>` for any tag (expandSelfClosingTags)
-    if (text[end - 1] === "/" || VOID_ELEMENTS.has(lower)) continue
+    if (text[end - 1] === "/" || VOID_ELEMENTS.has(lower)) { el.end = at; continue }
     stack.push(el)
   }
   flushText(text.length)
+  stack.slice(1).forEach(el => { el.end = text.length })
   return root.children
 }
 
@@ -190,7 +197,9 @@ const preamble = (module: string): string => [
   "",
 ].join("\n")
 
-export type GeneratedTemplate = { code: string; mappings: Mapping[]; links: Mapping[] }
+// \`tags\`: each component tag (where its \`<\` is) and the variable its props are
+// checked against - what an editor asks TypeScript about, to offer the props
+export type GeneratedTemplate = { code: string; mappings: Mapping[]; links: Mapping[]; tags: { start: number; variable: string }[] }
 
 // the template code for every component of the file at `fileName`, or null
 // for a page. `module` is how this code imports the scripts' code: the .html
@@ -207,6 +216,7 @@ export const generateTemplate = (ts: typeof TS, text: string, module: string, ro
   const trees = templates(parseTree(text), scopes.map(s => s.def.name))
   const out = new Writer(text)
   out.text(preamble(module))
+  const tags: GeneratedTemplate["tags"] = []
   const siblingIndex = new Map(scopes.flatMap((scope, c) => (scope.def.name ? [[scope.def.name, c] as const] : [])))
 
   scopes.forEach((scope, c) => {
@@ -226,11 +236,11 @@ export const generateTemplate = (ts: typeof TS, text: string, module: string, ro
       out.linkedPairs(stored)
       out.text(" } = __s;\n")
     }
-    const gen = new TemplateWriter(ts, out, scope.permissive, scope.names)
+    const gen = new TemplateWriter(ts, out, scope.permissive, scope.names, tags)
     trees[c].forEach(node => gen.node(node))
     out.text("}\n")
   })
-  return { code: out.code, mappings: out.mappings, links: out.links }
+  return { code: out.code, mappings: out.mappings, links: out.links, tags }
 }
 
 const EACH_RE = new RegExp(EACH_PATTERN.source, "d")
@@ -280,9 +290,8 @@ class TemplateWriter {
   // how many :with regions the writer is inside, and has opened
   private withDepth = 0
   private withCount = 0
-  private tagCount = 0
   private names: Set<string>
-  constructor(private ts: typeof TS, private out: Writer, private permissive: boolean, names: string[]) {
+  constructor(private ts: typeof TS, private out: Writer, private permissive: boolean, names: string[], private tags: GeneratedTemplate["tags"]) {
     this.names = new Set(names)
   }
 
@@ -426,11 +435,15 @@ class TemplateWriter {
   private componentTag(el: TElement) {
     const resolved = this.resolve(el.tag)
     const tagStart = el.start + 1
-    const c = `__c${this.tagCount++}`
+    const c = `__c${this.tags.length}`
+    this.tags.push({ start: el.start, variable: c })
+    // the tag's name, mapped for its errors and navigation but not completion:
+    // a tag's name is offered by completion.ts, from the components in scope
+    const name = { ...this.data, completion: false }
     this.out.text(`const ${c} = `)
-    if (resolved === el.tag) this.out.copy(tagStart, tagStart + el.tag.length, this.data)
+    if (resolved === el.tag) this.out.copy(tagStart, tagStart + el.tag.length, name)
     else if (resolved) this.out.text(resolved)
-    else if (/^[A-Z][\w$]*$/.test(el.tag)) this.out.copy(tagStart, tagStart + el.tag.length, this.data)
+    else if (/^[A-Z][\w$]*$/.test(el.tag)) this.out.copy(tagStart, tagStart + el.tag.length, name)
     else this.out.text("null")
     this.out.text(";\n")
     // one object per prop: TypeScript reports only the first unknown key of

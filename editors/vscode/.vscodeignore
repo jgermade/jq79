@@ -10,3 +10,4 @@ package-lock.json
 dist/template.js
 dist/literal.js
 dist/entities.js
+dist/completion.js
