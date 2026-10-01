@@ -197,12 +197,15 @@ const propsOf = (ts: typeof TS, context: LanguageServiceContext, source: Source,
     }))
 }
 
-// the names a union of string literals holds: what the component at a tag
-// emits, or the slots it renders
+// the names the component at a tag emits, or the slots it renders: the
+// string literals of its "~emits" or "~slots" parameter
 const namesOf = (ts: typeof TS, context: LanguageServiceContext, source: Source, tagStart: number, property: string): string[] => {
   const found = brandOf(ts, context, source, tagStart, property)
-  if (!found || found.type.flags & ts.TypeFlags.Never) return []
-  const types = found.type.isUnion() ? found.type.types : [found.type]
+  const parameter = found?.type.getCallSignatures()[0]?.getParameters()[0]
+  if (!found || !parameter) return []
+  const type = found.checker.getTypeOfSymbolAtLocation(parameter, found.declaration)
+  if (type.flags & ts.TypeFlags.Never) return []
+  const types = type.isUnion() ? type.types : [type]
   return types.filter(t => t.isStringLiteral()).map(t => (t as TS.StringLiteralType).value)
 }
 

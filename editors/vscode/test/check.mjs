@@ -870,6 +870,43 @@ test("…and what a parent passes for it has to take P", async () => {
   ])
 })
 
+// Component<P, E, S>: Toolbar listens for "pressed" and fills slot "icon", so
+// what a parent passes has to emit and render at least those
+test("a component prop's events and slots: what a parent passes has to have them", async () => {
+  const lines = [
+    `<script :setup lang="ts"></script>`,
+    `<Toolbar :Button="Full" /><Toolbar :Button="Mute" /><Toolbar :Button="Bare" /><Toolbar :Button="Any" />`,
+    `<template name="Full"><button @click="$emit('pressed')" @focus="$emit('focused', 1)"><slot.icon /><slot.extra /></button></template>`,
+    `<template name="Mute"><button><slot.icon /></button></template>`,
+    `<template name="Bare"><button @click="$emit('pressed')"></button></template>`,
+    `<template name="Any"><script :setup lang="ts">const name = "pressed"</script><button @click="$emit(name)"><slot.icon /></button></template>`,
+    `<template name="Toolbar">`,
+    `  <script :setup="{ Button }: { Button: Component<{}, 'pressed', 'icon'> }" lang="ts">`,
+    `    import type { Component } from "jq79"`,
+    `  </script>`,
+    `</template>`,
+  ]
+  const errors = await one(lines.join("\n"))
+  const tags = lines[1]
+  // Full emits and renders more: fine. Mute never emits "pressed", Bare
+  // renders no icon. Any's emit is computed: it may emit anything
+  const to = `is not assignable to type 'Component<{}, "pressed", "icon"> | undefined'.`
+  assert.deepEqual(errors, [
+    `2:${tags.indexOf(`:Button="Mute"`) + 2} TS2322 Type 'Jq79Component<any, never, "icon">' ${to}`,
+    `2:${tags.indexOf(`:Button="Bare"`) + 2} TS2322 Type 'Jq79Component<any, "pressed", never>' ${to}`,
+  ])
+})
+
+test("a slot written kebab-case is the camelCase one a Component<P, E, S> names", async () => {
+  const errors = await one([
+    `<script :setup lang="ts"></script>`,
+    `<Toolbar :Button="Card" />`,
+    `<template name="Card"><slot.header-bar /></template>`,
+    `<template name="Toolbar"><script :setup="{ Button }: { Button: Component<{}, never, 'headerBar'> }" lang="ts">import type { Component } from "jq79"</script></template>`,
+  ].join("\n"))
+  assert.deepEqual(errors, [])
+})
+
 test("a component prop declared without a type is still anything", async () => {
   const errors = await one([`<script :setup lang="ts"></script>`, `<template name="Toolbar"><script :setup="{ Button }"></script><Button :anything="1" /></template>`].join("\n"))
   assert.deepEqual(errors, [])

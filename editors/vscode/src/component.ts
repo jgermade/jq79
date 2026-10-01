@@ -475,7 +475,7 @@ const preamble = (typescript: boolean, jq79: boolean): string => {
     lines.push(`declare function __jq79DefaultOf<M>(module: M): M extends { default: infer D } ? D : any;`)
     lines.push(`type __Jq79Factory = (props: any, ctx: ${ctx}) => any;`)
     lines.push(`type __Jq79Plain = ${plain};`)
-    lines.push(`export type Jq79Component<P, E = never, S = never> = __Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: E; readonly "~slots"?: S };`)
+    lines.push(`export type Jq79Component<P, E = never, S = never> = __Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: (event: E) => void; readonly "~slots"?: (slot: S) => void };`)
     lines.push(`type __Jq79NoProps = { readonly __jq79NoProps?: never };`)
     lines.push(`declare const __jq79Component: Jq79Component<${own}, ${ownEmits}, ${ownSlots}>;`)
   } else {
@@ -484,7 +484,7 @@ const preamble = (typescript: boolean, jq79: boolean): string => {
     lines.push(`/** @type {<M>(module: M) => M extends { default: infer D } ? D : any} */ const __jq79DefaultOf = /** @type {any} */ (null);`)
     lines.push(`/** @typedef {(props: any, ctx: ${ctx}) => any} __Jq79Factory */`)
     lines.push(`/** @typedef {${plain}} __Jq79Plain */`)
-    lines.push(`/**\n * @template P, E, S\n * @typedef {__Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: E; readonly "~slots"?: S }} Jq79Component\n */`)
+    lines.push(`/**\n * @template P, E, S\n * @typedef {__Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: (event: E) => void; readonly "~slots"?: (slot: S) => void }} Jq79Component\n */`)
     lines.push(`/** @typedef {{ readonly __jq79NoProps?: never }} __Jq79NoProps */`)
     lines.push(`/** @type {Jq79Component<${own}, ${ownEmits}, ${ownSlots}>} */ const __jq79Component = /** @type {any} */ (null);`)
   }
@@ -559,18 +559,23 @@ const textOf = (text: string, def: ComponentDef, all: ComponentDef[]): string =>
   return own
 }
 
-const EMIT_RE = /\$emit\(\s*(["'\`])([^"'\`\s]+)\1/g
+const EMIT_RE = /\$emit\(\s*(["'\`])([^"'\`\s$]+)\1\s*[,)]/g
+const ANY_EMIT_RE = /\$emit\(/g
 const SLOT_TAG_RE = /<slot\.([\w$-]+)/gi
+const camel = (name: string) => name.replace(/-(\w)/g, (_, c: string) => c.toUpperCase())
 
 // the events a component emits - every $emit("name") written in its scripts or
-// its template - and the named slots it renders (<slot.header>): what a tag
-// that uses it can listen to and fill, for an editor to offer (completion.ts).
-// Read off the text; an emit whose name is computed isn't known
-export const emitsAndSlots = (text: string, def: ComponentDef, all: ComponentDef[]): { emits: string[]; slots: string[] } => {
+// its template - and the named slots it renders (<slot.header>, camelCased as
+// the runtime matches them): what a tag that uses it can listen to and fill,
+// for an editor to offer (completion.ts), and what a Component<P, E, S> asks
+// of it. Read off the text. An emit whose name is computed isn't known, so
+// emits is then null: it may emit anything
+export const emitsAndSlots = (text: string, def: ComponentDef, all: ComponentDef[]): { emits: string[] | null; slots: string[] } => {
   const own = textOf(text, def, all)
+  const literal = [...own.matchAll(EMIT_RE)]
   return {
-    emits: [...new Set([...own.matchAll(EMIT_RE)].map(m => m[2]))],
-    slots: [...new Set([...own.matchAll(SLOT_TAG_RE)].map(m => m[1]))],
+    emits: literal.length < [...own.matchAll(ANY_EMIT_RE)].length ? null : [...new Set(literal.map(m => m[2]))],
+    slots: [...new Set([...own.matchAll(SLOT_TAG_RE)].map(m => camel(m[1])))],
   }
 }
 
@@ -673,7 +678,7 @@ export const generate = (ts: typeof TS, text: string, options: GenerateOptions =
     const propsValue = typescript ? `${any} as ${type}` : `/** @type {${type}} */ (${any})`
     // and what it emits and the slots it renders, as string literal types
     const { emits, slots } = emitsAndSlots(text, component, components)
-    const union = (names: string[]) => (names.length ? names.map(n => JSON.stringify(n)).join(" | ") : "never")
+    const union = (names: string[] | null) => (!names ? "string" : names.length ? names.map(n => JSON.stringify(n)).join(" | ") : "never")
     const typed = (type: string) => (typescript ? `${any} as ${type}` : `/** @type {${type}} */ (${any})`)
     out.text(`return { store: Object.assign(${seed}${stores.map(store => `, ${store}`).join("")}), props: ${propsValue}, ` +
       `emits: ${typed(union(emits))}, slots: ${typed(union(slots))} };\n}\n`)

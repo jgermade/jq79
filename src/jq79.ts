@@ -4724,7 +4724,15 @@ export { Component79 as C79 }
 // never set, only in the types. A function of P, because props are passed *to*
 // a component: one that takes more than P (optionally) is a Component<P>, one
 // that requires something P doesn't have is not
-export type Component<P = any> = Component79 & { readonly "~props"?: (props: P) => void }
+// E and S name the events a signature listens for and the slots it fills
+// (RECORD/2026-10-01.component-prop-events-and-slots.md): functions of them
+// too, so a component that emits or renders more is one, one that misses a
+// name is not. Their default, never, asks nothing
+export type Component<P = any, E extends string = never, S extends string = never> = Component79 & {
+  readonly "~props"?: (props: P) => void
+  readonly "~emits"?: (event: E) => void
+  readonly "~slots"?: (slot: S) => void
+}
 
 export const parseComponent = (component: string): Component79 => new Component79(component)
 

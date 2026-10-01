@@ -305,6 +305,10 @@ here, and the component a parent passes as `Button`:
 </script>
 ```
 
+`Component<{ label: string }, "pressed", "icon">` also says which events it
+listens for and which slots it fills: the component passed has to emit and
+render at least those.
+
 ### Styles stop at each template
 
 A named template is a shadow root inside a shadow root: the file is a container,

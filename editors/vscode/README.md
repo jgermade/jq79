@@ -196,11 +196,15 @@ takes, with `Component<P>` from `jq79`:
                                   or types `label` otherwise -->
 ```
 
+Two more parameters name the events Toolbar listens for and the slots it
+fills: `Component<{ label: string }, "pressed", "icon">`. Completion offers
+`@pressed` and `:slot.icon` on `<Button>`, and a parent's `Button` has to
+emit `pressed` and render `<slot.icon>` (more is fine). A component whose
+`$emit` name is computed may emit anything.
+
 Without a type it is `any`, as before: the parent's business.
 
 **What isn't checked yet:**
-
-- **A component prop's events and slots**: `Component<P>` says only its props.
 - **Two bindings of one prop** (`:user` and `:model.user`): the runtime warns
   (`:model.user` wins); the checker doesn't.
 - **A page's own scripts.** Only the components a page writes as literals

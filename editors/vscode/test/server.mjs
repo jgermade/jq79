@@ -316,18 +316,27 @@ test("completion: the props of a component that arrives as a prop, declared with
   mkdirSync(join(project, "node_modules/jq79"), { recursive: true })
   writeFileSync(join(project, "node_modules/jq79/package.json"), JSON.stringify({ name: "jq79", types: "index.d.ts" }))
   writeFileSync(join(project, "node_modules/jq79/index.d.ts"),
-    `export declare class Component79 { mount(target: Element): this }\nexport type Component<P = any> = Component79 & { readonly "~props"?: (props: P) => void }\n`)
+    `export declare class Component79 { mount(target: Element): this }\nexport type Component<P = any, E extends string = never, S extends string = never> = Component79 & { readonly "~props"?: (props: P) => void; readonly "~emits"?: (event: E) => void; readonly "~slots"?: (slot: S) => void }\n`)
   const file = join(project, "Toolbar.html")
   const uri = pathToFileURL(file).href
   const lines = [
-    `<script :setup="{ Button }: { Button: Component<{ label: string; size?: number }> }" lang="ts">`,
+    `<script :setup="{ Button }: { Button: Component<{ label: string; size?: number }, 'pressed', 'icon'> }" lang="ts">`,
     `  import type { Component } from "jq79"`,
     `</script>`,
     `<Button :></Button>`,
+    `<Button @></Button>`,
+    `<Button><template :></template></Button>`,
   ]
   writeFileSync(file, lines.join("\n"))
   connection.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId: "html", version: 1, text: lines.join("\n") } })
   const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri }, position: { line: 3, character: lines[3].indexOf(":") + 1 } })
   const props = Object.fromEntries((Array.isArray(list) ? list : list.items).filter(i => i.kind === 10).map(i => [i.label, i.detail]))
   assert.deepEqual(props, { ":label": "label: string", ":size": "size?: number" })
+  // and, from Component<P, E, S>, the events it emits and the slots it renders
+  const at = async (line, text) => {
+    const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri }, position: { line, character: lines[line].indexOf(text) + text.length } })
+    return (Array.isArray(list) ? list : list.items).map(i => i.label)
+  }
+  assert.ok((await at(4, "<Button @")).includes("@pressed"))
+  assert.ok((await at(5, "<template :")).includes(":slot.icon"))
 })

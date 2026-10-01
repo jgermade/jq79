@@ -197,7 +197,7 @@ const preamble = (module: string, jq79: boolean): string => [
   // an error about it shows: Jq79Component<{ label: number }, never, never>
   // (whether jq79 can be named at all is GenerateOptions', component.ts)
   `type __Jq79Plain = ${jq79 ? `import("jq79").Component79` : "{}"};`,
-  `type Jq79Component<P, E = never, S = never> = __Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: E; readonly "~slots"?: S };`,
+  `type Jq79Component<P, E = never, S = never> = __Jq79Plain & { readonly "~props"?: (props: P) => void; readonly "~emits"?: (event: E) => void; readonly "~slots"?: (slot: S) => void };`,
   `type __Jq79Injected = { $emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; $slots: Record<string, true> };`,
   `export {};`,
   "",
