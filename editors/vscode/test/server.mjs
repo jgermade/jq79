@@ -83,3 +83,76 @@ test("the template: its errors, hover and completion come from the template's co
   const labels = (Array.isArray(list) ? list : list.items).map(item => item.label)
   assert.ok(labels.includes("count"), labels.slice(0, 20).join(", "))
 })
+
+// a name the script declares and the template reads is one name: renaming it
+// on either side renames it on both, whatever the editor's alias setting
+const renameFile = join(dir, "Rename.html")
+const renameUri = pathToFileURL(renameFile).href
+const renameText = [
+  `<script :setup="{ step = 1 }">`,
+  `  let count = 0`,
+  `  let draft = { name: "" }`,
+  `  const inc = () => { count += step }`,
+  `</script>`,
+  `<button @click="inc(); count++">{{ count }} × {{ step }}</button>`,
+  `<fieldset :with="draft"><p>{{ name }}</p></fieldset>`,
+].join("\n")
+writeFileSync(renameFile, renameText)
+const opened = ready.then(() => connection.sendNotification("textDocument/didOpen", { textDocument: { uri: renameUri, languageId: "html", version: 1, text: renameText } }))
+
+const renamed = async (line, character) => {
+  await opened
+  const edit = await connection.sendRequest("textDocument/rename", { textDocument: { uri: renameUri }, position: { line, character }, newName: "total" })
+  return (edit?.changes?.[renameUri] ?? []).map(e => `${e.range.start.line}:${e.range.start.character}`).sort()
+}
+
+const COUNT = ["1:6", "3:22", "5:23", "5:35"]
+
+test("rename: from the script's declaration, the template's reads follow", async () => {
+  assert.deepEqual(await renamed(1, 7), COUNT)
+})
+
+test("rename: from the template, the script's declaration and uses follow", async () => {
+  assert.deepEqual(await renamed(5, 35), COUNT)
+})
+
+test("rename: a key a :with region reads is the object's property", async () => {
+  assert.deepEqual(await renamed(6, 30), ["2:16", "6:30"])
+})
+
+test("definition and references: a template's name is the script's", async () => {
+  await opened
+  const def = await connection.sendRequest("textDocument/definition", { textDocument: { uri: renameUri }, position: { line: 5, character: 36 } })
+  const defs = (Array.isArray(def) ? def : [def]).map(d => (d.targetUri ?? d.uri) === renameUri && (d.targetRange ?? d.range).start.line)
+  assert.deepEqual(defs, [1])
+  const refs = await connection.sendRequest("textDocument/references", { textDocument: { uri: renameUri }, position: { line: 1, character: 7 }, context: { includeDeclaration: true } })
+  assert.deepEqual(refs.map(r => `${r.range.start.line}:${r.range.start.character}`).sort(), COUNT)
+})
+
+// the scripts of a component share their names (one store): a name one
+// declares and another uses is renamed in both, and in the template
+test("rename: across the scripts of one component", async () => {
+  const file = join(dir, "TwoScripts.html")
+  const uri = pathToFileURL(file).href
+  const text = [
+    `<script :setup>`,
+    `  let count = 0`,
+    `</script>`,
+    `<script :mounted>`,
+    `  count++`,
+    `</script>`,
+    `<p>{{ count }}</p>`,
+  ].join("\n")
+  writeFileSync(file, text)
+  await opened
+  connection.sendNotification("textDocument/didOpen", { textDocument: { uri, languageId: "html", version: 1, text } })
+  for (const [line, character] of [[4, 3], [1, 7], [6, 7]]) {
+    const edit = await connection.sendRequest("textDocument/rename", { textDocument: { uri }, position: { line, character }, newName: "total" })
+    const at = (edit?.changes?.[uri] ?? []).map(e => `${e.range.start.line}:${e.range.start.character}`).sort()
+    assert.deepEqual(at, ["1:6", "4:2", "6:6"], `from ${line}:${character}`)
+  }
+})
+
+test("rename: a prop is renamed in its component, the :setup pattern included", async () => {
+  assert.deepEqual(await renamed(5, 51), ["0:18", "3:31", "5:49"])
+})

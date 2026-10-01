@@ -13,6 +13,7 @@ import { createRequire } from "node:module"
 const require = createRequire(import.meta.url)
 const { createChecker, findComponents, INFERRED_OPTIONS } = require("../dist/check.js")
 const { generate } = require("../dist/component.js")
+const { generateTemplate } = require("../dist/template.js")
 const ts = require("typescript")
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../../..")
@@ -290,11 +291,23 @@ test("every mapped range is the same text on both sides", () => {
     `</script>`,
     `<template name="Row"><script :setup>let x = 1</script></template>`,
   ].join("\n")
-  const { code, mappings } = generate(ts, text)
+  const { code, mappings, links } = generate(ts, text)
   for (const m of mappings) {
     const source = text.slice(m.sourceOffsets[0], m.sourceOffsets[0] + m.lengths[0])
     const generated = code.slice(m.generatedOffsets[0], m.generatedOffsets[0] + m.lengths[0])
     assert.equal(generated, source)
+  }
+  // and the two ends of every link are one name (a rename goes on from one
+  // to the other), in the scripts' code and the template's
+  const template = generateTemplate(ts, text, "./c.html")
+  for (const [linked, generatedCode] of [[links, code], [template.links, template.code]]) {
+    assert.ok(linked.length > 0)
+    for (const l of linked) {
+      const a = generatedCode.slice(l.sourceOffsets[0], l.sourceOffsets[0] + l.lengths[0])
+      const b = generatedCode.slice(l.generatedOffsets[0], l.generatedOffsets[0] + l.lengths[0])
+      assert.equal(a, b)
+      assert.match(a, /^[A-Za-z_$][\w$]*$/)
+    }
   }
 })
 

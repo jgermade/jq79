@@ -182,6 +182,24 @@ first parameter gives the names and no types, since that is all it says.
 - **HTML entities in an attribute value** (`:if="a &amp;&amp; b"`) are read as
   written, not decoded as the browser does.
 
+### One name, in the script and the template
+
+A name a script declares and the template reads is one name to the editor:
+
+- **Rename** it anywhere (F2) and the declaration, every use in the scripts,
+  and every read in the template change together. A name one `<script>`
+  declares and another uses is one name too: the scripts share one store.
+  So is a key a `:with` region reads: renaming `name` under `:with="draft"`
+  renames `draft.name`.
+- **Go to definition** from `{{ count }}` lands on `let count` in the script.
+- **Find all references** from the script lists the template's reads.
+
+It doesn't depend on `typescript.preferences.useAliasesForRenames`.
+
+A prop is the exception: renaming one in `:setup="{ step }"` renames it in this
+component, not in the parents that pass it (`:step="…"`), which are other files'
+business.
+
 ## Checking from a terminal
 
 The same checks, for CI:
@@ -229,7 +247,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.3.0.vsix
+code --install-extension jq79-vscode-0.4.0.vsix
 ```
 
 ## Working on it

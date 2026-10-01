@@ -181,8 +181,8 @@ export type Mapping = {
 }
 export const FULL = { verification: true, completion: true, semantic: true, navigation: true, structure: true, format: false }
 
-// a setup script's own code. The store is returned through getters (see
-// writeBody), and a getter is a closure: TypeScript reports an unannotated
+// a setup script's own code. The store is returned from a closure (see
+// writeBody): TypeScript reports an unannotated
 // `let user = null` read in one as "implicitly has type 'any' in some
 // locations" (TS7034), on the declaration - a complaint about the virtual
 // code's closure, not the script
@@ -194,6 +194,8 @@ const SCRIPT: Mapping["data"] = {
 export class Writer {
   code = ""
   mappings: Mapping[] = []
+  // pairs of ranges in the generated code that are one name (linkedCodeMappings)
+  links: Mapping[] = []
   constructor(private source: string) {}
   text(text: string) { this.code += text }
   copy(start: number, end: number, data: Mapping["data"] = FULL) {
@@ -201,7 +203,30 @@ export class Writer {
     this.mappings.push({ sourceOffsets: [start], generatedOffsets: [this.code.length], lengths: [end - start], data })
     this.code += this.source.slice(start, end)
   }
-  // `text` in place of the source's [start, end), mapped to it
+  // \`name: name\` for each name, the key linked to the value: a rename that
+  // reaches either goes on from the other. The property is the name as the
+  // other virtual file knows it, the value is the variable this one declares;
+  // TypeScript treats them as two symbols, and a shorthand (\`{ name }\`) only
+  // links them while it is not asked to keep the old name as an alias, which
+  // VS Code asks by default (useAliasesForRenames)
+  linkedPair(name: string): number {
+    const key = this.code.length
+    this.code += `${name}: `
+    const value = this.code.length
+    this.code += name
+    this.link(key, value, name.length)
+    return value
+  }
+  // \`{ a: a, b: b }\`'s inside, each pair linked; where each value is
+  linkedPairs(names: string[]): Map<string, number> {
+    const values = new Map<string, number>()
+    names.forEach((name, i) => { if (i) this.code += ", "; values.set(name, this.linkedPair(name)) })
+    return values
+  }
+  link(a: number, b: number, length: number) {
+    this.links.push({ sourceOffsets: [a], generatedOffsets: [b], lengths: [length], data: {} })
+  }
+  // \`text\` in place of the source's [start, end), mapped to it
   mapText(start: number, end: number, text: string, data: Mapping["data"] = FULL) {
     this.mappings.push({ sourceOffsets: [start], generatedOffsets: [this.code.length], lengths: [end - start], generatedLengths: [text.length], data })
     this.code += text
@@ -426,7 +451,7 @@ const preamble = (typescript: boolean): string => {
   return lines.join("\n")
 }
 
-export type Generated = { code: string; mappings: Mapping[]; typescript: boolean }
+export type Generated = { code: string; mappings: Mapping[]; links: Mapping[]; typescript: boolean }
 
 // what the template of a component is checked against (template.ts): the
 // names its store is known to have, and whether a name it doesn't know is an
@@ -529,7 +554,15 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
       shared.delete(name)
       out.text(typescript ? `const ${name} = ${any} as __Jq79Plain;\n` : `/** @type {__Jq79Plain} */ const ${name} = ${any};\n`)
     })
-    shared.forEach(name => out.text(typescript ? `let ${name}: any;\n` : `/** @type {any} */ let ${name};\n`))
+    // where each shared name is declared here, to link it to the script that
+    // declares it (below): a rename in a script that only uses it reaches
+    // the one that declares it, and from there the template
+    const sharedAt = new Map<string, number>()
+    shared.forEach(name => {
+      out.text(typescript ? `let ` : `/** @type {any} */ let `)
+      sharedAt.set(name, out.code.length)
+      out.text(typescript ? `${name}: any;\n` : `${name};\n`)
+    })
     const stores: string[] = []
     const props: string[] = []
     scripts.forEach(plan => {
@@ -537,7 +570,8 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
       const fn = plan.factory ? `__jq79Factory${i}` : `__jq79Setup${i}`
       out.text(plan.factory ? `async function ${fn}() {\n` : `async function ${fn}(${typescript ? "__props: any" : "__props"}) {\n`)
       if (!plan.factory) writeProps(out, text, plan.block, typescript)
-      writeBody(ts, out, text, plan, typescript)
+      const values = writeBody(ts, out, text, plan, typescript)
+      values.forEach((value, name) => { const at = sharedAt.get(name); if (at !== undefined) out.link(at, value, name.length) })
       out.text("\n}\n")
       if (plan.factory) {
         stores.push(`__jq79Bindings(await (await ${fn}())(${any}, ${any}))`)
@@ -545,7 +579,7 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
         if (declared) props.push(declared.length ? `{ ${declared.map(d => `${d.name}?: any`).join("; ")} }` : "__Jq79NoProps")
       } else {
         out.text(`const __r${i} = await ${fn}(${any});\n`)
-        stores.push(`__r${i}.store`)
+        stores.push(`__r${i}.store()`)
         const declared = readSignature(plan.block)
         if (declared) props.push(declared.length ? `Parameters<typeof __r${i}.signature>[0]` : "__Jq79NoProps")
       }
@@ -565,7 +599,7 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
     const propsValue = typescript ? `${any} as ${type}` : `/** @type {${type}} */ (${any})`
     out.text(`return { store: Object.assign(${seed}${stores.map(store => `, ${store}`).join("")}), props: ${propsValue} };\n}\n`)
   })
-  return { code: out.code, mappings: out.mappings, typescript }
+  return { code: out.code, mappings: out.mappings, links: out.links, typescript }
 }
 
 // `let <pattern> = __props;`, the pattern mapped from the :setup attribute.
@@ -701,12 +735,19 @@ const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, t
   out.copyMarked(base + at, block.contentEnd, marks, data)
 
   // what the script puts on the store, for the template to be checked
-  // against (template.ts). Getters, not values: a value returned at the end
-  // of the function has the type control flow narrowed it to there -
-  // `let user: User | null = null`, assigned in a callback, is `null` at the
-  // return - and a getter reads the variable's declared type
+  // against (template.ts). A function returning it, not the object: a value
+  // returned at the end of the script has the type control flow narrowed it
+  // to there - `let user: User | null = null`, assigned in a callback, is
+  // `null` at the return - and a closure reads the variable's declared type.
+  // Each property linked to its variable (Writer.linkedPairs), which is what
+  // carries a rename between the script and the template
   if (!factory) {
     const names = returnedNames(ts, plan)
-    out.text(`\n;return { store: { ${names.map(name => `get ${name}() { return ${name} }`).join(", ")} }, signature: __jq79Signature };`)
-  } else if (hasDefault) out.text(`\n;return __jq79Default;`)
+    out.text(`\n;return { store: () => ({ `)
+    const values = out.linkedPairs(names)
+    out.text(` }), signature: __jq79Signature };`)
+    return values
+  }
+  if (hasDefault) out.text(`\n;return __jq79Default;`)
+  return new Map<string, number>()
 }

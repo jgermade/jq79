@@ -180,7 +180,7 @@ const preamble = (module: string): string => [
   "",
 ].join("\n")
 
-export type GeneratedTemplate = { code: string; mappings: Mapping[] }
+export type GeneratedTemplate = { code: string; mappings: Mapping[]; links: Mapping[] }
 
 // the template code for every component of the file at `fileName`, or null
 // for a page. `module` is how this code imports the scripts' code: the .html
@@ -204,12 +204,17 @@ export const generateTemplate = (ts: typeof TS, text: string, module: string): G
     siblings.forEach(name => out.text(`let ${name} = null as any as __Jq79PropsOf<typeof __jq79Scripts.__jq79Component${siblingIndex.get(name)}>;\n`))
     // `let`: a template assigns to the store (@click="count = count + 1")
     const stored = scope.names.filter(name => !siblingIndex.has(name))
-    if (stored.length) out.text(`let { ${stored.join(", ")} } = __s;\n`)
+    // each name linked to the store's property, so a rename crosses over
+    if (stored.length) {
+      out.text("let { ")
+      out.linkedPairs(stored)
+      out.text(" } = __s;\n")
+    }
     const gen = new TemplateWriter(ts, out, scope.permissive, scope.names)
     trees[c].forEach(node => gen.node(node))
     out.text("}\n")
   })
-  return { code: out.code, mappings: out.mappings }
+  return { code: out.code, mappings: out.mappings, links: out.links }
 }
 
 const EACH_RE = new RegExp(EACH_PATTERN.source, "d")
@@ -351,7 +356,11 @@ class TemplateWriter {
       this.out.copy(withAttr.valueStart, withAttr.valueStart + withAttr.value.length, this.data)
       this.out.text("\n);\n")
       const names = [...this.readNames(el)].filter(name => !name.startsWith("$") && !this.names.has(name))
-      if (names.length) this.out.text(`let { ${names.join(", ")} } = ${w} as typeof ${w} & Record<string, any>;\n`)
+      if (names.length) {
+        this.out.text("let { ")
+        this.out.linkedPairs(names)
+        this.out.text(` } = ${w} as typeof ${w} & Record<string, any>;\n`)
+      }
       blocks++
       this.withDepth++
     }

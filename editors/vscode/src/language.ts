@@ -34,6 +34,7 @@ export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, file
       languageId: generated.typescript ? "typescript" : "javascript",
       snapshot: snapshotOf(generated.code),
       mappings: generated.mappings as CodeMapping[],
+      linkedCodeMappings: generated.links,
     })
     const template = generateTemplate(ts, text, `./${fileName}`)
     if (template) {
@@ -42,6 +43,7 @@ export const createVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot, file
         languageId: "typescript",
         snapshot: snapshotOf(template.code),
         mappings: template.mappings as CodeMapping[],
+        linkedCodeMappings: template.links,
       })
     }
   }
