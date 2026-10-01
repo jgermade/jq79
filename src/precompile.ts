@@ -175,7 +175,7 @@ const precompileComponent = (
 
   // the helper names a script is compiled with: renderWith's
   // { ...SETUP_HELPERS, ...instanceHelpers }, where instanceHelpers is
-  // { $mounted, $self, $$self, ...injected, ...siblingScope } - key order
+  // { $mounted, $destroyed, $computed, $self, $$self, ...injected, ...siblingScope } - key order
   // included, because the parameters are positional (built as objects, so a
   // sibling named like a helper keeps the helper's place, as it does there)
   //

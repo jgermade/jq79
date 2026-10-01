@@ -26,7 +26,7 @@
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.
-- The [DOM helpers](dom-helpers.md) `$`, `$$` and `$create`, plus [`$reactive`](reactive-data.md) and [`$toRaw`](reactive-data.md#getting-the-plain-object-back), are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
+- The [DOM helpers](dom-helpers.md) `$`, `$$` and `$create`, plus [`$reactive`](reactive-data.md), [`$computed`](reactive-data.md#derived-values-computed) and [`$toRaw`](reactive-data.md#getting-the-plain-object-back), are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
 - `$emit(eventName, payload)` dispatches a native bubbling, cancelable `CustomEvent` (with `payload` as `event.detail`) from the component's position in the DOM, and returns `false` when any listener called `preventDefault()` — the "parent vetoed" signal (e.g. `@saved.prevent` on the component's tag). It's also visible to template expressions (`@click="$emit('saved', id)"` needs no setup function), shadowed by a same-named scope property like any global. Listen from a parent component with [`@event-name` on the component's own tag](template-syntax.md#event-on-a-component-tag), on any wrapping element, or with plain `addEventListener` on the mount target:
 
 ```html
@@ -109,6 +109,20 @@ new Component79(src)
 ```
 
 - `$self(selector)` and `$$self(selector)` are component-scoped versions of [`$` / `$$`](dom-helpers.md): they only search this component instance's own rendered nodes, so they can't accidentally match another component (or anything else in the page). They work even while the component is rendered but not yet mounted — but remember the template renders *after* the script, so call them from post-`await $mounted()` code or from handlers/callbacks.
+
+- `$destroyed(fn)` runs `fn` when the component is destroyed. Use it to stop what the script started outside the store: timers, listeners on `window`, sockets, third-party widgets. It returns a function that unregisters `fn`.
+
+```html
+<script :setup>
+  let now = new Date()
+  const timer = setInterval(() => { now = new Date() }, 1000)
+
+  $destroyed(() => clearInterval(timer))
+</script>
+<time>{{ now.toLocaleTimeString() }}</time>
+```
+
+  "Destroyed" means `destroy()`, a re-render (`mount(el, data)`, a hot reload), or a parent's `:if` / `:each` removing the component. **Not `detach()`**: that keeps state, and a later `mount()` resumes the component as it was, with the script not run again. The hooks run first, before anything is taken apart, so the DOM is still on the page and the store still answers. A parent's hooks run before its children's. One that throws is logged, and the rest still run. A hook registered after the component is gone (the script awaited something and was destroyed in the meantime) runs at once.
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. Multi-declarator statements (`let a = 1, b = 2`) and destructuring declarations work like any other declaration — every binding becomes a reactive store variable:
 
@@ -357,7 +371,7 @@ The context is everything the library provides — the `$` is what says so:
   your local binding; read it through `$props` when you need the live value.
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
-- `$emit`, `$updateModel`, `$mounted`, `$self`, `$$self` — same as in setup scripts. `$`,
+- `$emit`, `$updateModel`, `$mounted`, `$destroyed`, `$computed`, `$self`, `$$self` — same as in setup scripts. `$`,
   `$$`, `$create`, `$reactive` and `$toRaw` are available lexically in the module body.
 - `$slots` — a static map of the slot names the usage site filled, so a wrapper
   can be dropped when nothing filled it (`<footer :if="$slots.footer">`).

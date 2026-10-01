@@ -437,7 +437,9 @@ const QUERY_ALL = "{ <K extends keyof HTMLElementTagNameMap>(selector: K): HTMLE
 export type GenerateOptions = { jq79?: boolean }
 
 const preamble = (typescript: boolean, jq79: boolean): string => {
+  const computedType = `typeof import("jq79").$computed`
   const ctx = "{ $data: any; $props: any; $effect: (run: () => void) => void; $mounted: () => Promise<void>; " +
+    `$destroyed: (fn: () => void) => () => void; $computed: ${computedType}; ` +
     `$self: ${QUERY_ONE}; $$self: ${QUERY_ALL}; ` +
     "$emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; " +
     "$slots: Record<string, true>; [sibling: string]: any }"
@@ -449,6 +451,8 @@ const preamble = (typescript: boolean, jq79: boolean): string => {
     $toRaw: `typeof import("jq79").$toRaw`,
     Component79: `typeof import("jq79").Component79`,
     $mounted: "() => Promise<void>",
+    $destroyed: "(fn: () => void) => () => void",
+    $computed: computedType,
     $self: QUERY_ONE,
     $$self: QUERY_ALL,
     $emit: "(name: string, payload?: any) => boolean",

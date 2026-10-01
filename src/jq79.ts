@@ -1,7 +1,7 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl, QueryAll, QueryOne } from "./dom"
-import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
+import { $reactive, $toRaw, $computed, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
 import {
@@ -14,7 +14,8 @@ import {
 
 export { $, $$, $create } from "./dom"
 export type { QueryOne, QueryAll } from "./dom"
-export { $reactive, $toRaw } from "./reactive"
+export { $reactive, $toRaw, $computed } from "./reactive"
+export type { Computed } from "./reactive"
 
 // the package version, substituted at build time (tsup/vitest `define`, read
 // from package.json - releases bump it there and nowhere else). The typeof
@@ -4054,6 +4055,10 @@ export class Component79 {
   // must not resolve on attach alone - a script awaiting it would wake to an
   // empty component and find nothing to query
   private renderDone = false
+  // what this render generation's scripts asked to run when it is torn down
+  // ($destroyed). Created on the first call, and taken by destroy() before
+  // anything else goes, so a hook still sees the DOM and the store
+  private destroyHooks: (() => void)[] | null = null
   // instance-level listeners for $emit events, registered with on(). Kept
   // outside the render generation so they survive re-render and destroy()
   private emitListeners = new Map<string, Set<EmitListener>>()
@@ -4351,6 +4356,34 @@ export class Component79 {
     this.resolveMounted = resolveMounted
     this.renderDone = false
 
+    // $destroyed(fn) runs fn when this generation is torn down: destroy(), a
+    // re-render, a hot reload, or a parent's :if/:each removing it - never
+    // detach(), which keeps state for a mount() to resume. Registered after
+    // the generation is gone (a script that awaited past its own destroy), it
+    // runs at once: holding it for a destroy that already happened would leak
+    // exactly what it was written to stop. Returns the unregister
+    const $destroyed = (fn: () => void): (() => void) => {
+      if (typeof fn !== "function") throw new TypeError("jq79: $destroyed expects a function")
+      if (marker !== this.startMarker) {
+        runDestroyHook(fn)
+        return () => {}
+      }
+      const hooks = (this.destroyHooks ??= [])
+      hooks.push(fn)
+      return () => {
+        const at = hooks.indexOf(fn)
+        if (at !== -1) hooks.splice(at, 1)
+      }
+    }
+    // the library's $computed, disposed with this generation: one made over a
+    // shared store is otherwise held by that store, and kept recomputing, for
+    // as long as the store lives
+    const $instanceComputed = <T>(get: () => T) => {
+      const computed = $computed(get)
+      $destroyed(() => computed.$dispose())
+      return computed
+    }
+
     // $self / $$self mirror $ / $$ but only search this instance's own
     // output: the sibling nodes between its markers. They work detached too
     // (the holding fragment keeps markers and rendered nodes as siblings),
@@ -4451,7 +4484,7 @@ export class Component79 {
       // resolve to nothing at all. In setup mode this composes with `with` -
       // scriptScope's `has` declines any name that is a helper, so the
       // parameter is what the name resolves to
-      const instanceHelpers = { $mounted, $self, $$self, ...injected, ...siblingScope }
+      const instanceHelpers = { $mounted, $destroyed, $computed: $instanceComputed, $self, $$self, ...injected, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
       const deferred = ":mounted" in script.attrs
       const factoryCode = transformFactoryScript(script.content)
@@ -4656,6 +4689,11 @@ export class Component79 {
   }
 
   destroy(): this {
+    // first, while everything they might read is still there. Taken before
+    // running, so a hook that destroys again (or re-renders) finds none
+    const hooks = this.destroyHooks
+    this.destroyHooks = null
+    hooks?.forEach(runDestroyHook)
     this.detach()
     this.fx?.dispose()
     this.fx = null
@@ -4788,6 +4826,16 @@ export type Component<P = any, E extends string = never, S extends string = neve
 }
 
 export const parseComponent = (component: string): Component79 => new Component79(component)
+
+// one broken cleanup must not leave the others' timers running, or the
+// teardown half done: reported, and the rest still run
+const runDestroyHook = (fn: () => void) => {
+  try {
+    fn()
+  } catch (error) {
+    console.error("jq79: error in a $destroyed hook", error)
+  }
+}
 
 // library helpers injected into setup scripts. They behave like extra
 // globals: a same-named scope property (render data or a top-level
