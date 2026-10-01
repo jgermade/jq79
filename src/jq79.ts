@@ -4378,11 +4378,11 @@ export class Component79 {
     // the library's $computed, disposed with this generation: one made over a
     // shared store is otherwise held by that store, and kept recomputing, for
     // as long as the store lives
-    const $instanceComputed = ((...args: [any, any?]) => {
-      const computed = $computed(...args)
+    const $instanceComputed = <T>(get: () => T) => {
+      const computed = $computed(get)
       $destroyed(() => computed.$dispose())
       return computed
-    }) as typeof $computed
+    }
 
     // $self / $$self mirror $ / $$ but only search this instance's own
     // output: the sibling nodes between its markers. They work detached too

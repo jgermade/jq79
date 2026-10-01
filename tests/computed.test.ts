@@ -13,6 +13,17 @@ describe("$computed", () => {
     expect(total.value).toBe(5)
   })
 
+  it("does not recompute for a key it didn't read", () => {
+    const o = $reactive({ foo: "Bar", bar: 1 })
+    const get = vi.fn(() => o.foo.toUpperCase())
+    $computed(get)
+
+    o.bar = 2
+    expect(get).toHaveBeenCalledTimes(1)
+    o.foo = "Baz"
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
   it("follows more than one store", () => {
     const a = $reactive({ n: 1 })
     const b = $reactive({ n: 2 })
@@ -94,59 +105,6 @@ describe("$computed", () => {
     error.mockRestore()
   })
 
-  describe("$computed(source, fn)", () => {
-    it("hands the source to fn and follows it", () => {
-      const o = $reactive({ foo: "Bar" })
-      const fooUp = $computed(o, o => o.foo.toUpperCase())
-
-      expect(fooUp.value).toBe("BAR")
-      o.foo = "baz"
-      expect(fooUp.value).toBe("BAZ")
-    })
-
-    it("lets one named function derive from several stores", () => {
-      const totalOf = (cart: { items: number[] }) => cart.items.reduce((sum, n) => sum + n, 0)
-      const a = $reactive({ items: [1, 2] })
-      const b = $reactive({ items: [10] })
-      const totalA = $computed(a, totalOf)
-      const totalB = $computed(b, totalOf)
-
-      a.items.push(3)
-      expect([totalA.value, totalB.value]).toEqual([6, 10])
-    })
-
-    it("still follows what fn reads outside the source", () => {
-      const o = $reactive({ n: 2 })
-      const factor = $reactive({ by: 10 })
-      const scaled = $computed(o, o => o.n * factor.by)
-
-      factor.by = 100
-      expect(scaled.value).toBe(200)
-    })
-
-    it("takes a nested object of a store, or another $computed, as the source", () => {
-      const o = $reactive({ user: { name: "ada" } })
-      const name = $computed(o.user, user => user.name.toUpperCase())
-      const initial = $computed(name, name => name.value[0])
-
-      o.user.name = "grace"
-      expect([name.value, initial.value]).toEqual(["GRACE", "G"])
-    })
-
-    it("warns when the source isn't reactive", () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-      const plain = $computed({ foo: "Bar" }, o => o.foo.toUpperCase())
-
-      expect(plain.value).toBe("BAR")
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("not reactive"))
-      warn.mockRestore()
-    })
-
-    it("throws when fn isn't a function", () => {
-      expect(() => ($computed as any)($reactive({}), "nope")).toThrow(TypeError)
-    })
-  })
-
   it("stops following its sources once disposed", () => {
     const state = $reactive({ n: 1 })
     const get = vi.fn(() => state.n * 2)
@@ -179,18 +137,6 @@ describe("$computed in a component", () => {
     expect($(host, ".c")?.textContent).toBe("2")
     $(host, ".c")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))
     expect($(host, ".c")?.textContent).toBe("4")
-    jq79.destroy()
-  })
-
-  it("takes the (source, fn) form in a setup script too", () => {
-    const o = $reactive({ foo: "Bar" })
-    const jq79 = new Component79(
-      `<script :setup="{ o }">const fooUp = $computed(o, o => o.foo.toUpperCase())</script>` +
-      `<b class="up">{{ fooUp.value }}</b>`
-    ).mount(host, { o })
-
-    o.foo = "qux"
-    expect($(host, ".up")?.textContent).toBe("QUX")
     jq79.destroy()
   })
 
