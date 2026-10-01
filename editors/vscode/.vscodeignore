@@ -7,3 +7,4 @@ dist/component.js
 package-lock.json
 .gitignore
 *.vsix
+dist/template.js

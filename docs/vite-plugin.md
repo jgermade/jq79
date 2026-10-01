@@ -180,7 +180,8 @@ component's scripts the way the runtime compiles them: the `:setup` pattern
 types the props, `$:` declares its target, the scripts of a component share
 their names, and the helpers (`$mounted`, `$emit`, …) are in scope, typed.
 A `lang="ts"` script is type-checked; a JavaScript one is when `checkJs` is on,
-as any JS file.
+as any JS file. The template's expressions are checked against that store in
+every component, JavaScript ones included.
 
 It also turns VS Code's own script checks off (`html.validate.scripts`), which
 would otherwise report the same scripts again, wrongly. That goes for every

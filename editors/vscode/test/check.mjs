@@ -45,35 +45,43 @@ const one = async (text, options) => (await check({ "c.html": text }, options))[
 // ------------------------------------------------------------------ the corpus
 
 // every component the tutorial ships, as its own check: no false errors. The
-// JavaScript ones are read (allowJs) but not type-checked by default, as with
-// any JS file; with checkJs, what is left is DOM typing that is plain
-// TypeScript's - $self and $ return Element, as querySelector does - and
-// not the virtual code's
-test("every tutorial component checks clean", async () => {
+// JavaScript scripts are read (allowJs) but not type-checked by default, as
+// with any JS file; their templates always are (template.ts). What is left is
+// the exercises themselves: a starting file whose template reads a name the
+// exercise is to add. With checkJs, DOM typing that is TypeScript's own joins
+// it - $self and $ return Element, as querySelector does
+const EXERCISES = [
+  "tutorial/01-basics/02-reactive-state/app.html:6 TS2304 Cannot find name 'doubled'.",
+  "tutorial/01-basics/03-lists-and-conditions/app.html:12 TS2552 Cannot find name 'todo'. Did you mean 'todos'?",
+  "tutorial/01-basics/07-objects-and-entries/app.html:6 TS2304 Cannot find name 'fruit'.",
+  "tutorial/01-basics/07-objects-and-entries/app.html:6 TS2304 Cannot find name 'count'.",
+]
+
+const corpus = async options => {
   const files = findComponents(join(repo, "tutorial"))
   assert.ok(files.length > 50, `found ${files.length}`)
-  const checker = createChecker(files, TYPED)
+  const checker = createChecker(files, options)
   const found = []
   for (const file of files) {
     for (const d of await checker.check(file)) {
-      if (d.severity === 1 || d.severity === 2) found.push(`${relative(repo, file)}:${d.range.start.line + 1} TS${d.code} ${d.message}`)
+      if (d.severity === 1 || d.severity === 2) found.push({ d, line: `${relative(repo, file)}:${d.range.start.line + 1} TS${d.code} ${d.message}` })
     }
   }
-  assert.deepEqual(found, [])
+  return found
+}
+
+test("every tutorial component checks clean, but for the exercises", async () => {
+  const found = (await corpus(TYPED)).map(f => f.line)
+  assert.deepEqual(found.sort(), [...EXERCISES].sort())
+  // and no solution is among them
+  assert.ok(found.every(line => !line.includes("/solution/")))
 })
 
-test("…and with checkJs, only DOM typing is left", async () => {
-  const files = findComponents(join(repo, "tutorial"))
-  const checker = createChecker(files, { ...TYPED, checkJs: true })
-  const found = []
-  for (const file of files) {
-    for (const d of await checker.check(file)) {
-      if (d.severity !== 1 && d.severity !== 2) continue
-      const dom = d.code === 2339 && /on type '(Element|ChildNode)'/.test(d.message)
-      if (!dom) found.push(`${relative(repo, file)}:${d.range.start.line + 1} TS${d.code} ${d.message}`)
-    }
-  }
-  assert.deepEqual(found, [])
+test("…and with checkJs, only DOM typing is added", async () => {
+  const found = (await corpus({ ...TYPED, checkJs: true }))
+    .filter(({ d }) => !(d.code === 2339 && /on type '(Element|ChildNode)'/.test(d.message)))
+    .map(f => f.line)
+  assert.deepEqual(found.sort(), [...EXERCISES].sort())
 })
 
 // ------------------------------------------------------------------ setup scripts
@@ -207,6 +215,20 @@ test("import() of a component, and a static import where the runtime has none", 
   assert.deepEqual(errors["c.html"].map(e => e.split(" ").slice(0, 2).join(" ")), ["5:9 TS2322", "6:3 TS1232"])
 })
 
+test("an `import type` in a setup script is erased with the types, so it is hoisted, not an error", async () => {
+  const errors = await check({
+    "c.html": [
+      `<script :setup="{ user }: Props" lang="ts">`,
+      `  import type { Props } from "./types"`,
+      `  import { type Props as P2 } from "./types"`,
+      `  const age: string = user.age`,
+      `</script>`,
+    ].join("\n"),
+    "types.ts": `export interface Props { user: { age: number } }`,
+  })
+  assert.deepEqual(errors["c.html"], ["4:9 TS2322 Type 'number' is not assignable to type 'string'."])
+})
+
 // ------------------------------------------------------------------ factory scripts
 
 test("a factory's (props, ctx) are typed without an annotation, and its imports resolve", async () => {
@@ -262,4 +284,184 @@ test("every mapped range is the same text on both sides", () => {
     const generated = code.slice(m.generatedOffsets[0], m.generatedOffsets[0] + m.lengths[0])
     assert.equal(generated, source)
   }
+})
+
+// ------------------------------------------------------------------ templates
+
+test("a template reads the store, typed by the scripts", async () => {
+  const errors = await one([
+    `<script :setup="{ step = 1 }: Props" lang="ts">`,
+    `  interface Props { step?: number }`,
+    `  let count = 0`,
+    `  $: label = \`\${count} × \${step}\``,
+    `</script>`,
+    `<p>{{ label.toUpperCase() }} {{ count.toUpperCase() }}</p>`,
+    `<button @click="count = count + step">+</button>`,
+    `<button @click="count = 'x'">x</button>`,
+  ].join("\n"))
+  assert.deepEqual(errors, [
+    "6:39 TS2339 Property 'toUpperCase' does not exist on type 'number'.",
+    "8:17 TS2322 Type 'string' is not assignable to type 'number'.",
+  ])
+})
+
+// a JS file's object literal is open: reading a property it lacks is `any`,
+// unless noImplicitAny. That is TypeScript's rule for JS, kept here - a name
+// that doesn't exist is reported either way
+test("…in a JavaScript component too, without checkJs: its store has the types TypeScript infers", async () => {
+  const text = [
+    `<script :setup>`,
+    `  let todos = [{ text: "a", done: false }]`,
+    `</script>`,
+    `<li :each="todo in todos">{{ todo.txt }}</li>`,
+    `<p>{{ todoz.length }}</p>`,
+  ].join("\n")
+  assert.deepEqual(await one(text, TYPED), ["5:7 TS2552 Cannot find name 'todoz'. Did you mean 'todos'?"])
+  assert.deepEqual(await one(text, { ...TYPED, noImplicitAny: true }), [
+    "4:35 TS2551 Property 'txt' does not exist on type '{ text: string; done: boolean; }'. Did you mean 'text'?",
+    "5:7 TS2552 Cannot find name 'todoz'. Did you mean 'todos'?",
+  ])
+})
+
+test("a store variable keeps its declared type, whatever control flow says at the end of the script", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">`,
+    `  type User = { name: string }`,
+    `  let user: User | null = null`,
+    `  setTimeout(() => { user = { name: "Ada" } })`,
+    `</script>`,
+    `<p>{{ user?.name }}</p>`,
+  ].join("\n"))
+  assert.deepEqual(errors, [])
+})
+
+test("a top-level function is not on the store, as at runtime", async () => {
+  const errors = await one(`<script :setup>\n  function save() {}\n  const reset = () => {}\n</script>\n<button @click="save" @dblclick="reset">s</button>`, TYPED)
+  assert.deepEqual(errors, ["5:17 TS2304 Cannot find name 'save'."])
+})
+
+test(":each binds the item, the index or key, and $index - inside the element only", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">`,
+    `  let rows = [{ id: 1, label: "a" }]`,
+    `  let labels = { en: "hi" }`,
+    `</script>`,
+    `<li :each="row, i in rows" :key="row.id">{{ i.toFixed() }} {{ $index + 1 }} {{ row.label.toUpperCase() }}</li>`,
+    `<li :each="(value, key) in labels">{{ key.toUpperCase() }} {{ value.toUpperCase() }}</li>`,
+    `<p>{{ row }} {{ $index }}</p>`,
+  ].join("\n"))
+  assert.deepEqual(errors, [
+    "7:7 TS2552 Cannot find name 'row'. Did you mean 'rows'?",
+    "7:17 TS2304 Cannot find name '$index'.",
+  ])
+})
+
+test("@event: $event typed by the event's name, an arrow's parameter by it too", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">`,
+    `  let name = ""`,
+    `  let x = 0`,
+    `  const pick = (n: number) => n`,
+    `</script>`,
+    `<input @input="name = $event.target.value" @click="x = $event.clientX" @keydown="e => e.key.toUpperCase()" />`,
+    `<div @changed="x = $event.detail" @click="x = $event.detail.foo"></div>`,
+  ].join("\n"))
+  // a click's detail is a number; a component's emit is a CustomEvent
+  assert.deepEqual(errors, ["7:61 TS2339 Property 'foo' does not exist on type 'number'."])
+})
+
+test("an event on a component tag is its $emit: a CustomEvent", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">`,
+    `  let last: unknown`,
+    `</script>`,
+    `<Stepper @changed="last = $event.detail" @click="last = $event.clientX" />`,
+    `<template name="Stepper"><p></p></template>`,
+  ].join("\n"))
+  assert.deepEqual(errors, ["4:64 TS2339 Property 'clientX' does not exist on type '__Jq79Emitted'."])
+})
+
+test(":with puts the object's keys in scope, typed", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">`,
+    `  let draft = { name: "", email: "" }`,
+    `</script>`,
+    `<fieldset :with="draft">`,
+    `  <input @input="name = $event.target.value" />`,
+    `  <p>{{ name.toUpperCase() }} {{ email.foo }}</p>`,
+    `</fieldset>`,
+  ].join("\n"))
+  assert.deepEqual(errors, ["6:40 TS2339 Property 'foo' does not exist on type 'string'."])
+})
+
+test("a slot binder declares names for the content it fills", async () => {
+  const errors = await one([
+    `<script :setup lang="ts"></script>`,
+    `<List :slot="{ item }">{{ item.name }}</List>`,
+    `<List><template :slot.row="{ row }">{{ row }}</template>{{ item }}</List>`,
+    `<template name="List"><slot :item="1"></slot></template>`,
+  ].join("\n"))
+  assert.deepEqual(errors, ["3:60 TS2304 Cannot find name 'item'."])
+})
+
+test("shorthand bindings and spreads read their name", async () => {
+  const errors = await one([
+    `<script :setup lang="ts">`,
+    `  let user = { id: 1 }`,
+    `</script>`,
+    `<Card :user :usr ...user ...usr :model.user />`,
+    `<template name="Card"><script :setup="_"></script></template>`,
+  ].join("\n"))
+  assert.deepEqual(errors, [
+    "4:14 TS2552 Cannot find name 'usr'. Did you mean 'user'?",
+    "4:29 TS2552 Cannot find name 'usr'. Did you mean 'user'?",
+  ])
+})
+
+test("a component without a signature may get any name from its parent; one with a signature can't", async () => {
+  const permissive = await one(`<script :setup="_">\n</script>\n<p>{{ title }}</p>`, TYPED)
+  assert.deepEqual(permissive, [])
+  const noScript = await one(`<p>{{ title }}</p>`, TYPED)
+  assert.deepEqual(noScript, [])
+  const closed = await one(`<script :setup="{ label }">\n</script>\n<p>{{ title }} {{ label }}</p>`, TYPED)
+  assert.deepEqual(closed, ["3:7 TS2304 Cannot find name 'title'."])
+})
+
+test("each <template name> is checked against its own store", async () => {
+  const errors = await one([
+    `<script :setup>`,
+    `  let tree = { label: "src" }`,
+    `</script>`,
+    `<Folder :node="tree" />`,
+    `<template name="Folder">`,
+    `  <script :setup="{ node }"></script>`,
+    `  <span>{{ node.label }} {{ tree }}</span>`,
+    `</template>`,
+  ].join("\n"), TYPED)
+  assert.deepEqual(errors, ["7:29 TS2304 Cannot find name 'tree'."])
+})
+
+test("a factory's returned bindings are typed in the template", async () => {
+  const errors = await one([
+    `<script lang="ts">`,
+    `  export default ({}, { $data }) => {`,
+    `    $data.count = 0`,
+    `    const inc = (by: number) => { $data.count += by }`,
+    `    return { inc }`,
+    `  }`,
+    `</script>`,
+    `<button @click="inc(1)">{{ count }}</button>`,
+    `<button @click="inc('x')"></button>`,
+  ].join("\n"))
+  assert.deepEqual(errors, ["9:21 TS2345 Argument of type 'string' is not assignable to parameter of type 'number'."])
+})
+
+test("not in comments, scripts or styles", async () => {
+  const errors = await one([
+    `<script :setup>let a = 1</script>`,
+    `<!-- {{ nope }} <p :if="nope"></p> -->`,
+    `<style>.a::after { content: "{{ nope }}" }</style>`,
+    `<p>{{ a }}</p>`,
+  ].join("\n"), TYPED)
+  assert.deepEqual(errors, [])
 })

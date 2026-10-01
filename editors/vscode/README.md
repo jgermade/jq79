@@ -1,7 +1,8 @@
 # jq79 for VS Code
 
-jq79 components in VS Code: their scripts checked, completed and hovered as
-the runtime compiles them, and every part of them colored in its language.
+jq79 components in VS Code: their scripts and templates checked, completed and
+hovered as the runtime compiles them, and every part of them colored in its
+language.
 
 ```html
 <script :setup="{ step = 1 }: Props" lang="ts">   <!-- TypeScript, the :setup signature too -->
@@ -93,12 +94,55 @@ pages included, where this server doesn't check (a file with `<!doctype>`,
 `<html>`, `<head>` or `<body>` is a page). Set it back to `true` to have them
 there.
 
+### The template
+
+Every expression in the template is checked too - `{{ }}`, `:attr`, `@event`,
+`:if`, `:each`, `:key`, `:with`, a prop on a component tag - against what the
+runtime evaluates it against: the component's store, typed by its scripts.
+
+```html
+<script :setup>
+  let todos = [{ text: "milk", done: false }]
+  function save() {}
+</script>
+
+<li :each="todo, i in todos" :key="i">{{ todo.text.toUpperCase() }}</li>
+<p>{{ todoz.length }}</p>            <!-- ✗ Cannot find name 'todoz'. Did you mean 'todos'? -->
+<p>{{ todo }}</p>                    <!-- ✗ Cannot find name 'todo': only inside the :each -->
+<button @click="save">save</button>  <!-- ✗ Cannot find name 'save': a top-level function isn't on the store -->
+```
+
+| in the template | what it is checked against |
+|---|---|
+| any expression | the store: props, top-level `let`/`const`/`var`, `$:` targets, a factory's returned bindings, sibling components; `$emit`, `$updateModel`, `$slots`; the globals |
+| `:each="item, i in list"` | `item` and `i` (the index, or an object's key) and `$index`, inside the element only |
+| `@event="…"` | `$event`, typed by the event's name (`MouseEvent` for `click`), a `CustomEvent` for any other (a component's `$emit`); its `target` is `any`, for `$event.target.value`. An inline arrow's parameter is typed the same way |
+| `:with="obj"` | the object's keys, typed from it where it has them |
+| `:slot="{ item }"`, `<template :slot.row="{ row }">` | those names, in the content they fill |
+| `:user` / `...user` | the name they read |
+
+The template is checked as TypeScript **in every component**, a JavaScript one
+included and without `checkJs`: a JavaScript store has the types TypeScript
+infers for it (`todos` above is `{ text: string; done: boolean }[]`). A name
+that doesn't exist is reported whatever the settings are. A *property* that
+doesn't exist on an object a JavaScript script built is only reported with
+`noImplicitAny` (or `strict`), because that is TypeScript's rule for JS object
+literals: they are open, and reading what they lack is `any`.
+
+A component that declares **no signature** (`:setup="_"`, a factory's `_`, a
+script without `:setup`, no script at all) takes whatever its parent passes, so
+a name its template reads and nobody declares may be a prop: it isn't reported.
+One that declares a signature takes only those props, so it is.
+
 **What isn't checked yet:**
 
-- **The template.** `{{ usr.name }}`, `:if`, `@click` are colored, not checked.
+- **Props against the child's signature.** `<Card :titel="x">` is checked as an
+  expression in the parent, not as a prop `Card` declares.
 - **Pages, and components inside `` Component79(`…`) `` strings.** Only
   `.html` component files.
 - **Plain `<style>`**, which VS Code already checks as CSS.
+- **HTML entities in an attribute value** (`:if="a &amp;&amp; b"`) are read as
+  written, not decoded as the browser does.
 
 ## Checking from a terminal
 
@@ -147,14 +191,14 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.1.0.vsix
+code --install-extension jq79-vscode-0.2.0.vsix
 ```
 
 ## Working on it
 
 ```sh
 npm install
-npm test          # builds, type-checks, then: the grammars, the checker, the server over LSP
+npm test          # builds, type-checks, then: the grammars, the checker (scripts and templates), the server over LSP
 node test/tokenize.mjs text.html.derivative some-component.html   # every token and its scopes
 ```
 
@@ -170,6 +214,10 @@ node test/tokenize.mjs text.html.derivative some-component.html   # every token 
   [`tutorial/`](../../tutorial/) must check clean
   ([`test/check.mjs`](test/check.mjs)), so a runtime change that the virtual
   code doesn't follow fails there.
+- **The template** (`src/template.ts`): each component's template becomes a
+  function in a second virtual file, `<file>.html.template.ts`, always
+  TypeScript, which imports the store's type from the first one. Its own
+  HTML reader keeps offsets, which the runtime's doesn't need.
 - **The server** (`src/server.ts`, `src/language.ts`) is
   [Volar](https://volarjs.dev)'s, with TypeScript 5.9 shipped inside the
   extension: Volar needs TypeScript's JavaScript API, which the native

@@ -36,12 +36,16 @@ export const INFERRED_OPTIONS: ts.CompilerOptions = {
   noEmit: true,
 }
 
-export const createChecker = (files: string[] | { project: string }, options: ts.CompilerOptions = INFERRED_OPTIONS) => {
+// `setup` reaches Volar's project (its TypeScript host), for a test that needs
+// to see past what the checker maps back to the .html
+type Setup = Parameters<typeof createTypeScriptInferredChecker>[4]
+
+export const createChecker = (files: string[] | { project: string }, options: ts.CompilerOptions = INFERRED_OPTIONS, setup?: Setup) => {
   const languages = [createJq79LanguagePlugin(ts)]
   const services = [createCssService(), ...createTypeScriptServices(ts)]
   return Array.isArray(files)
-    ? createTypeScriptInferredChecker(languages, services, () => files, options)
-    : createTypeScriptChecker(languages, services, files.project)
+    ? createTypeScriptInferredChecker(languages, services, () => files, options, setup)
+    : createTypeScriptChecker(languages, services, files.project, false, setup)
 }
 
 const SEVERITY = ["", "error", "warning", "info", "hint"]

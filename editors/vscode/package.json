@@ -1,8 +1,8 @@
 {
   "name": "jq79-vscode",
   "displayName": "jq79",
-  "description": "jq79 components in VS Code: the TypeScript in their scripts checked, completed and hovered as the runtime compiles it, and {{ }}, :attr, @event, <script lang=\"ts\">, <style lang=\"scss\"> and Component79(`…`) colored in their language",
-  "version": "0.1.0",
+  "description": "jq79 components in VS Code: their scripts and templates checked, completed and hovered as the runtime compiles them, and {{ }}, :attr, @event, <script lang=\"ts\">, <style lang=\"scss\"> and Component79(`…`) colored in their language",
+  "version": "0.2.0",
   "publisher": "jgermade",
   "license": "ISC",
   "private": true,

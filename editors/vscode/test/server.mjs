@@ -25,6 +25,7 @@ const text = [
   `  $em`,
   `</script>`,
   `<button @click="count += step">{{ doubled }}</button>`,
+  `<p>{{ doubled.toUpperCase() }} {{ cou }}</p>`,
 ].join("\n")
 writeFileSync(file, text)
 
@@ -69,4 +70,16 @@ test("completion: the helpers are offered", async () => {
   const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri }, position: { line: 4, character: 5 } })
   const labels = (Array.isArray(list) ? list : list.items).map(item => item.label)
   assert.ok(labels.includes("$emit"), labels.slice(0, 20).join(", "))
+})
+
+test("the template: its errors, hover and completion come from the template's code", async () => {
+  await ready
+  const report = await connection.sendRequest("textDocument/diagnostic", { textDocument: { uri } })
+  const errors = report.items.filter(d => d.severity === 1).map(d => `${d.range.start.line}:${d.range.start.character} ${d.code}`)
+  assert.ok(errors.includes("7:14 2339"), JSON.stringify(report.items, null, 1))
+  const hover = await connection.sendRequest("textDocument/hover", { textDocument: { uri }, position: { line: 6, character: 37 } })
+  assert.match(JSON.stringify(hover?.contents), /doubled: number/)
+  const list = await connection.sendRequest("textDocument/completion", { textDocument: { uri }, position: { line: 7, character: 37 } })
+  const labels = (Array.isArray(list) ? list : list.items).map(item => item.label)
+  assert.ok(labels.includes("count"), labels.slice(0, 20).join(", "))
 })

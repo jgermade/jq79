@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 
 import type * as TS from "typescript"
-import { parsePropsPattern, transformFactoryScript, transformSetupScript } from "../../../src/transform"
+import { parseFactoryProps, parsePropsPattern, transformFactoryScript, transformSetupScript, type PropDecl } from "../../../src/transform"
 import { COMPONENT_NAME_RE, INSTANCE_HELPER_NAMES, SETUP_HELPER_NAMES } from "../../../src/source"
 
 // ------------------------------------------------------------------ the split
@@ -177,7 +177,17 @@ export type Mapping = {
 }
 export const FULL = { verification: true, completion: true, semantic: true, navigation: true, structure: true, format: false }
 
-class Writer {
+// a setup script's own code. The store is returned through getters (see
+// writeBody), and a getter is a closure: TypeScript reports an unannotated
+// `let user = null` read in one as "implicitly has type 'any' in some
+// locations" (TS7034), on the declaration - a complaint about the virtual
+// code's closure, not the script
+const SCRIPT: Mapping["data"] = {
+  ...FULL,
+  verification: { shouldReport: (_source: unknown, code: unknown) => Number(code) !== 7034 } as unknown as boolean,
+}
+
+export class Writer {
   code = ""
   mappings: Mapping[] = []
   constructor(private source: string) {}
@@ -187,16 +197,16 @@ class Writer {
     this.mappings.push({ sourceOffsets: [start], generatedOffsets: [this.code.length], lengths: [end - start], data })
     this.code += this.source.slice(start, end)
   }
-  // a copy that maps `marks` (sorted, inside the range) with their own data
-  copyMarked(start: number, end: number, marks: Mark[]) {
+  // a copy mapped with `data`, except `marks` (sorted), mapped with their own
+  copyMarked(start: number, end: number, marks: Mark[], data: Mapping["data"] = FULL) {
     let at = start
     for (const mark of marks) {
       if (mark.end <= at || mark.start >= end) continue
-      this.copy(at, Math.max(at, mark.start))
+      this.copy(at, Math.max(at, mark.start), data)
       this.copy(Math.max(at, mark.start), Math.min(end, mark.end), mark.data)
       at = Math.min(end, mark.end)
     }
-    this.copy(at, end)
+    this.copy(at, end, data)
   }
 }
 
@@ -285,13 +295,50 @@ const planScript = (ts: typeof TS, text: string, block: Block): ScriptPlan => {
   const file = ts.createSourceFile("script.ts", content, ts.ScriptTarget.Latest, true, isTypeScript(block) ? ts.ScriptKind.TS : ts.ScriptKind.JS)
   const factory = transformFactoryScript(content) !== null
   if (factory) return { block, factory, file, storeNames: [], undeclared: [] }
+  // a TypeScript script reaches the runtime with its types stripped (the
+  // Vite plugin), and transformSetupScript reads that: `let count: number`
+  // is not a declaration to it. Its top-level let/const/var are read here
   const storeNames = [...transformSetupScript(content).vars]
+  if (isTypeScript(block)) storeNames.push(...topLevelVariables(ts, file), ...reactiveTargets(ts, file))
   const props = parsePropsPattern(attr(block, ":setup")?.value) ?? []
   props.forEach(({ name, as }) => storeNames.push(as ?? name))
   const declared = declaredAnywhere(ts, file)
   const undeclared = [...assignedNames(ts, file)].filter(name => !declared.has(name))
   return { block, factory, file, storeNames, undeclared }
 }
+
+// an import the virtual code moves to the top of the module: any in a factory
+// script, and in a setup script one that only imports types - `import type`,
+// or named imports that are all `type` - which stripping the types erases
+const hoisted = (ts: typeof TS, statement: TS.Statement, factory: boolean): statement is TS.ImportDeclaration => {
+  if (!ts.isImportDeclaration(statement)) return false
+  if (factory) return true
+  const clause = statement.importClause
+  if (!clause) return false
+  if (clause.isTypeOnly) return true
+  const named = clause.namedBindings
+  return !clause.name && !!named && ts.isNamedImports(named) && named.elements.length > 0 && named.elements.every(e => e.isTypeOnly)
+}
+
+// the names a script's top-level let/const/var declare - what goes on the
+// store. A top-level `function` doesn't: transformSetupScript leaves it a
+// lexical binding, which the template can't see (MISSING_NAME_RE, jq79.ts)
+const topLevelVariables = (ts: typeof TS, file: TS.SourceFile): string[] => {
+  const names = new Set<string>()
+  for (const statement of file.statements) {
+    if (ts.isVariableStatement(statement)) statement.declarationList.declarations.forEach(d => bindingNames(ts, d.name, names))
+  }
+  return [...names]
+}
+
+// `$: x = …` targets (REACTIVE_ASSIGN_RE, src/transform.ts)
+const reactiveTargets = (ts: typeof TS, file: TS.SourceFile): string[] =>
+  file.statements.flatMap(statement =>
+    ts.isLabeledStatement(statement) && statement.label.text === "$" && ts.isExpressionStatement(statement.statement) &&
+    ts.isBinaryExpression(statement.statement.expression) && statement.statement.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isIdentifier(statement.statement.expression.left)
+      ? [statement.statement.expression.left.text]
+      : [])
 
 // index of the bracket closing the one that opens `src` (at its first
 // non-space), or -1 - enough to cut a JS pattern's `: Type` off
@@ -339,10 +386,12 @@ const preamble = (typescript: boolean): string => {
     lines.push(typescript ? `declare const ${name}: ${types[name]};` : `/** @type {${types[name]}} */ const ${name} = /** @type {any} */ (null);`)
   }
   if (typescript) {
+    lines.push(`declare function __jq79Bindings<T>(returned: T): T extends object ? T : {};`)
     lines.push(`declare function $__import(url: string): Promise<any>;`)
     lines.push(`type __Jq79Factory = (props: any, ctx: ${ctx}) => any;`)
     lines.push(`declare const __jq79Component: import("jq79").Component79;`)
   } else {
+    lines.push(`/** @type {<T>(returned: T) => T extends object ? T : {}} */ const __jq79Bindings = /** @type {any} */ (null);`)
     lines.push(`/** @type {(url: string) => Promise<any>} */ const $__import = /** @type {any} */ (null);`)
     lines.push(`/** @typedef {(props: any, ctx: ${ctx}) => any} __Jq79Factory */`)
     lines.push(`/** @type {import("jq79").Component79} */ const __jq79Component = /** @type {any} */ (null);`)
@@ -352,26 +401,83 @@ const preamble = (typescript: boolean): string => {
   return lines.join("\n")
 }
 
-export type Generated = { code: string; mappings: Mapping[]; typescript: boolean } | null
+export type Generated = { code: string; mappings: Mapping[]; typescript: boolean }
 
-// the virtual code for a whole .html file, or null when it has no scripts to
-// check (a page, or components with no <script>)
-export const generate = (ts: typeof TS, text: string): Generated => {
+// what the template of a component is checked against (template.ts): the
+// names its store is known to have, and whether a name it doesn't know is an
+// error. A component that declares no signature - `:setup="_"`, a factory's
+// `_`, a script without `:setup`, no script at all - takes whatever its parent
+// passes (components.md, "A signature is a contract both ways"), so an
+// unknown name may be a prop. One that does declares every prop it takes
+export type ComponentScope = { def: ComponentDef; names: string[]; permissive: boolean }
+
+// a factory's store names that can be read off its source: the keys of the
+// object its default export returns, and every `$data.x =` / `$props.x =`
+const factoryNames = (ts: typeof TS, file: TS.SourceFile): string[] => {
+  const names = new Set<string>()
+  const visit = (node: TS.Node) => {
+    if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
+      for (const p of node.expression.properties) if (p.name && ts.isIdentifier(p.name)) names.add(p.name.text)
+    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) && ts.isIdentifier(node.left.expression) &&
+      (node.left.expression.text === "$data" || node.left.expression.text === "$props")) {
+      names.add(node.left.name.text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  return [...names]
+}
+
+export const componentScopes = (ts: typeof TS, text: string): ComponentScope[] => {
   const components = splitComponents(text)
-  if (!components.some(c => c.scripts.length)) return null
+  const siblings = components.map(c => c.name).filter((n): n is string => !!n)
+  return components.map(def => {
+    const plans = def.scripts.map(block => planScript(ts, text, block))
+    const signatures = plans.map(p => {
+      const content = text.slice(p.block.contentStart, p.block.contentEnd)
+      return p.factory ? parseFactoryProps(content) : readSignature(p.block)
+    })
+    const declared = new Set(signatures.flatMap(sig => (sig ?? []).map(d => d.name)))
+    const names = new Set([
+      ...plans.flatMap(p => (p.factory ? factoryNames(ts, p.file) : [...p.storeNames, ...p.undeclared, ...propBindings(ts, p.block)])),
+      ...siblings.filter(name => !declared.has(name)),
+    ])
+    return { def, names: [...names], permissive: signatures.every(sig => sig === null) }
+  })
+}
+
+// readSetupSignature (src/source.ts), on this file's blocks: no :setup is no
+// signature, an empty one is a closed one, and a pattern declares its props
+const readSignature = (block: Block): PropDecl[] | null => {
+  const value = attr(block, ":setup")
+  if (!value) return null
+  if (!value.value?.trim()) return []
+  return parsePropsPattern(value.value)
+}
+
+// the virtual code for the scripts of a whole .html file: each component an
+// exported function that runs its scripts and returns its store, which is
+// what the template's code (template.ts) imports the type of. null for a page
+export const generate = (ts: typeof TS, text: string): Generated | null => {
+  const components = splitComponents(text)
+  if (!components.length) return null
   const typescript = components.some(c => c.scripts.some(isTypeScript))
   const siblings = components.map(c => c.name).filter((n): n is string => !!n)
   const plans = components.map(c => c.scripts.map(block => planScript(ts, text, block)))
+  const any = typescript ? "(null as any)" : "/** @type {any} */ (null)"
 
   const out = new Writer(text)
   out.text(preamble(typescript))
 
-  // a factory's static imports, at the top of the module where TypeScript
-  // resolves them. A setup script's are left where they are, because there
-  // they are an error - the runtime compiles it as a function body
-  plans.flat().filter(p => p.factory).forEach(plan => {
+  // a factory's static imports, and a setup script's `import type`, at the
+  // top of the module where TypeScript resolves them. A setup script's other
+  // imports are left where they are, because there they are an error: the
+  // runtime compiles it as a function body, and only the types are erased
+  // before it gets there (vite-plugin.md)
+  plans.flat().forEach(plan => {
     for (const statement of plan.file.statements) {
-      if (!ts.isImportDeclaration(statement)) continue
+      if (!hoisted(ts, statement, plan.factory)) continue
       const base = plan.block.contentStart
       out.copy(base + statement.getStart(plan.file), base + statement.end)
       out.text("\n")
@@ -381,19 +487,31 @@ export const generate = (ts: typeof TS, text: string): Generated => {
   let n = 0
   components.forEach((component, c) => {
     const scripts = plans[c]
-    if (!scripts.length) return
     const declaredProps = new Set(scripts.flatMap(p => (p.factory ? [] : (parsePropsPattern(attr(p.block, ":setup")?.value) ?? []).map(d => d.name))))
-    out.text(`\n// component ${component.name ?? "(the file's own)"}\n{\n`)
+    out.text(`\n// component ${component.name ?? "(the file's own)"}\nexport async function __jq79Component${c}() {\n`)
     const shared = new Set([...scripts.flatMap(p => [...p.storeNames, ...p.undeclared])].filter(name => !HELPERS.includes(name)))
-    siblings.filter(name => !declaredProps.has(name)).forEach(name => { shared.delete(name); out.text(`const ${name} = __jq79Component;\n`) })
+    const inScope = siblings.filter(name => !declaredProps.has(name))
+    inScope.forEach(name => { shared.delete(name); out.text(`const ${name} = __jq79Component;\n`) })
     shared.forEach(name => out.text(typescript ? `let ${name}: any;\n` : `/** @type {any} */ let ${name};\n`))
+    const stores: string[] = []
     scripts.forEach(plan => {
-      out.text(plan.factory ? `async function __jq79Factory${n++}() {\n` : `async function __jq79Setup${n++}(${typescript ? "__props: any" : "__props"}) {\n`)
+      const fn = plan.factory ? `__jq79Factory${n++}` : `__jq79Setup${n++}`
+      out.text(plan.factory ? `async function ${fn}() {\n` : `async function ${fn}(${typescript ? "__props: any" : "__props"}) {\n`)
       if (!plan.factory) writeProps(out, plan.block, typescript)
       writeBody(ts, out, text, plan, typescript)
       out.text("\n}\n")
+      stores.push(plan.factory ? `__jq79Bindings(await (await ${fn}())(${any}, ${any}))` : `await ${fn}(${any})`)
     })
-    out.text("}\n")
+    // the store: what every script returns, over the siblings in scope and
+    // the names no script returns typed (an assignment to a name declared
+    // nowhere), which are \`any\`. Not over all of them: \`any & number\` is any
+    const returned = new Set(scripts.flatMap(p => (p.factory ? [] : returnedNames(ts, p))))
+    const base = [
+      ...[...shared].filter(name => !returned.has(name)).map(name => `${name}: any`),
+      ...inScope.map(name => `${name}: typeof __jq79Component`),
+    ]
+    const seed = typescript ? `({} as { ${base.join("; ")} })` : `/** @type {{ ${base.join("; ")} }} */ ({})`
+    out.text(`return Object.assign(${seed}${stores.map(store => `, ${store}`).join("")});\n}\n`)
   })
   return { code: out.code, mappings: out.mappings, typescript }
 }
@@ -425,10 +543,18 @@ const propBindings = (ts: typeof TS, block: Block): string[] => {
   return [...names]
 }
 
-// what `export default` becomes: a declaration typed as a factory, so its
-// (props, ctx) parameters are typed without an annotation
+// what a setup script returns as its part of the store: its props, its
+// top-level let/const/var and its `$:` targets
+const returnedNames = (ts: typeof TS, plan: ScriptPlan): string[] =>
+  [...new Set([...propBindings(ts, plan.block), ...topLevelVariables(ts, plan.file), ...reactiveTargets(ts, plan.file)])]
+
+// what `export default` becomes: a declaration that satisfies the factory
+// type, so its (props, ctx) parameters are typed without an annotation and
+// what it returns keeps its own type (an annotation would make it the
+// factory type's `any`) - the template reads that
 const defaultExport = (typescript: boolean): string =>
-  typescript ? "const __jq79Default: __Jq79Factory = " : "/** @type {__Jq79Factory} */ const __jq79Default = "
+  typescript ? "const __jq79Default = (" : "/** @satisfies {__Jq79Factory} */ const __jq79Default = "
+const DEFAULT_EXPORT_END = ") satisfies __Jq79Factory"
 
 const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, typescript: boolean) => {
   const { file, block, factory } = plan
@@ -437,14 +563,16 @@ const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, t
   const topDeclared = new Set<string>()
 
   for (const statement of file.statements) {
-    if (factory && ts.isImportDeclaration(statement)) {
+    if (hoisted(ts, statement, factory)) {
       edits.push({ start: statement.getStart(file), end: statement.end, text: "" })
     } else if (factory && ts.isExportAssignment(statement) && !statement.isExportEquals) {
       edits.push({ start: statement.getStart(file), end: statement.expression.getStart(file), text: defaultExport(typescript) })
+      if (typescript) edits.push({ start: statement.expression.end, end: statement.expression.end, text: DEFAULT_EXPORT_END })
     } else if (factory && (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
       statement.modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword)) {
       const modifiers = statement.modifiers!
       edits.push({ start: modifiers[0].getStart(file), end: modifiers[modifiers.length - 1].end, text: defaultExport(typescript) })
+      if (typescript) edits.push({ start: statement.end, end: statement.end, text: DEFAULT_EXPORT_END })
     } else if (ts.isVariableStatement(statement)) {
       statement.declarationList.declarations.forEach(d => bindingNames(ts, d.name, topDeclared))
     } else if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name) {
@@ -496,20 +624,25 @@ const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, t
   }
   visit(file)
 
+  const hasDefault = edits.some(edit => edit.text === defaultExport(typescript))
+  const data = factory ? FULL : SCRIPT
   edits.sort((a, b) => a.start - b.start)
   marks.sort((a, b) => a.start - b.start)
   let at = 0
   for (const edit of edits) {
-    out.copyMarked(base + at, base + edit.start, marks)
+    out.copyMarked(base + at, base + edit.start, marks, data)
     out.text(edit.text)
     at = edit.end
   }
-  out.copyMarked(base + at, block.contentEnd, marks)
+  out.copyMarked(base + at, block.contentEnd, marks, data)
 
-  // the store's names are read by the template, which the checker doesn't
-  // see yet: returning them keeps noUnusedLocals from calling them unused
+  // what the script puts on the store, for the template to be checked
+  // against (template.ts). Getters, not values: a value returned at the end
+  // of the function has the type control flow narrowed it to there -
+  // `let user: User | null = null`, assigned in a callback, is `null` at the
+  // return - and a getter reads the variable's declared type
   if (!factory) {
-    const names = [...new Set([...propBindings(ts, block), ...topDeclared, ...reactive])]
-    if (names.length) out.text(`\n;return { ${names.join(", ")} };`)
-  }
+    const names = returnedNames(ts, plan)
+    out.text(`\n;return { ${names.map(name => `get ${name}() { return ${name} }`).join(", ")} };`)
+  } else if (hasDefault) out.text(`\n;return __jq79Default;`)
 }
