@@ -9,3 +9,4 @@ package-lock.json
 *.vsix
 dist/template.js
 dist/literal.js
+dist/entities.js

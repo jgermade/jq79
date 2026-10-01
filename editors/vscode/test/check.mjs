@@ -705,3 +705,44 @@ test("a factory with the pre-0.4 signature doesn't stop the checker", async () =
   const errors = await one([`<script>export default ({ $data }) => { $data.count = 0 }</script>`, `<p>{{ count }}</p>`, other].join("\n"), TYPED)
   assert.deepEqual(errors, [`3:${other.indexOf("y }}") + 1} TS2304 Cannot find name 'y'.`])
 })
+
+// ------------------------------------------------------------------ character references
+
+// the runtime reads a value or a text after the HTML parser decoded it, so
+// the checker does too - with src/html.ts's decoder, precompile's own
+test("&amp; and friends in an attribute or a text are the characters they write", async () => {
+  const errors = await one([
+    `<script :setup>let count = 1; let ready = true</script>`,
+    `<p :if="ready &amp;&amp; count &gt; 0">{{ count &lt; 10 ? &quot;few&quot; : "many" }}</p>`,
+    `<p :title="ready &amp;&amp; cuont">x</p>`,
+  ].join("\n"), TYPED)
+  const line = `<p :title="ready &amp;&amp; cuont">x</p>`
+  assert.deepEqual(errors, [`3:${line.indexOf("cuont") + 1} TS2552 Cannot find name 'cuont'. Did you mean 'count'?`])
+})
+
+test("the :setup pattern as the Vite plugin writes it: &quot; is a quote", async () => {
+  const line = `<p>{{ label.toFixed() }}</p>`
+  const errors = await one([`<script :setup="{ label = &quot;Total&quot; }: { label?: string }" lang="ts"></script>`, line].join("\n"))
+  assert.deepEqual(errors, [`2:${line.indexOf("toFixed") + 1} TS2551 Property 'toFixed' does not exist on type 'string'. Did you mean 'fixed'?`])
+})
+
+test("a reference that writes {{ makes an interpolation, as it does at runtime", async () => {
+  const errors = await one(`<script :setup></script>\n<p>&#123;&#123; nope }}</p>`, TYPED)
+  assert.deepEqual(errors, ["2:17 TS2304 Cannot find name 'nope'."])
+})
+
+test("decodeAt: html.ts's decoding, attribute rule included, with where each part is", () => {
+  const { decodeAt } = require("../dist/entities.js")
+  assert.equal(decodeAt("x &amp; y ?a=1&copy=2", 0, true).text, "x & y ?a=1&copy=2")
+  assert.equal(decodeAt("x &amp; y ?a=1&copy=2", 0, false).text, "x & y ?a=1©=2")
+  const { segments } = decodeAt("a&lt;b", 10, true)
+  assert.deepEqual(segments.map(s => [s.start, s.end, s.text, s.plain]), [[10, 11, "a", true], [11, 15, "<", false], [15, 16, "b", true]])
+})
+
+// `&#110;ope` is `nope`: the name starts on the character the reference wrote,
+// and the error starts on the reference
+test("an error on a character a reference wrote lands on the reference", async () => {
+  const line = `<p>{{ &#110;ope }}</p>`
+  const errors = await one(`<script :setup></script>\n${line}`, TYPED)
+  assert.deepEqual(errors, [`2:${line.indexOf("&#110;") + 1} TS2304 Cannot find name 'nope'.`])
+})

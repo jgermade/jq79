@@ -27,12 +27,15 @@
 import type * as TS from "typescript"
 import { CONTROL_ATTRS, EACH_PATTERN, INTERPOLATION_RE, VOID_ELEMENTS, kebabToCamel } from "../../../src/source"
 import { FULL, Writer, componentScopes, type Mapping } from "./component"
+import { copyDecoded, decodeAt, type Decoded } from "./entities"
 
 // ------------------------------------------------------------------ the tree
 
-export type TAttr = { name: string; nameStart: number; value?: string; valueStart?: number }
+// \`value\` and \`text\` are decoded, as the runtime reads them (\`&amp;\` is \`&\`);
+// \`decoded\` says where each part of them is in the file (entities.ts)
+export type TAttr = { name: string; nameStart: number; value?: string; valueStart?: number; decoded?: Decoded }
 export type TElement = { tag: string; start: number; attrs: TAttr[]; children: TNode[] }
-export type TText = { text: string; start: number }
+export type TText = { text: string; start: number; decoded: Decoded }
 export type TNode = TElement | TText
 
 const isElement = (node: TNode): node is TElement => "tag" in node
@@ -45,8 +48,10 @@ const readAttrs = (text: string, offset: number): TAttr[] => {
     const nameStart = offset + match.index!
     const at = match[2] !== undefined ? 2 : match[3] !== undefined ? 3 : match[4] !== undefined ? 4 : 0
     if (!at) { attrs.push({ name: match[1], nameStart }); continue }
-    const value = match[at]
-    attrs.push({ name: match[1], nameStart, value, valueStart: nameStart + match[0].length - value.length - (at === 4 ? 0 : 1) })
+    const raw = match[at]
+    const valueStart = nameStart + match[0].length - raw.length - (at === 4 ? 0 : 1)
+    const decoded = decodeAt(raw, valueStart, true)
+    attrs.push({ name: match[1], nameStart, value: decoded.text, valueStart, decoded })
   }
   return attrs
 }
@@ -79,7 +84,10 @@ export const parseTree = (text: string): TNode[] => {
   const top = () => stack[stack.length - 1]
   let at = 0
   const flushText = (end: number) => {
-    if (end > at) top().children.push({ text: text.slice(at, end), start: at })
+    if (end > at) {
+      const decoded = decodeAt(text.slice(at, end), at, false)
+      top().children.push({ text: decoded.text, start: at, decoded })
+    }
   }
   TAG_RE.lastIndex = 0
   for (let match = TAG_RE.exec(text); match; match = TAG_RE.exec(text)) {
@@ -307,11 +315,20 @@ class TemplateWriter {
   private get data() { return this.permissive || this.withDepth > 0 ? PERMISSIVE : FULL }
 
   // one expression, as the runtime compiles it: parenthesized, with a newline
-  // before the `)` so a trailing `//` comment can't swallow it
+  // before the `)` so a trailing `//` comment can't swallow it. From the file
+  // as is ([start, end), a name), or from a decoded value or text
   private expression(start: number, end: number) {
     this.out.text("(")
     this.out.copy(start, end, this.data)
     this.out.text("\n);\n")
+  }
+  private decodedExpression(decoded: Decoded, from = 0, to = decoded.text.length) {
+    this.out.text("(")
+    this.copy(decoded, from, to)
+    this.out.text("\n);\n")
+  }
+  private copy(decoded: Decoded, from = 0, to = decoded.text.length) {
+    copyDecoded(this.out, decoded, this.data, from, to)
   }
 
   node(node: TNode) {
@@ -323,9 +340,8 @@ class TemplateWriter {
 
   private text(node: TText) {
     for (const match of node.text.matchAll(INTERPOLATION_RE)) {
-      const inner = match[0].indexOf(match[1], 2)
-      const start = node.start + match.index! + inner
-      this.expression(start, start + match[1].length)
+      const start = match.index! + match[0].indexOf(match[1], 2)
+      this.decodedExpression(node.decoded, start, start + match[1].length)
     }
   }
 
@@ -339,13 +355,12 @@ class TemplateWriter {
     if (each?.value !== undefined && each.valueStart !== undefined) {
       const match = EACH_RE.exec(each.value)
       if (match?.indices) {
-        const at = (group: number) => each.valueStart! + match.indices![group][0]
-        const end = (group: number) => each.valueStart! + match.indices![group][1]
+        const group = (n: number) => this.copy(each.decoded!, match.indices![n][0], match.indices![n][1])
         this.out.text("for (const [")
-        this.out.copy(at(1), end(1), this.data)
-        if (match[2] !== undefined) { this.out.text(", "); this.out.copy(at(2), end(2), this.data) }
+        group(1)
+        if (match[2] !== undefined) { this.out.text(", "); group(2) }
         this.out.text("] of __jq79Each(")
-        this.out.copy(at(3), end(3), this.data)
+        group(3)
         this.out.text("\n)) {\nconst $index = 0 as number; $index;\n")
         blocks++
       }
@@ -361,7 +376,7 @@ class TemplateWriter {
     if (withAttr?.value !== undefined && withAttr.valueStart !== undefined) {
       const w = `__w${this.withCount++}`
       this.out.text(`{\nconst ${w} = (`)
-      this.out.copy(withAttr.valueStart, withAttr.valueStart + withAttr.value.length, this.data)
+      this.copy(withAttr.decoded!)
       this.out.text("\n);\n")
       const names = [...this.readNames(el)].filter(name => !name.startsWith("$") && !this.names.has(name))
       if (names.length) {
@@ -383,7 +398,7 @@ class TemplateWriter {
     let bound = false
     if (binder?.value?.trim() && binder.valueStart !== undefined) {
       this.out.text("{\nconst ")
-      this.out.copy(binder.valueStart, binder.valueStart + binder.value.length, this.data)
+      this.copy(binder.decoded!)
       this.out.text(" = null as any;\n")
       bound = true
     }
@@ -432,7 +447,7 @@ class TemplateWriter {
       this.out.text(": ")
       const hasValue = a.value !== undefined && a.valueStart !== undefined && a.value.trim() !== ""
       if (!name.startsWith(":")) this.out.text(JSON.stringify(a.value ?? ""))
-      else if (hasValue) { this.out.text("("); this.out.copy(a.valueStart!, a.valueStart! + a.value!.length, this.data); this.out.text("\n)") }
+      else if (hasValue) { this.out.text("("); this.copy(a.decoded!); this.out.text("\n)") }
       else if (key === written) { this.out.text("("); this.out.copy(keyStart, keyStart + written.length, this.data); this.out.text(")") }
       else this.out.text(`(${key})`)
       this.out.text(" });\n")
@@ -449,7 +464,7 @@ class TemplateWriter {
       const event = name.slice(1).split(".")[0]
       const type = component ? "__Jq79Emitted" : `__Jq79Event<${JSON.stringify(event)}>`
       this.out.text(`{\nconst $event = null as any as ${type};\n__jq79On($event, (`)
-      this.out.copy(a.valueStart!, a.valueStart! + a.value!.length, this.data)
+      this.copy(a.decoded!)
       this.out.text("\n));\n}\n")
       return
     }
@@ -458,7 +473,7 @@ class TemplateWriter {
       return
     }
     if (!name.startsWith(":")) return
-    if (hasValue) return this.expression(a.valueStart!, a.valueStart! + a.value!.length)
+    if (hasValue) return this.decodedExpression(a.decoded!)
 
     // `:user` alone reads `user`; `:model.first-name` alone reads `firstName`.
     // Mapped only where the name is written as the identifier it reads

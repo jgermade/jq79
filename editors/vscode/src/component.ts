@@ -32,6 +32,7 @@
 import type * as TS from "typescript"
 import { parseFactoryProps as runtimeFactoryProps, parsePropsPattern, transformFactoryScript, transformSetupScript, type PropDecl } from "../../../src/transform"
 import { COMPONENT_NAME_RE, INSTANCE_HELPER_NAMES, SETUP_HELPER_NAMES } from "../../../src/source"
+import { copyDecoded, decodeAt, type Decoded } from "./entities"
 
 // the runtime's parseFactoryProps, which throws the migration error for the
 // pre-0.4 signature (a ctx name destructured from the first parameter) - the
@@ -47,7 +48,9 @@ const parseFactoryProps = (src: string): PropDecl[] | null => {
 
 // ------------------------------------------------------------------ the split
 
-export type Attr = { name: string; value?: string; valueStart?: number }
+// \`value\` decoded, as the runtime reads it (\`&quot;\` is \`"\`), and \`decoded\`
+// saying where each part of it is in the file (entities.ts)
+export type Attr = { name: string; value?: string; valueStart?: number; decoded?: Decoded }
 
 export type Block = {
   tag: "script" | "style"
@@ -69,10 +72,11 @@ const readAttrs = (text: string, offset: number): Attr[] => {
     const index = match.index!
     const valueIndex = match[2] !== undefined ? 2 : match[3] !== undefined ? 3 : match[4] !== undefined ? 4 : 0
     if (!valueIndex) { attrs.push({ name }); continue }
-    const value = match[valueIndex]
+    const raw = match[valueIndex]
     // the value's own offset: after the `=`, past a quote when there is one
-    const valueStart = offset + index + match[0].length - value.length - (valueIndex === 4 ? 0 : 1)
-    attrs.push({ name, value, valueStart })
+    const valueStart = offset + index + match[0].length - raw.length - (valueIndex === 4 ? 0 : 1)
+    const decoded = decodeAt(raw, valueStart, true)
+    attrs.push({ name, value: decoded.text, valueStart, decoded })
   }
   return attrs
 }
@@ -585,7 +589,7 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
       const i = n++
       const fn = plan.factory ? `__jq79Factory${i}` : `__jq79Setup${i}`
       out.text(plan.factory ? `async function ${fn}() {\n` : `async function ${fn}(${typescript ? "__props: any" : "__props"}) {\n`)
-      if (!plan.factory) writeProps(out, text, plan.block, typescript)
+      if (!plan.factory) writeProps(out, plan.block, typescript)
       const values = writeBody(ts, out, text, plan, typescript)
       values.forEach((value, name) => { const at = sharedAt.get(name); if (at !== undefined) out.link(at, value, name.length) })
       out.text("\n}\n")
@@ -627,7 +631,7 @@ export const generate = (ts: typeof TS, text: string): Generated | null => {
 // (\`{ step = 1, label }\` is \`{ step?: number; label: any }\`, an annotation is
 // itself). It sits in the body, not on the setup function, because an
 // \`interface Props\` the script declares is only visible inside it
-const writeProps = (out: Writer, text: string, block: Block, typescript: boolean) => {
+const writeProps = (out: Writer, block: Block, typescript: boolean) => {
   const setup = attr(block, ":setup")
   if (!setup?.value?.trim() || setup.valueStart === undefined) {
     out.text("const __jq79Signature = undefined;\n")
@@ -639,9 +643,9 @@ const writeProps = (out: Writer, text: string, block: Block, typescript: boolean
     if (end !== -1) length = end
   }
   out.text("let ")
-  out.copy(setup.valueStart, setup.valueStart + length)
+  copyDecoded(out, setup.decoded!, FULL, 0, length)
   out.text(" = __props;\n")
-  out.text(`const __jq79Signature = (${text.slice(setup.valueStart, setup.valueStart + length)}) => {};\n`)
+  out.text(`const __jq79Signature = (${setup.value.slice(0, length)}) => {};\n`)
 }
 
 // the names a :setup pattern binds, read the way the checker reads it

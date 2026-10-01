@@ -3,7 +3,8 @@
 # Its grammars are written against VS Code's own HTML, JS, TS and CSS grammars,
 # so their tests tokenize with those, pinned to one VS Code release
 # (editors/vscode/test/fetch-grammars.mjs). Its language server reads a
-# component with the runtime's own src/transform.ts and src/source.ts, and is
+# component with the runtime's own src/transform.ts, src/source.ts and
+# src/html.ts (its character references), and is
 # held to every component in tutorial/ checking clean - so a change to any of
 # those runs it too, and nothing else in the repo reaches it. editors/check/
 # is that checker as the jq79-check package, built from here.
@@ -18,6 +19,7 @@ on:
       - 'editors/check/**'
       - 'src/transform.ts'
       - 'src/source.ts'
+      - 'src/html.ts'
       - 'tutorial/**'
       - '.github/workflows/vscode-extension.yml'
   pull_request:
@@ -27,6 +29,7 @@ on:
       - 'editors/check/**'
       - 'src/transform.ts'
       - 'src/source.ts'
+      - 'src/html.ts'
       - 'tutorial/**'
       - '.github/workflows/vscode-extension.yml'
 

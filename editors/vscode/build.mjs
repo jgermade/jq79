@@ -35,4 +35,5 @@ await Promise.all([
   build({ ...common, entryPoints: ["src/component.ts"], outfile: "dist/component.js" }),
   build({ ...common, entryPoints: ["src/template.ts"], outfile: "dist/template.js" }),
   build({ ...common, entryPoints: ["src/literal.ts"], outfile: "dist/literal.js" }),
+  build({ ...common, entryPoints: ["src/entities.ts"], outfile: "dist/entities.js" }),
 ])

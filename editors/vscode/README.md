@@ -134,6 +134,13 @@ script without `:setup`, no script at all) takes whatever its parent passes, so
 a name its template reads and nobody declares may be a prop: it isn't reported.
 One that declares a signature takes only those props, so it is.
 
+A value or a text is checked as the runtime reads it, after the HTML parser
+has decoded its character references: `:if="ready &amp;&amp; count &gt; 0"`
+is `ready && count > 0`, and an error still lands where it is written. The
+decoder is the one `jq79/precompile` uses (`src/html.ts`), which knows the
+references a component plausibly writes; one it doesn't know is read as
+written.
+
 ### Props, against the child's signature
 
 A component tag's props are checked against the props that component declares,
@@ -181,8 +188,6 @@ first parameter gives the names and no types, since that is all it says.
 - **A component string built at runtime**: one with `${…}` in it, or one that
   isn't a literal at all (`new Component79(source)`).
 - **Plain `<style>`**, which VS Code already checks as CSS.
-- **HTML entities in an attribute value** (`:if="a &amp;&amp; b"`) are read as
-  written, not decoded as the browser does.
 
 ### Components written as literals
 
@@ -282,7 +287,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.5.0.vsix
+code --install-extension jq79-vscode-0.6.0.vsix
 ```
 
 ## Working on it
