@@ -52,7 +52,7 @@ const one = async (text, options) => (await check({ "c.html": text }, options))[
 // with any JS file; their templates always are (template.ts). What is left is
 // the exercises themselves: a starting file whose template reads a name the
 // exercise is to add. With checkJs, DOM typing that is TypeScript's own joins
-// it - $self and $ return Element, as querySelector does
+// it (DOM_TYPING, below)
 const EXERCISES = [
   "tutorial/01-basics/02-reactive-state/app.html:6 TS2304 Cannot find name 'doubled'.",
   "tutorial/01-basics/03-lists-and-conditions/app.html:12 TS2552 Cannot find name 'todo'. Did you mean 'todos'?",
@@ -91,12 +91,22 @@ const exerciseFile = ({ d, file }) => {
     (existsSync(join(dirname(file), "..", missing)) || existsSync(join(repo, "tutorial/_app", missing)))
 }
 
+// what checkJs adds beyond those is DOM typing that is plain TypeScript's: a
+// textarea found by its class is an HTMLElement until it is said to be more
+// (RECORD/2026-10-01.typed-queries.md), and a ChildNode has no outerHTML.
+// Before $self was typed like querySelector's tag-name overloads, with an
+// HTMLElement default, two more were here: `.focus()` and `.blur()` on Element
+const DOM_TYPING = [
+  "tutorial/_app/components/Editor.html:24 TS2339 Property 'value' does not exist on type 'HTMLElement'.",
+  "tutorial/_app/components/Editor.html:24 TS2339 Property 'value' does not exist on type 'HTMLElement'.",
+  "tutorial/_app/components/Output.html:63 TS2339 Property 'outerHTML' does not exist on type 'ChildNode'.",
+]
+
 test("…and with checkJs, only DOM typing is added", async () => {
   const found = (await corpus({ ...TYPED, checkJs: true }))
-    .filter(({ d }) => !(d.code === 2339 && /on type '(Element|ChildNode)'/.test(d.message)))
     .filter(f => !exerciseFile(f))
     .map(f => f.line)
-  assert.deepEqual(found.sort(), [...EXERCISES].sort())
+  assert.deepEqual(found.sort(), [...EXERCISES, ...DOM_TYPING].sort())
 })
 
 // ------------------------------------------------------------------ setup scripts
@@ -745,4 +755,43 @@ test("an error on a character a reference wrote lands on the reference", async (
   const line = `<p>{{ &#110;ope }}</p>`
   const errors = await one(`<script :setup></script>\n${line}`, TYPED)
   assert.deepEqual(errors, [`2:${line.indexOf("&#110;") + 1} TS2304 Cannot find name 'nope'.`])
+})
+
+// ------------------------------------------------------------------ $ and $self
+
+// typed as querySelector's overloads are, with an HTMLElement default
+// (RECORD/2026-10-01.typed-queries.md): $ from the library's own source, $self
+// from the checker's copy of it - and the two must agree
+test("$ and $self: a tag name gives its element, anything else an HTMLElement unless told", async () => {
+  const lines = [
+    `<script :setup lang="ts">`,
+    `  await $mounted()`,
+    `  $self(".search")?.focus()`,
+    `  const q: string | undefined = $self("input")?.value`,
+    `  const r = $self("circle")?.r`,
+    `  const v: string | undefined = $self<HTMLInputElement>(".q")?.value`,
+    `  const items: HTMLLIElement[] = $$self("li")`,
+    `  const doc: HTMLSelectElement | null = $("select")`,
+    `  const all: HTMLElement[] = $$(".row")`,
+    `  $self(".search")?.value`,
+    `  $(".search")?.value`,
+    `</script>`,
+  ]
+  const errors = await one(lines.join("\n"))
+  assert.deepEqual(errors, [
+    `10:${lines[9].indexOf("value") + 1} TS2339 Property 'value' does not exist on type 'HTMLElement'.`,
+    `11:${lines[10].indexOf("value") + 1} TS2339 Property 'value' does not exist on type 'HTMLElement'.`,
+  ])
+})
+
+test("…and a factory's ctx.$self the same", async () => {
+  const errors = await one([
+    `<script lang="ts">`,
+    `  export default (_, { $self, $$self }) => {`,
+    `    $self(".x")?.focus()`,
+    `    const inputs: HTMLInputElement[] = $$self("input")`,
+    `  }`,
+    `</script>`,
+  ].join("\n"))
+  assert.deepEqual(errors, [])
 })

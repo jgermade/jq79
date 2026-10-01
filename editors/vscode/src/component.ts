@@ -414,9 +414,19 @@ const HELPERS = [...SETUP_HELPER_NAMES, ...INSTANCE_HELPER_NAMES]
 // the declarations every virtual file starts with. Types come from the jq79
 // package when the project resolves it; when it doesn't, the import fails in
 // unmapped code (nothing is reported) and every helper is `any`
+// $self / $$self: QueryOne / QueryAll in src/dom.ts, copied - they are no
+// exported value to take the type of, and a copy works with any jq79 version
+// installed, or none (test/check.mjs holds it to the library's)
+const QUERY_ONE = "{ <K extends keyof HTMLElementTagNameMap>(selector: K): HTMLElementTagNameMap[K] | null; " +
+  "<K extends keyof SVGElementTagNameMap>(selector: K): SVGElementTagNameMap[K] | null; " +
+  "<E extends Element = HTMLElement>(selector: string): E | null }"
+const QUERY_ALL = "{ <K extends keyof HTMLElementTagNameMap>(selector: K): HTMLElementTagNameMap[K][]; " +
+  "<K extends keyof SVGElementTagNameMap>(selector: K): SVGElementTagNameMap[K][]; " +
+  "<E extends Element = HTMLElement>(selector: string): E[] }"
+
 const preamble = (typescript: boolean): string => {
   const ctx = "{ $data: any; $props: any; $effect: (run: () => void) => void; $mounted: () => Promise<void>; " +
-    "$self: (selector: string) => Element | null; $$self: (selector: string) => Element[]; " +
+    `$self: ${QUERY_ONE}; $$self: ${QUERY_ALL}; ` +
     "$emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; " +
     "$slots: Record<string, true>; [sibling: string]: any }"
   const types: Record<string, string> = {
@@ -427,8 +437,8 @@ const preamble = (typescript: boolean): string => {
     $toRaw: `typeof import("jq79").$toRaw`,
     Component79: `typeof import("jq79").Component79`,
     $mounted: "() => Promise<void>",
-    $self: "(selector: string) => Element | null",
-    $$self: "(selector: string) => Element[]",
+    $self: QUERY_ONE,
+    $$self: QUERY_ALL,
     $emit: "(name: string, payload?: any) => boolean",
     $updateModel: "(...args: [value?: any] | [name: string, value: any]) => boolean",
     $slots: "Record<string, true>",

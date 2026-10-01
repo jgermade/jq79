@@ -1,6 +1,6 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
-import type { AllowUrl } from "./dom"
+import type { AllowUrl, QueryAll, QueryOne } from "./dom"
 import { $reactive, $toRaw, untracked, createEffectScope, ALSO_WAKEN_BY } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
@@ -13,6 +13,7 @@ import {
 } from "./source"
 
 export { $, $$, $create } from "./dom"
+export type { QueryOne, QueryAll } from "./dom"
 export { $reactive, $toRaw } from "./reactive"
 
 // the package version, substituted at build time (tsup/vitest `define`, read
@@ -4303,7 +4304,9 @@ export class Component79 {
     // though the template renders after the scripts run, so they only find
     // something from post-await code or callbacks
     const endMarker = this.endMarker
-    const $$self = (selector: string): Element[] => {
+    // typed as $ / $$ are (QueryOne / QueryAll in dom.ts): a tag name gives
+    // its element, anything else an HTMLElement unless told
+    const $$self = ((selector: string): Element[] => {
       const found: Element[] = []
       for (let node: Node | null = marker.nextSibling; node && node !== endMarker; node = node.nextSibling) {
         if (node instanceof Element) {
@@ -4312,8 +4315,8 @@ export class Component79 {
         }
       }
       return found
-    }
-    const $self = (selector: string): Element | null => $$self(selector)[0] ?? null
+    }) as QueryAll
+    const $self = ((selector: string): Element | null => $$self(selector)[0] ?? null) as QueryOne
 
     // import() calls whose specifier was pre-resolved by a bundler (the
     // modules map) get the bundled module; everything else falls back to the

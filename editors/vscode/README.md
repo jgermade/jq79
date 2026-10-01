@@ -74,7 +74,8 @@ its own terms:
 | a name another `<script>` of the component declares | in scope (`any`): they share one store |
 | an assignment to a name declared nowhere | in scope: it goes to the store |
 | a *read* of a name declared nowhere | an error: `Cannot find name` |
-| `$`, `$$`, `$create`, `$reactive`, `$toRaw`, `Component79`, `$mounted`, `$self`, `$$self`, `$emit`, `$updateModel`, `$slots` | in scope, typed from the `jq79` package when the project has it |
+| `$`, `$$`, `$create`, `$reactive`, `$toRaw`, `Component79` | in scope, typed from the `jq79` package when the project has it (`any` when it doesn't) |
+| `$mounted`, `$self`, `$$self`, `$emit`, `$updateModel`, `$slots` | in scope, typed as the library types them, whatever version is installed: `$self("input")` is an `HTMLInputElement`, `$self(".x")` an `HTMLElement` ([why](../../docs/dom-helpers.md#what-they-return-typed)) |
 | a `<template name="Row">` of the same file | in scope as a component, unless a prop takes the name |
 | `await import("./Card.html")` | that file's component, with the props it takes (a missing file is an error); `import("./util")` resolves as in any module |
 | a static `import` in a setup script | an error, as it is at runtime; in a factory script, a module import |
@@ -287,7 +288,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.6.0.vsix
+code --install-extension jq79-vscode-0.7.0.vsix
 ```
 
 ## Working on it
