@@ -173,6 +173,12 @@ const STORE = Symbol("jq79.store")
 const isStore = (value: any): boolean =>
   value !== null && typeof value === "object" && value[STORE] === true
 
+// the effect the last $effect call made, set as that call returns - after its
+// first run, so the effects that run created don't leave theirs here instead.
+// How a Scope gets hold of the record behind the disposer $effect hands back,
+// without $effect returning anything more than it always has (see Scope.effect)
+let created: Effect | null = null
+
 // active $effect() runs, innermost last - a module-level stack (rather than
 // one per store) so nested effects across stores still nest correctly; reads
 // during a proxy's `get` trap are attributed to whichever run is on top
@@ -275,6 +281,15 @@ const HOLDS = "$__holds"
 // arrangement down to whatever renders inside it (nested :each item scopes,
 // a nested component's prop-sync effects) without every call site knowing
 export const ALSO_WAKEN_BY = Symbol("jq79.alsoWakenBy")
+
+// the effect scope that owns everything rendered under a data scope - set on a
+// keyed :each row's item scope, pointing at that row's scope. Read the same
+// way ALSO_WAKEN_BY is, off the data scope a new effect scope is created over,
+// so every scope made anywhere inside the row registers with it: an :if branch,
+// a nested :each and its rows, a component's prop sync, and slot content the
+// row hands a child component, which is created by the child but closes over
+// the row's names. That registry is what EffectScope.rerun walks
+export const OWNER = Symbol("jq79.owner")
 
 export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepData<T> => {
   const exactListeners = new Map<string, Set<ChangeListener>>()
@@ -1008,6 +1023,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // shape it had, and the extra bookkeeping lives in its own frame
     if (alsoWakenBy?.length) return attachAndRun(effect, alsoWakenBy, forget)
     effect.run()
+    created = effect
     return forget
   }
 
@@ -1016,6 +1032,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   const attachAndRun = (effect: Effect, alsoWakenBy: Record<string, any>[], forget: Unsubscribe): Unsubscribe => {
     const detach = alsoWakenBy.map(store => store?.[ATTACH]?.(effect)).filter(Boolean) as Unsubscribe[]
     effect.run()
+    created = effect
     return () => {
       forget()
       detach.forEach(drop => drop())
@@ -1077,9 +1094,20 @@ export type EffectScope = {
   onDispose: (fn: Unsubscribe) => void
   // re-runs every effect registered on this scope, nested scopes excluded:
   // how :each tells a reused, repositioned entry's dep-less bindings (the
-  // `{{ $index }}`-only case) about their move. Deps stay as they were -
-  // callers run it untracked
+  // `{{ $index }}`-only case) about their move. Each run tracks its own deps,
+  // as a woken one does; callers run it untracked, so none of them land on
+  // the list effect that asked
   refresh: () => void
+  // re-runs every effect on this scope and on every scope registered with it
+  // (see OWNER), tracking each run as if a write had woken it. How a keyed
+  // :each row that was handed a new item for the same key updates in place:
+  // the loop name is a plain scope var, so nothing it read can wake the
+  // bindings, and the deps they hold are the old item's
+  rerun: () => void
+  // registers this scope with the row owning `scope` as well (see OWNER):
+  // slot content's own chain is the parent's, but the slot props it reads
+  // come from wherever the child put the <slot>, which can be a keyed row
+  ownedBy: (scope: Record<string, any>) => void
   dispose: () => void
 }
 
@@ -1099,10 +1127,17 @@ export type EffectScope = {
 // function (`runSetupScript(..., fx.effect, ...)` did) must wrap it instead
 // (`run => fx.effect(run)`). Both such call sites are in renderComponent
 class Scope implements EffectScope {
-  // built on first use: `runs` in particular is only ever read by refresh(),
-  // which only a :each whose template names a position ever calls
+  // built on first use: `runs` in particular is only ever read by refresh()
+  // and rerun(), which only a :each calls - for a row that moved and names a
+  // position, or a keyed row handed a new item
   private disposers: Unsubscribe[] | null = null
-  private runs: (() => void)[] | null = null
+  private runs: Effect[] | null = null
+  // the scopes created under this one's data scope, when this one owns it
+  // (see OWNER), and the owners this one registered with - two for slot
+  // content written in one keyed row and placed in another (see ownedBy).
+  // Neither exists outside a keyed :each row
+  private children: Set<Scope> | null = null
+  private owners: Scope[] | null = null
   // one options object for the whole scope instead of one per effect - $effect
   // destructures it on entry and keeps nothing. Left undefined on the common
   // path, which is $effect's own fast path
@@ -1113,11 +1148,21 @@ class Scope implements EffectScope {
     // it today): the stores this scope's effects belong to besides their own
     const alsoWakenBy: Record<string, any>[] | undefined = (scope as any)[ALSO_WAKEN_BY]
     this.options = deep || alsoWakenBy ? { deep, alsoWakenBy } : undefined
+    this.ownedBy(scope)
   }
 
+  ownedBy(scope: Record<string, any>) {
+    const owner: Scope | undefined = (scope as any)[OWNER]
+    if (!owner || this.owners?.includes(owner)) return
+    ;(this.owners ??= []).push(owner)
+    ;(owner.children ??= new Set()).add(this)
+  }
+
+  // the effect record rather than `run`: a re-run through it tracks, so the
+  // deps it settles on are the ones the run actually read
   effect(run: () => void) {
     ;(this.disposers ??= []).push(this.scope.$effect(run, this.options))
-    ;(this.runs ??= []).push(run)
+    ;(this.runs ??= []).push(created!)
   }
 
   onDispose(fn: Unsubscribe) {
@@ -1125,7 +1170,19 @@ class Scope implements EffectScope {
   }
 
   refresh() {
-    this.runs?.forEach(run => run())
+    this.runs?.forEach(effect => effect.run())
+  }
+
+  // this scope's own effects first, then the scopes under it, in the order
+  // they were created - parents before what they rendered, as a write would
+  // wake them. Both lists are copied before anything runs: an :if that switches
+  // branch disposes one child scope and renders another, already up to date,
+  // and a disposed scope has nothing left to run
+  rerun() {
+    const runs = this.runs ? [...this.runs] : null
+    const children = this.children ? [...this.children] : null
+    runs?.forEach(effect => { if (this.runs) effect.run() })
+    children?.forEach(child => child.rerun())
   }
 
   dispose() {
@@ -1135,6 +1192,9 @@ class Scope implements EffectScope {
     const disposers = this.disposers
     this.disposers = null
     this.runs = null
+    this.children = null
+    this.owners?.forEach(owner => owner.children?.delete(this))
+    this.owners = null
     if (disposers) for (let i = 0; i < disposers.length; i++) disposers[i]()
   }
 }
