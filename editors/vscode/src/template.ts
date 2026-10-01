@@ -148,7 +148,9 @@ const templates = (tree: TNode[], names: (string | undefined)[]): TNode[][] => {
 // a component that declares no signature
 const PERMISSIVE: Mapping["data"] = {
   ...FULL,
-  verification: { shouldReport: (_source: unknown, code: unknown) => ![2304, 2552].includes(Number(code)) } as unknown as boolean,
+  // "Cannot find name", "…Did you mean", and its shorthand form: `{ active }`
+  // with no `active` in scope
+  verification: { shouldReport: (_source: unknown, code: unknown) => ![2304, 2552, 18004].includes(Number(code)) } as unknown as boolean,
 }
 
 const preamble = (module: string): string => [
@@ -185,9 +187,15 @@ export type GeneratedTemplate = { code: string; mappings: Mapping[]; links: Mapp
 // the template code for every component of the file at `fileName`, or null
 // for a page. `module` is how this code imports the scripts' code: the .html
 // file itself, which TypeScript resolves to it
-export const generateTemplate = (ts: typeof TS, text: string, module: string): GeneratedTemplate | null => {
+//
+// `rootData` is what the file's own component is known to be mounted with -
+// the keys of \`.mount(el, { … })\` after a literal (literal.ts): a root reads
+// its mount data whatever its signature says (components.md, "Two things are
+// never filtered"), so those names are in its scope, as \`any\`
+export const generateTemplate = (ts: typeof TS, text: string, module: string, rootData: string[] = []): GeneratedTemplate | null => {
   const scopes = componentScopes(ts, text)
   if (!scopes.length) return null
+  scopes[0].names = [...new Set([...scopes[0].names, ...rootData])]
   const trees = templates(parseTree(text), scopes.map(s => s.def.name))
   const out = new Writer(text)
   out.text(preamble(module))

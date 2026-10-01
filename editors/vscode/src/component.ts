@@ -30,8 +30,20 @@
 // ---------------------------------------------------------------------------
 
 import type * as TS from "typescript"
-import { parseFactoryProps, parsePropsPattern, transformFactoryScript, transformSetupScript, type PropDecl } from "../../../src/transform"
+import { parseFactoryProps as runtimeFactoryProps, parsePropsPattern, transformFactoryScript, transformSetupScript, type PropDecl } from "../../../src/transform"
 import { COMPONENT_NAME_RE, INSTANCE_HELPER_NAMES, SETUP_HELPER_NAMES } from "../../../src/source"
+
+// the runtime's parseFactoryProps, which throws the migration error for the
+// pre-0.4 signature (a ctx name destructured from the first parameter) - the
+// runtime's to say, at render. Here such a component declares nothing: one
+// broken component must not take the checker of every other one with it
+const parseFactoryProps = (src: string): PropDecl[] | null => {
+  try {
+    return runtimeFactoryProps(src)
+  } catch {
+    return null
+  }
+}
 
 // ------------------------------------------------------------------ the split
 
@@ -496,7 +508,11 @@ export const componentScopes = (ts: typeof TS, text: string): ComponentScope[] =
     })
     const declared = new Set(signatures.flatMap(sig => (sig ?? []).map(d => d.name)))
     const names = new Set([
-      ...plans.flatMap(p => (p.factory ? factoryNames(ts, p.file) : [...p.storeNames, ...p.undeclared, ...propBindings(ts, p.block)])),
+      // a factory's props are on the store too: declareProps seeds them
+      // before it runs (src/jq79.ts), whatever it returns
+      ...plans.flatMap(p => (p.factory
+        ? [...factoryNames(ts, p.file), ...(parseFactoryProps(text.slice(p.block.contentStart, p.block.contentEnd)) ?? []).map(d => d.name)]
+        : [...p.storeNames, ...p.undeclared, ...propBindings(ts, p.block)])),
       ...siblings.filter(name => !declared.has(name)),
     ])
     return { def, names: [...names], permissive: signatures.every(sig => sig === null) }

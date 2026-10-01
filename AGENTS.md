@@ -29,7 +29,8 @@ own with its own `npm test`: injection grammars that color `<script lang="ts">`,
 `<style lang="scss">`, the HTML in `` Component79(`…`) ``, and the template
 syntax as JS; and a language server ([Volar](https://volarjs.dev)) that checks a
 component's scripts as the runtime compiles them, and its template's expressions
-against the store those scripts build. The server imports
+against the store those scripts build - in `.html` files, and in the
+`` new Component79(`…`) `` literals of scripts and pages. The server imports
 `src/transform.ts` and `src/source.ts` to read a component, and holds every
 component in `tutorial/` to checking clean - so a change to how the runtime reads
 a script or evaluates a template can fail the extension's tests, and the fix

@@ -31,9 +31,11 @@ const check = async (files, options = STRICT) => {
     writeFileSync(path, text)
     return path
   })
-  const checker = createChecker(paths.filter(p => p.endsWith(".html")), options)
+  // an .html, or a script with a component literal in it (as findComponents)
+  const checked = paths.filter(p => p.endsWith(".html") || /(?:Component79|C79|parseComponent)\s*\(\s*`/.test(files[relative(dir, p)]))
+  const checker = createChecker(checked, options)
   const out = {}
-  for (const path of paths.filter(p => p.endsWith(".html"))) {
+  for (const path of checked) {
     out[relative(dir, path)] = (await checker.check(path))
       .filter(d => d.severity === 1 || d.severity === 2)
       .sort((a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character)
@@ -605,4 +607,101 @@ test("a tag that names nothing in scope", async () => {
   assert.deepEqual(closed, ["2:2 TS2552 Cannot find name 'Buton'. Did you mean 'Button'?"])
   // a parent may pass a component to a permissive one
   assert.deepEqual(await one(`<script :setup="_"></script>\n<Buton :a="1" />`, TYPED), [])
+})
+
+// ------------------------------------------------------------------ components written as literals
+
+test("a component literal in a script is checked like an .html file, and nothing else in the script is", async () => {
+  const errors = await check({
+    "app.ts": [
+      `import { Component79, parseComponent, C79 } from "jq79"`,
+      `const wrong: number = "outside a literal: the editor's TypeScript says this, not jq79"`,
+      `const Counter = new Component79(\``,
+      `  <script :setup="{ step = 1 }: { step?: number }" lang="ts">`,
+      `    let count: number = "zero"`,
+      `  </script>`,
+      `  <button @click="count += step">{{ cuont }}</button>`,
+      `\`)`,
+      `const Hello = parseComponent(\`<p>{{ helo }}</p><script :setup>let hello = 1</script>\`)`,
+      `const Alias = new C79(\`<script :setup></script><p>{{ x }}</p>\`)`,
+    ].join("\n"),
+  }, { ...STRICT, allowImportingTsExtensions: true })
+  assert.deepEqual(errors["app.ts"], [
+    "5:9 TS2322 Type 'string' is not assignable to type 'number'.",
+    "7:37 TS2552 Cannot find name 'cuont'. Did you mean 'count'?",
+    "9:37 TS2552 Cannot find name 'helo'. Did you mean 'hello'?",
+    "10:54 TS2304 Cannot find name 'x'.",
+  ])
+})
+
+test("a literal's escapes are the characters they write, and positions after them still land", async () => {
+  const errors = await check({
+    "app.js": "new Component79(`<script :setup>let a = 1</script><p title=\"\\`q\\`\">\\u0041 {{ b }}</p>`)\n",
+  }, TYPED)
+  assert.deepEqual(errors["app.js"], ["1:78 TS2304 Cannot find name 'b'."])
+})
+
+test("a literal with ${…} in it isn't read: what it holds depends on what runs", async () => {
+  const errors = await check({ "app.js": "const x = 1\nnew Component79(`<script :setup></script><p>${x}{{ nope }}</p>`)\n" }, TYPED)
+  assert.deepEqual(errors["app.js"], [])
+})
+
+// a page's <script> can't hold `</script>`: the browser ends the script there,
+// so a component in one writes `<\/script>`, which the literal cooks back
+test("a page's scripts: the literals they hand to Component79", async () => {
+  const line = `  new Component79(\`<script :setup>let items = [1]<\\/script><li :each="i in itms">{{ i }}</li>\`).mount(document.body)`
+  const errors = await check({
+    "index.html": [`<!doctype html>`, `<script type="module">`, `  import { Component79 } from "jq79"`, line, `</script>`].join("\n"),
+  }, TYPED)
+  assert.deepEqual(errors["index.html"], [`4:${line.indexOf("itms") + 1} TS2552 Cannot find name 'itms'. Did you mean 'items'?`])
+})
+
+test("components of one literal see each other, and their props are checked", async () => {
+  const errors = await check({
+    "app.js": [
+      "new Component79(`",
+      "  <script :setup></script>",
+      "  <Row :label=\"1\" :lable=\"2\" />",
+      "  <template name=\"Row\"><script :setup=\"{ label }\"></script>{{ label }}</template>",
+      "`)",
+    ].join("\n"),
+  }, TYPED)
+  assert.equal(errors["app.js"].length, 1, errors["app.js"].join("\n"))
+  assert.match(errors["app.js"][0], /^3:20 TS2561 .*'lable'/)
+})
+
+test("cook: a literal's text and where each character is in the file", () => {
+  const { cook } = require("../dist/literal.js")
+  const raw = "a\\`b\\nc\\u0041\\\nd\r\ne"
+  const { text, at } = cook(raw, 10)
+  assert.equal(text, "a`b\ncA" + "d\ne")
+  assert.deepEqual(at, [10, -1, 13, -1, 16, -1, 25, -1, 28])
+})
+
+test("a literal's mount data is in its scope, where the code says what it is", async () => {
+  const first = "new Component79(`<script :setup></script><p>{{ msg }} {{ nope }}</p>`).on('x', () => {}).mount(document.body, { msg: 'hi' })"
+  const errors = await check({
+    "app.js": [first, "new Component79(`<script :setup></script><p>{{ title }}</p>`).render({ title: 'x' })"].join("\n"),
+  }, TYPED)
+  assert.deepEqual(errors["app.js"], [`1:${first.indexOf("nope") + 1} TS2304 Cannot find name 'nope'.`])
+})
+
+test("a factory's props are in its template's scope, as at runtime", async () => {
+  const errors = await one([
+    `<script>export default ({ label = "Total" }) => ({ ready: true })</script>`,
+    `<p>{{ label }} {{ ready }} {{ lable }}</p>`,
+  ].join("\n"), TYPED)
+  // and naming a prop is declaring a signature: a name it neither takes nor
+  // returns is an error
+  assert.deepEqual(errors, ["2:31 TS2552 Cannot find name 'lable'. Did you mean 'label'?"])
+})
+
+test("a component without a signature: `{ active }` may be a prop too", async () => {
+  assert.deepEqual(await one(`<div :class="[theme, { active }]"></div>`, TYPED), [])
+})
+
+test("a factory with the pre-0.4 signature doesn't stop the checker", async () => {
+  const other = `<template name="Other"><script :setup>let x = 1</script>{{ y }}</template>`
+  const errors = await one([`<script>export default ({ $data }) => { $data.count = 0 }</script>`, `<p>{{ count }}</p>`, other].join("\n"), TYPED)
+  assert.deepEqual(errors, [`3:${other.indexOf("y }}") + 1} TS2304 Cannot find name 'y'.`])
 })

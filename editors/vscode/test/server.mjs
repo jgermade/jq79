@@ -156,3 +156,29 @@ test("rename: across the scripts of one component", async () => {
 test("rename: a prop is renamed in its component, the :setup pattern included", async () => {
   assert.deepEqual(await renamed(5, 51), ["0:18", "3:31", "5:49"])
 })
+
+// a script is the editor's TypeScript's: this server answers only inside a
+// component literal, and says nothing about a script without one
+test("a script: only its component literals are this server's", async () => {
+  await opened
+  const withLiteral = join(dir, "app.ts")
+  const plain = join(dir, "plain.ts")
+  const literalText = [
+    `const wrong: number = "the editor says this"`,
+    `const C = new Component79(\`<script :setup>let count = 0</script><p>{{ cuont }}</p>\`)`,
+  ].join("\n")
+  const plainText = `const wrong: number = "and this"\n`
+  writeFileSync(withLiteral, literalText)
+  writeFileSync(plain, plainText)
+  for (const [file, text] of [[withLiteral, literalText], [plain, plainText]]) {
+    connection.sendNotification("textDocument/didOpen", { textDocument: { uri: pathToFileURL(file).href, languageId: "typescript", version: 1, text } })
+  }
+  const report = async file => (await connection.sendRequest("textDocument/diagnostic", { textDocument: { uri: pathToFileURL(file).href } })).items
+    .map(d => `${d.range.start.line}:${d.range.start.character} ${d.code}`)
+  assert.deepEqual(await report(withLiteral), [`1:${literalText.split("\n")[1].indexOf("cuont")} 2552`])
+  assert.deepEqual(await report(plain), [])
+  const hover = await connection.sendRequest("textDocument/hover", { textDocument: { uri: pathToFileURL(withLiteral).href }, position: { line: 1, character: literalText.split("\n")[1].indexOf("count") + 1 } })
+  assert.match(JSON.stringify(hover?.contents), /count: number/)
+  const outside = await connection.sendRequest("textDocument/hover", { textDocument: { uri: pathToFileURL(withLiteral).href }, position: { line: 0, character: 7 } })
+  assert.equal(outside, null)
+})

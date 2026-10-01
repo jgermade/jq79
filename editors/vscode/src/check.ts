@@ -1,6 +1,7 @@
 // jq79-check: the language server's diagnostics, from a terminal, for CI.
 //
-//   jq79-check                     every .html under the current directory
+//   jq79-check                     every .html under the current directory, and
+//                                  every script with a Component79(`…`) in it
 //   jq79-check --checkJs           …and type-check the JavaScript ones too
 //   jq79-check --project tsconfig.json
 //
@@ -19,12 +20,17 @@ import { createJq79LanguagePlugin } from "./language"
 
 const IGNORED = new Set(["node_modules", ".git", "dist"])
 
+const SCRIPT_RE = /\.(?:[cm]?[jt]s|[jt]sx)$/
+const LITERAL_RE = /\b(?:Component79|C79|parseComponent)\s*\(\s*`/
+
+// every .html, and every script with a component literal in it
 export const findComponents = (dir: string): string[] =>
   fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     if (IGNORED.has(entry.name) || entry.name.startsWith(".")) return []
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) return findComponents(full)
-    return entry.name.endsWith(".html") ? [full] : []
+    if (entry.name.endsWith(".html")) return [full]
+    return SCRIPT_RE.test(entry.name) && !entry.name.endsWith(".d.ts") && LITERAL_RE.test(fs.readFileSync(full, "utf8")) ? [full] : []
   })
 
 export const INFERRED_OPTIONS: ts.CompilerOptions = {
@@ -58,7 +64,7 @@ const main = async () => {
   const project = projectAt === -1 ? undefined : path.resolve(args[projectAt + 1])
   const files = project ? [] : findComponents(process.cwd())
   const checker = project ? createChecker({ project }) : createChecker(files, options)
-  const targets = project ? checker.getRootFileNames().filter(f => f.endsWith(".html")) : files
+  const targets = project ? checker.getRootFileNames().filter(f => f.endsWith(".html") || (SCRIPT_RE.test(f) && LITERAL_RE.test(fs.readFileSync(f, "utf8")))) : files
 
   let errors = 0
   for (const file of targets) {

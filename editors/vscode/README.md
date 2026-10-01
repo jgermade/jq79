@@ -34,7 +34,7 @@ html`<li class="${cls}">${label}</li>`             // html, svg, css, scss, less
 | `<script type="text/typescript">` | nothing | TypeScript |
 | `<style lang="scss">` / `"less"` | CSS | SCSS / Less |
 | `<style lang="sass">` / `"styl"` | CSS | Sass / Stylus, if an extension for it is installed |
-| `` Component79(`…`) `` | a string | HTML |
+| `` Component79(`…`) ``, `` C79(`…`) ``, `` parseComponent(`…`) `` | a string | HTML |
 | `` html`…` `` `` css`…` `` `` ts`…` `` … | a string | that language |
 | `{{ expr }}` in text | text | JavaScript |
 | `:attr="…"`, `@event="…"`, `...spread` | a string | JavaScript |
@@ -176,11 +176,43 @@ first parameter gives the names and no types, since that is all it says.
   the parent's business, unknown here.
 - **Two bindings of one prop** (`:user` and `:model.user`): the runtime warns
   (`:model.user` wins); the checker doesn't.
-- **Pages, and components inside `` Component79(`…`) `` strings.** Only
-  `.html` component files.
+- **A page's own scripts.** Only the components a page writes as literals
+  (below) are this server's; the rest is the browser's.
+- **A component string built at runtime**: one with `${…}` in it, or one that
+  isn't a literal at all (`new Component79(source)`).
 - **Plain `<style>`**, which VS Code already checks as CSS.
 - **HTML entities in an attribute value** (`:if="a &amp;&amp; b"`) are read as
   written, not decoded as the browser does.
+
+### Components written as literals
+
+A component handed to `new Component79(\`…\`)`, `C79(\`…\`)` or
+`parseComponent(\`…\`)` as a literal is checked like an `.html` file -
+scripts, template, props, rename - in a `.js`/`.ts` file or in a page's
+`<script>`:
+
+```js
+const Counter = new Component79(`
+  <script :setup="{ step = 1 }">
+    let count = 0
+  </script>
+  <button @click="count += step">{{ cuont }}</button>   <!-- ✗ Did you mean 'count'? -->
+`).mount(document.body, { title: "Hi" })                // title: in its scope
+```
+
+- **It is the string the runtime receives** that is checked: `` \` `` is a
+  backtick, `<\/script>` (what a page's script has to write) is `</script>`,
+  and every position still lands where it is written.
+- **A literal with `${…}` in it is not checked**: what it holds depends on
+  what runs.
+- **Mount data.** A root reads what it is mounted with whatever its
+  signature says. Where that is written beside the literal - `.mount(el, { … })`
+  or `.render({ … })`, at the end of a chain of calls on it - its keys are in
+  the component's scope. Data passed any other way (a variable, a helper
+  function) can't be seen, and a closed root that reads it is reported.
+- **In a script, the server answers only inside the literals.** The rest of
+  the file is the editor's own TypeScript, which goes on serving it as
+  before, so nothing is reported twice.
 
 ### One name, in the script and the template
 
@@ -205,7 +237,7 @@ business.
 The same checks, for CI:
 
 ```sh
-node editors/vscode/dist/check.js                  # every .html under the current directory
+node editors/vscode/dist/check.js                  # every .html, and every script with a component literal
 node editors/vscode/dist/check.js --checkJs        # …type-checking JavaScript components too
 node editors/vscode/dist/check.js --project tsconfig.json
 ```
@@ -247,7 +279,7 @@ It isn't on the Marketplace yet. From this directory:
 
 ```sh
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.4.0.vsix
+code --install-extension jq79-vscode-0.5.0.vsix
 ```
 
 ## Working on it

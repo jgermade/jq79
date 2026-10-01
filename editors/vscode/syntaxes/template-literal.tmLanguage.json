@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "scopeName": "jq79.injection.template-literal",
-  "comment": "Template literals that hold another language: the source passed to Component79(`\u2026`), and a literal tagged with the language's name (html`\u2026`, css`\u2026`, ts`\u2026`). ${\u2026} inside them is jq79.injection.template-substitution's, so it works at any depth of the embedded language (an attribute value included).",
+  "comment": "Template literals that hold another language: the source passed to Component79(`\u2026`), C79(`\u2026`) or parseComponent(`\u2026`), and a literal tagged with the language's name (html`\u2026`, css`\u2026`, ts`\u2026`). ${\u2026} inside them is jq79.injection.template-substitution's, so it works at any depth of the embedded language (an attribute value included).",
   "injectionSelector": "L:source.js -comment -string, L:source.js meta.template.expression -comment, L:source.ts -comment -string, L:source.ts meta.template.expression -comment, L:source.tsx -comment -string, L:source.tsx meta.template.expression -comment",
   "patterns": [
     {
@@ -28,8 +28,8 @@
   ],
   "repository": {
     "component79": {
-      "comment": "the source handed to Component79 is a component: HTML, with its own <script> and <style> blocks. Matched from the backtick (the lookbehind leaves `Component79(` to the JS grammar), so the string has to open on the same line as the call",
-      "begin": "(?<=\\bComponent79\\(|\\bComponent79\\s\\()\\s*(`)",
+      "comment": "the source handed to Component79 (or its alias C79, or parseComponent) is a component: HTML, with its own <script> and <style> blocks. Matched from the backtick (the lookbehind leaves `Component79(` to the JS grammar), so the string has to open on the same line as the call",
+      "begin": "(?<=\\bComponent79\\(|\\bComponent79\\s\\(|\\bC79\\(|\\bC79\\s\\(|\\bparseComponent\\(|\\bparseComponent\\s\\()\\s*(`)",
       "beginCaptures": {
         "1": {
           "name": "string.template.js punctuation.definition.string.template.begin.js"

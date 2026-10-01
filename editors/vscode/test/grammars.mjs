@@ -183,6 +183,12 @@ test("the source passed to Component79 is HTML", async () => {
   assertNotIn(tokens, "mount", "text.html.basic")
 })
 
+test("…and to its alias C79, and to parseComponent", async () => {
+  const tokens = await js("const a = new C79(`<ul></ul>`)\nconst b = parseComponent(`<ol></ol>`)")
+  assertIn(tokens, "ul", "entity.name.tag.html")
+  assertIn(tokens, "ol", "entity.name.tag.html")
+})
+
 test("…in a TypeScript file too, and without new", async () => {
   const tokens = await ts("const list = Component79( `<ul></ul>` )")
   assertIn(tokens, "ul", "entity.name.tag.html")

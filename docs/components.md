@@ -388,6 +388,10 @@ It does exactly what the constructor does — parse the source, build the AST,
 prepare the definition. Useful when you want to be explicit about what the
 expression does, or when the name `Component79` feels heavy for inline use.
 
+In VS Code, [the extension in this repo](../editors/vscode/README.md#components-written-as-literals)
+colors a literal passed to either one as HTML, and checks it like a `.html`
+file — as long as it is a literal with no `${…}` in it.
+
 ## Which build am I running?
 
 `Component79.version` is the version of the package the class came from:

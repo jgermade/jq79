@@ -8,3 +8,4 @@ package-lock.json
 .gitignore
 *.vsix
 dist/template.js
+dist/literal.js

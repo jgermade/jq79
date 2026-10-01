@@ -1,4 +1,4 @@
-// the client: starts the language server for .html files, and nothing else.
+// the client: starts the language server for .html files and for scripts.
 // The grammars need none of this - they are contributed by package.json
 import * as path from "node:path"
 import * as vscode from "vscode"
@@ -13,7 +13,9 @@ export async function activate(context: vscode.ExtensionContext) {
     debug: { module, transport: TransportKind.ipc, options: { execArgv: ["--nolazy", "--inspect=6009"] } },
   }
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ language: "html" }],
+    // .html components, and the scripts that write components as literals:
+    // in those, the server answers only inside a literal (language.ts)
+    documentSelector: ["html", "javascript", "typescript", "javascriptreact", "typescriptreact"].map(language => ({ language })),
     initializationOptions: {},
   }
   client = new LanguageClient("jq79", "jq79", serverOptions, clientOptions)
