@@ -122,7 +122,26 @@ new Component79(src)
 <time>{{ now.toLocaleTimeString() }}</time>
 ```
 
-  "Destroyed" means `destroy()`, a re-render (`mount(el, data)`, a hot reload), or a parent's `:if` / `:each` removing the component. **Not `detach()`**: that keeps state, and a later `mount()` resumes the component as it was, with the script not run again. The hooks run first, before anything is taken apart, so the DOM is still on the page and the store still answers. A parent's hooks run before its children's. One that throws is logged, and the rest still run. A hook registered after the component is gone (the script awaited something and was destroyed in the meantime) runs at once.
+  "Destroyed" means `destroy()`, a re-render (`mount(el, data)`, a hot reload), or a parent's `:if` / `:each` removing the component. **Not `detach()`**: that keeps state, and a later `mount()` resumes the component as it was, with the script not run again. The hooks run first, before anything is taken apart (only a `$detached` goes before them), so the DOM is still on the page and the store still answers. A parent's hooks run before its children's. One that throws is logged, and the rest still run. A hook registered after the component is gone (the script awaited something and was destroyed in the meantime) runs at once.
+
+- `$attached(fn)` runs `fn` every time the component goes onto the page, the first mount included, and `$detached(fn)` every time it leaves. Use them for what should only run while the component can be seen: polling, an animation loop, an observer. A component kept with `detach()` (a tab, a cached view) then stops it while it's off the page and picks it up when it's back. Both return a function that unregisters `fn`.
+
+```html
+<script :setup>
+  let data = []
+  let timer
+  const poll = () => fetch("/api").then(r => r.json()).then(d => { data = d })
+
+  $attached(() => { poll(); timer = setInterval(poll, 5000) })
+  $detached(() => clearInterval(timer))
+</script>
+```
+
+  "On the page" means in the document, with the template rendered. A render held back by the script fires `$attached` when it paints. A root mounted into an element outside the document fires nothing until it's mounted into one. A nested component hears its root: when the root detaches, everything inside it detaches with it, slot content included, in document order (a parent before what it rendered).
+
+  `$attached` takes `{ immediate }`, on by default: if the component is already on the page when the hook is registered (below `await $mounted()`, in a handler), `fn` also runs right away, so the line means the same wherever it sits. `{ immediate: false }` waits for the next attach.
+
+  `$detached` only runs after an `$attached` it balances. `destroy()` on the page runs `$detached` first, then `$destroyed`, both with the DOM still in place. So what an `$attached` started is released by its own `$detached`, and doesn't need repeating in `$destroyed`.
 
 Only top-level code is rewritten; declarations inside callbacks/blocks behave as plain JS. Multi-declarator statements (`let a = 1, b = 2`) and destructuring declarations work like any other declaration — every binding becomes a reactive store variable:
 
@@ -371,7 +390,7 @@ The context is everything the library provides — the `$` is what says so:
   your local binding; read it through `$props` when you need the live value.
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
-- `$emit`, `$updateModel`, `$mounted`, `$destroyed`, `$computed`, `$self`, `$$self` — same as in setup scripts. `$`,
+- `$emit`, `$updateModel`, `$mounted`, `$destroyed`, `$attached`, `$detached`, `$computed`, `$self`, `$$self` — same as in setup scripts. `$`,
   `$$`, `$create`, `$reactive` and `$toRaw` are available lexically in the module body.
 - `$slots` — a static map of the slot names the usage site filled, so a wrapper
   can be dropped when nothing filled it (`<footer :if="$slots.footer">`).

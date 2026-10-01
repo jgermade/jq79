@@ -4059,6 +4059,13 @@ export class Component79 {
   // ($destroyed). Created on the first call, and taken by destroy() before
   // anything else goes, so a hook still sees the DOM and the store
   private destroyHooks: (() => void)[] | null = null
+  // this generation's $attached / $detached hooks, and whether it has been
+  // told it is on the page. Only an instance that registered one of them is
+  // in pageWatchers, which is what keeps a page that uses neither from paying
+  // for a walk on every mount (see settleAttached)
+  private attachHooks: (() => void)[] | null = null
+  private detachHooks: (() => void)[] | null = null
+  private onPage = false
   // instance-level listeners for $emit events, registered with on(). Kept
   // outside the render generation so they survive re-render and destroy()
   private emitListeners = new Map<string, Set<EmitListener>>()
@@ -4365,15 +4372,36 @@ export class Component79 {
     const $destroyed = (fn: () => void): (() => void) => {
       if (typeof fn !== "function") throw new TypeError("jq79: $destroyed expects a function")
       if (marker !== this.startMarker) {
-        runDestroyHook(fn)
+        runHook(fn, "$destroyed")
         return () => {}
       }
-      const hooks = (this.destroyHooks ??= [])
-      hooks.push(fn)
-      return () => {
-        const at = hooks.indexOf(fn)
-        if (at !== -1) hooks.splice(at, 1)
+      return addHook((this.destroyHooks ??= []), fn)
+    }
+    // $attached(fn) runs fn every time this generation goes onto the page -
+    // in the document, rendered - the first mount included; $detached(fn)
+    // every time it leaves, and only after an $attached it balances. A nested
+    // component hears its root's mount and detach (see settleAttached and
+    // notifyDetached). `immediate`, on by default, also runs fn now when the
+    // component is on the page already, so "while I'm on the page" holds
+    // wherever the line sits - above `await $mounted()` or below it. A late
+    // $detached runs at once, as a late $destroyed does; a late $attached has
+    // nothing left to attach
+    const $attached = (fn: () => void, { immediate = true }: { immediate?: boolean } = {}): (() => void) => {
+      if (typeof fn !== "function") throw new TypeError("jq79: $attached expects a function")
+      if (marker !== this.startMarker) return () => {}
+      this.watchPage()
+      const off = addHook((this.attachHooks ??= []), fn)
+      if (immediate && this.onPage) runHook(fn, "$attached")
+      return off
+    }
+    const $detached = (fn: () => void): (() => void) => {
+      if (typeof fn !== "function") throw new TypeError("jq79: $detached expects a function")
+      if (marker !== this.startMarker) {
+        runHook(fn, "$detached")
+        return () => {}
       }
+      this.watchPage()
+      return addHook((this.detachHooks ??= []), fn)
     }
     // the library's $computed, disposed with this generation: one made over a
     // shared store is otherwise held by that store, and kept recomputing, for
@@ -4484,7 +4512,7 @@ export class Component79 {
       // resolve to nothing at all. In setup mode this composes with `with` -
       // scriptScope's `has` declines any name that is a helper, so the
       // parameter is what the name resolves to
-      const instanceHelpers = { $mounted, $destroyed, $computed: $instanceComputed, $self, $$self, ...injected, ...siblingScope }
+      const instanceHelpers = { $mounted, $destroyed, $attached, $detached, $computed: $instanceComputed, $self, $$self, ...injected, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
       const deferred = ":mounted" in script.attrs
       const factoryCode = transformFactoryScript(script.content)
@@ -4574,6 +4602,8 @@ export class Component79 {
         this.endMarker!.parentNode!.insertBefore(renderNodes(this.template, templateScope, fx, shadow), this.endMarker!)
         this.renderDone = true
         this.settleMounted()
+        // a held render that paints on the page is this component's attach
+        Component79.settleAttached()
       })
       warnIfStuck(this, gates)
     }
@@ -4636,7 +4666,85 @@ export class Component79 {
     root.appendChild(this.content!)
     this.mountRoot = root
     this.settleMounted()
+    Component79.settleAttached()
     return this
+  }
+
+  // whether this generation's DOM is in the document, template built - the
+  // one meaning "on the page" has for $attached. Not "attach() was called": a
+  // nested component is mounted into a fragment its parent inserts later, and
+  // a root can be mounted into an element that isn't in the document
+  private isOnPage(): boolean {
+    return this.renderDone && this.startMarker?.isConnected === true
+  }
+
+  // joins pageWatchers on the first $attached/$detached of a generation, with
+  // the state as it is now: a hook registered while on the page must not fire
+  // for an attach that already happened. Off the page, a settle is queued: a
+  // component inserted by its parent's :if, :each or tag is built in a
+  // fragment and put on the page later on this same stack, with no attach()
+  // of its own to say so - one microtask late, never early
+  private watchPage() {
+    if (pageWatchers.has(this)) return
+    pageWatchers.add(this)
+    this.onPage = this.isOnPage()
+    if (!this.onPage) Component79.queueSettle()
+  }
+
+  private static queueSettle() {
+    if (settleQueued) return
+    settleQueued = true
+    queueMicrotask(() => {
+      settleQueued = false
+      Component79.settleAttached()
+    })
+  }
+
+  // tells every watcher that is on the page and hasn't been told, in document
+  // order - a parent before what it rendered, slot content included, because
+  // the DOM is what says where a component is
+  private static settleAttached() {
+    if (pageWatchers.size === 0) return
+    const due = [...pageWatchers].filter(component => !component.onPage && component.isOnPage())
+    Component79.inDocumentOrder(due).forEach(component => {
+      // a hook that ran before this one may have destroyed it
+      if (component.onPage || !pageWatchers.has(component)) return
+      component.onPage = true
+      component.attachHooks?.slice().forEach(fn => runHook(fn, "$attached"))
+    })
+  }
+
+  // tells this component and every watcher whose DOM is under its markers
+  // that they are leaving the page - before anything moves, so the hooks see
+  // the DOM where it was. One whose DOM already left without it (an :if
+  // removes its branch, then destroys what was in it) has only itself to tell
+  private notifyDetached() {
+    if (pageWatchers.size === 0) return
+    let due: Component79[] = []
+    if (this.startMarker?.isConnected) {
+      const top = new Set<Node>()
+      for (let node: Node | null = this.startMarker; node; node = node.nextSibling) {
+        top.add(node)
+        if (node === this.endMarker) break
+      }
+      const under = (node: Node | null): boolean => {
+        for (; node; node = node.parentNode) if (top.has(node)) return true
+        return false
+      }
+      due = Component79.inDocumentOrder([...pageWatchers].filter(component => component.onPage && under(component.startMarker)))
+    } else if (this.onPage) {
+      due = [this]
+    }
+    due.forEach(component => {
+      if (!component.onPage) return
+      component.onPage = false
+      component.detachHooks?.slice().forEach(fn => runHook(fn, "$detached"))
+    })
+  }
+
+  private static inDocumentOrder(components: Component79[]): Component79[] {
+    return components.sort((a, b) =>
+      a.startMarker!.compareDocumentPosition(b.startMarker!) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
   }
 
   // where a shadow-rendered component's styles go: <style> elements ahead of
@@ -4673,6 +4781,7 @@ export class Component79 {
   // with any updates that happened while detached already applied
   detach(): this {
     if (!this.mountRoot || !this.content || !this.startMarker || !this.endMarker) return this
+    this.notifyDetached()
 
     // move everything between the markers (inclusive) back into the holding
     // fragment - including nodes :if/:each inserted after mounting
@@ -4689,11 +4798,18 @@ export class Component79 {
   }
 
   destroy(): this {
-    // first, while everything they might read is still there. Taken before
-    // running, so a hook that destroys again (or re-renders) finds none
+    // first, while everything they might read is still there: leaving the
+    // page ($detached, for this component and what it rendered), then going
+    // ($destroyed). Taken before running, so a hook that destroys again (or
+    // re-renders) finds none
+    this.notifyDetached()
+    pageWatchers.delete(this)
+    this.attachHooks = null
+    this.detachHooks = null
+    this.onPage = false
     const hooks = this.destroyHooks
     this.destroyHooks = null
-    hooks?.forEach(runDestroyHook)
+    hooks?.forEach(fn => runHook(fn, "$destroyed"))
     this.detach()
     this.fx?.dispose()
     this.fx = null
@@ -4827,15 +4943,29 @@ export type Component<P = any, E extends string = never, S extends string = neve
 
 export const parseComponent = (component: string): Component79 => new Component79(component)
 
-// one broken cleanup must not leave the others' timers running, or the
+// one broken hook must not leave the others' timers running, or the
 // teardown half done: reported, and the rest still run
-const runDestroyHook = (fn: () => void) => {
+const runHook = (fn: () => void, name: string) => {
   try {
     fn()
   } catch (error) {
-    console.error("jq79: error in a $destroyed hook", error)
+    console.error(`jq79: error in a ${name} hook`, error)
   }
 }
+
+// registers fn on a generation's hook list; the returned function takes it off
+const addHook = (hooks: (() => void)[], fn: () => void): (() => void) => {
+  hooks.push(fn)
+  return () => {
+    const at = hooks.indexOf(fn)
+    if (at !== -1) hooks.splice(at, 1)
+  }
+}
+
+// the instances with an $attached or $detached hook, in this generation -
+// the only ones a mount or a detach has to look at (see settleAttached)
+const pageWatchers = new Set<Component79>()
+let settleQueued = false
 
 // library helpers injected into setup scripts. They behave like extra
 // globals: a same-named scope property (render data or a top-level

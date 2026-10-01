@@ -401,7 +401,7 @@ export const transformSetupScript = (src: string): SetupTransform => {
 // plain lexical module instead of a `with`-scoped setup script: no implicit
 // reactivity, no `$:` labels - standard JS that editors and type-checkers
 // understand. The default export is called with the instance context
-// ({ $data, $effect, $emit, $mounted, $destroyed, $computed, $self, $$self }) and a returned object
+// ({ $data, $effect, $emit, $mounted, $destroyed, $attached, $detached, $computed, $self, $$self }) and a returned object
 // is merged into the reactive store for the template to use.
 // Detection is backwards-safe: `export default` is a SyntaxError inside a
 // setup script, so no previously-working component can change behavior.
