@@ -339,11 +339,22 @@ in, which is where all of these come from:
 
 ## Installing it
 
-It isn't on the Marketplace yet. From this directory:
+From the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=jgermade.jq79-vscode)
+in VS Code, or from [Open VSX](https://open-vsx.org/extension/jgermade/jq79-vscode)
+in Cursor, VSCodium and the rest:
 
 ```sh
+code --install-extension jgermade.jq79-vscode
+```
+
+Each release's `.vsix` is also attached to its
+[GitHub release](https://github.com/jgermade/jq79/releases) (`jq79-vscode@<version>`).
+From a clone, in this directory:
+
+```sh
+npm install
 npm run package                                  # → jq79-vscode-<version>.vsix
-code --install-extension jq79-vscode-0.10.0.vsix
+code --install-extension jq79-vscode-<version>.vsix
 ```
 
 ## Working on it
@@ -382,3 +393,8 @@ node test/tokenize.mjs text.html.derivative some-component.html   # every token 
   code TypeScript 7's trees give to be the code 5.9's do. TypeScript 7 is a
   dev dependency here under an alias, `typescript7`, which takes this
   package's `node_modules/.bin/tsc`: the scripts call 5.9's by its path.
+- **Releasing**: the *Release VS Code extension* workflow, dispatched by hand
+  from `main`. It tests, bumps this `package.json`, packs the `.vsix`,
+  publishes it to the Marketplace and Open VSX, and tags
+  `jq79-vscode@<version>` with the `.vsix` attached. What goes in
+  [`CHANGELOG.md`](CHANGELOG.md) goes under `## Unreleased`.
