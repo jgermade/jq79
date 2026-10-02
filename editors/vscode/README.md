@@ -369,4 +369,4 @@ node test/tokenize.mjs text.html.derivative some-component.html   # every token 
   extension: Volar needs TypeScript's JavaScript API in its own process,
   which the native TypeScript 7 doesn't have (its API, still unstable, talks
   to the compiler as a separate process). `poc/` is jq79-check's checker on
-  that API, a proof of concept: `npm run poc:ts7`.
+  that API alone, its parser included, a proof of concept: `npm run poc:ts7`.
