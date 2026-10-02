@@ -299,10 +299,16 @@ npx jq79-check src --format github      # annotations on a pull request
 ```
 
 It prints one line per problem (`file:line:col - error TS2322: …`) and exits 1
-when there is an error, 2 when the command line is wrong. It is this
-extension's checker, built here (`npm run build` → `dist/check.js`) and shipped
-from [`editors/check/`](../check/). Until it is on npm, run it from a clone:
-`node editors/vscode/dist/check.js`.
+when there is an error, 2 when the command line is wrong. It is built here
+(`npm run build` → `dist/check.mjs`) and shipped from
+[`editors/check/`](../check/). Until it is on npm, run it from a clone:
+`node editors/vscode/dist/check.mjs`.
+
+It reads a component with this extension's generator, and checks it with
+TypeScript 7, the native compiler, where the editor uses Volar and TypeScript
+5.9 (below): about four times faster, and no TypeScript 5.9 to install. One
+difference follows from TypeScript 7's defaults: with `--project`, a
+`tsconfig.json` that doesn't say `strict` is strict, as it is for `tsc` 7.
 
 ## Limits of the coloring
 
@@ -366,5 +372,13 @@ node test/tokenize.mjs text.html.derivative some-component.html   # every token 
   HTML reader keeps offsets, which the runtime's doesn't need.
 - **The server** (`src/server.ts`, `src/language.ts`) is
   [Volar](https://volarjs.dev)'s, with TypeScript 5.9 shipped inside the
-  extension: Volar needs TypeScript's JavaScript API, which the native
-  TypeScript 7 doesn't have.
+  extension: Volar needs TypeScript's JavaScript API in its own process,
+  which the native TypeScript 7 doesn't have (its API, still unstable, talks
+  to the compiler as a separate process). `src/volar.ts` is the server's
+  checks without the server, which `test/check.mjs` runs.
+- **jq79-check** (`src/check.ts`, `src/check7.ts`, `src/parse7.ts`) is the
+  same virtual code on TypeScript 7's API alone, the generator's parser
+  included. `npm test` runs `test/check.mjs` on both checkers, and holds the
+  code TypeScript 7's trees give to be the code 5.9's do. TypeScript 7 is a
+  dev dependency here under an alias, `typescript7`, which takes this
+  package's `node_modules/.bin/tsc`: the scripts call 5.9's by its path.
