@@ -11,4 +11,5 @@ dist/template.js
 dist/literal.js
 dist/entities.js
 dist/completion.js
-poc/**
+dist/check.mjs
+dist/volar.js

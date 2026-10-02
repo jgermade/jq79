@@ -1,62 +1,15 @@
-// jq79-check: the language server's diagnostics, from a terminal, for CI -
-// published on its own as the jq79-check package (editors/check/), because
-// the jq79 package must not depend on TypeScript or Volar. See HELP below.
+// jq79-check: the extension's checks, from a terminal, for CI - published on
+// its own as the jq79-check package (editors/check/), because the jq79
+// package must not depend on TypeScript. See HELP below.
 //
-// Without --project: TypeScript's defaults plus allowJs, so JavaScript
-// components are read too - their scripts type-checked only with --checkJs
-// (or `// @ts-check` in the script), as any JS file; their templates always
+// It checks with TypeScript 7 (check7.ts); the editor, with Volar and
+// TypeScript 5.9 (volar.ts, server.ts). Both read a component with the same
+// generator (language.ts), and test/check.mjs runs on both
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { createTypeScriptChecker, createTypeScriptInferredChecker } from "@volar/kit"
-import { create as createCssService } from "volar-service-css"
-import { create as createTypeScriptServices } from "volar-service-typescript"
-import * as ts from "typescript"
-import { createJq79LanguagePlugin, jq79Resolver } from "./language"
-
-const IGNORED = new Set(["node_modules", ".git", "dist"])
-
-const SCRIPT_RE = /\.(?:[cm]?[jt]s|[jt]sx)$/
-const LITERAL_RE = /\b(?:Component79|C79|parseComponent)\s*\(\s*`/
-
-// every .html, and every script with a component literal in it
-export const findComponents = (dir: string): string[] =>
-  fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
-    if (IGNORED.has(entry.name) || entry.name.startsWith(".")) return []
-    const full = path.join(dir, entry.name)
-    if (entry.isDirectory()) return findComponents(full)
-    if (entry.name.endsWith(".html")) return [full]
-    return SCRIPT_RE.test(entry.name) && !entry.name.endsWith(".d.ts") && LITERAL_RE.test(fs.readFileSync(full, "utf8")) ? [full] : []
-  })
-
-export const INFERRED_OPTIONS: ts.CompilerOptions = {
-  allowJs: true,
-  target: ts.ScriptTarget.ES2022,
-  module: ts.ModuleKind.ESNext,
-  moduleResolution: ts.ModuleResolutionKind.Bundler,
-  lib: ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"],
-  noEmit: true,
-}
-
-// a tsconfig's compiler options, as TypeScript reads them
-const projectOptions = (project: string): ts.CompilerOptions => {
-  const config = ts.readConfigFile(project, ts.sys.readFile)
-  return ts.parseJsonConfigFileContent(config.config ?? {}, ts.sys, path.dirname(project)).options
-}
-
-// `setup` reaches Volar's project (its TypeScript host), for a test that needs
-// to see past what the checker maps back to the .html
-type Setup = Parameters<typeof createTypeScriptInferredChecker>[4]
-
-export const createChecker = (files: string[] | { project: string }, options: ts.CompilerOptions = INFERRED_OPTIONS, setup?: Setup) => {
-  // with the options the files are checked with: a tsconfig's paths can be
-  // where "jq79" resolves
-  const resolving = Array.isArray(files) ? options : projectOptions(files.project)
-  const languages = [createJq79LanguagePlugin(ts, jq79Resolver(ts, resolving))]
-  const services = [createCssService(), ...createTypeScriptServices(ts)]
-  return Array.isArray(files)
-    ? createTypeScriptInferredChecker(languages, services, () => files, options, setup)
-    : createTypeScriptChecker(languages, services, files.project, false, setup)
-}
+import { pathToFileURL } from "node:url"
+import { createChecker, INFERRED } from "./check7"
+import { findComponents, isChecked } from "./files"
 
 const SEVERITY = ["", "error", "warning", "info", "hint"]
 
@@ -111,8 +64,6 @@ const codeOf = (code: unknown) => (code === undefined ? "" : typeof code === "nu
 const escapeData = (text: string) => text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")
 const escapeProperty = (text: string) => escapeData(text).replace(/:/g, "%3A").replace(/,/g, "%2C")
 
-const isChecked = (file: string) => file.endsWith(".html") || (SCRIPT_RE.test(file) && !file.endsWith(".d.ts") && LITERAL_RE.test(fs.readFileSync(file, "utf8")))
-
 export const main = async (args: string[], cwd = process.cwd(), log = console.log, error = console.error): Promise<number> => {
   const options = parseArgs(args)
   if (typeof options === "string") {
@@ -128,7 +79,7 @@ export const main = async (args: string[], cwd = process.cwd(), log = console.lo
     const project = path.resolve(cwd, options.project)
     if (!fs.existsSync(project)) { error(`jq79-check: no ${options.project}`); return 2 }
     checker = createChecker({ project })
-    targets = checker.getRootFileNames().filter(isChecked)
+    targets = checker.files
   } else {
     const paths = options.paths.length ? options.paths : ["."]
     const missing = paths.find(p => !fs.existsSync(path.resolve(cwd, p)))
@@ -137,7 +88,7 @@ export const main = async (args: string[], cwd = process.cwd(), log = console.lo
       const full = path.resolve(cwd, p)
       return fs.statSync(full).isDirectory() ? findComponents(full) : isChecked(full) ? [full] : []
     }))]
-    checker = createChecker(targets, options.checkJs ? { ...INFERRED_OPTIONS, checkJs: true } : INFERRED_OPTIONS)
+    checker = createChecker(targets, options.checkJs ? { ...INFERRED, checkJs: true } : INFERRED)
   }
 
   let errors = 0
@@ -152,7 +103,7 @@ export const main = async (args: string[], cwd = process.cwd(), log = console.lo
       if (d.severity === 1) errors++
       else warnings++
       const { line, character } = d.range.start
-      const message = typeof d.message === "string" ? d.message : d.message.value
+      const message = d.message
       if (options.format === "github") {
         const level = d.severity === 1 ? "error" : "warning"
         log(`::${level} file=${escapeProperty(relative)},line=${line + 1},col=${character + 1},title=${escapeProperty(`jq79-check${codeOf(d.code)}`)}::${escapeData(message)}`)
@@ -161,8 +112,14 @@ export const main = async (args: string[], cwd = process.cwd(), log = console.lo
       }
     }
   }
+  checker.close()
   log(`${targets.length} file(s) checked: ${errors} error(s), ${warnings} warning(s)`)
   return errors ? 1 : 0
 }
 
-if (require.main === module) main(process.argv.slice(2)).then(code => { process.exitCode = code })
+// run as a command, not imported (the tests import createChecker from here)
+const invoked = process.argv[1] && fs.existsSync(process.argv[1]) ? pathToFileURL(fs.realpathSync(process.argv[1])).href : ""
+if (invoked === import.meta.url) main(process.argv.slice(2)).then(code => { process.exitCode = code })
+
+export { createChecker, INFERRED } from "./check7"
+export { findComponents } from "./files"

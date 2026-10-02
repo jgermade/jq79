@@ -1,8 +1,0 @@
-{
-  "name": "jq79-check-ts7-poc",
-  "private": true,
-  "description": "jq79-check's checker on TypeScript 7: a proof of concept, kept apart so that TypeScript 7's tsc never takes the extension's node_modules/.bin/tsc",
-  "dependencies": {
-    "typescript7": "npm:typescript@7.0.2"
-  }
-}

@@ -27,7 +27,7 @@
   ],
   "main": "./dist/extension.js",
   "bin": {
-    "jq79-check": "./dist/check.js"
+    "jq79-check": "./dist/check.mjs"
   },
   "activationEvents": [
     "onLanguage:html"
@@ -141,12 +141,11 @@
   "scripts": {
     "build": "node build.mjs",
     "vscode:prepublish": "node build.mjs",
-    "typecheck": "tsc -p .",
-    "pretest": "node test/fetch-grammars.mjs && node build.mjs && tsc -p .",
-    "test": "node --test test/grammars.mjs test/check.mjs test/server.mjs test/cli.mjs",
-    "check": "node dist/check.js",
-    "package": "npx --yes @vscode/vsce package --skip-license",
-    "poc:ts7": "npm --prefix poc install --no-audit --no-fund && tsc -p poc && node poc/build.mjs && JQ79_CHECKER=ts7 node --test test/check.mjs"
+    "typecheck": "node node_modules/typescript/bin/tsc -p .",
+    "pretest": "node test/fetch-grammars.mjs && node build.mjs && node node_modules/typescript/bin/tsc -p .",
+    "test": "node --test test/grammars.mjs test/check.mjs test/server.mjs test/cli.mjs && JQ79_CHECKER=ts7 node --test test/check.mjs",
+    "check": "node dist/check.mjs",
+    "package": "npx --yes @vscode/vsce package --skip-license"
   },
   "dependencies": {
     "typescript": "~5.9.3"
@@ -160,6 +159,7 @@
     "@volar/language-service": "~2.4.28",
     "@volar/typescript": "~2.4.28",
     "esbuild": "^0.28.2",
+    "typescript7": "npm:typescript@7.0.2",
     "volar-service-css": "^0.0.71",
     "volar-service-typescript": "^0.0.71",
     "vscode-languageclient": "^9.0.1",

@@ -1,20 +1,21 @@
-// the language server's checks, run through jq79-check's checker (the same
-// language plugin, the same services): what the virtual code has to get right
-// is in src/component.ts, and each row of it is a test here.
-// Needs the build: `npm test` runs it first
+// the language server's checks, run through its checker without the server
+// (dist/volar.js: the same language plugin, the same services): what the
+// virtual code has to get right is in src/component.ts, and each row of it is
+// a test here. JQ79_CHECKER=ts7 runs every test on jq79-check's checker
+// instead (dist/check.mjs: the same virtual code, on TypeScript 7), and
+// `npm test` runs both. Needs the build: `npm test` runs it first
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, relative } from "node:path"
+import { basename, dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createRequire } from "node:module"
 
 const require = createRequire(import.meta.url)
-const { findComponents, INFERRED_OPTIONS, ...volar } = require("../dist/check.js")
-// JQ79_CHECKER=ts7 runs every test here on the TypeScript 7 proof of concept
-// instead (poc/check7.ts, `npm run poc:ts7`)
-const { createChecker } = process.env.JQ79_CHECKER === "ts7" ? await import("../poc/dist/check7.mjs") : volar
+const { findComponents, INFERRED_OPTIONS, ...volar } = require("../dist/volar.js")
+const ts7 = await import("../dist/check.mjs")
+const { createChecker } = process.env.JQ79_CHECKER === "ts7" ? ts7 : volar
 const { generate } = require("../dist/component.js")
 const { generateTemplate } = require("../dist/template.js")
 const ts = require("typescript")
@@ -112,6 +113,31 @@ test("…and with checkJs, only DOM typing is added", async () => {
     .filter(f => !exerciseFile(f))
     .map(f => f.line)
   assert.deepEqual(found.sort(), [...EXERCISES, ...DOM_TYPING].sort())
+})
+
+// jq79-check's generator reads TypeScript 7's trees (src/parse7.ts), the
+// editor's reads 5.9's: the code they give has to be the same, byte for byte
+test("TypeScript 7's trees give the generator the code 5.9's do", () => {
+  const files = findComponents(join(repo, "tutorial")).filter(file => file.endsWith(".html"))
+  const checker = ts7.createChecker(files, TYPED)
+  const codes = checker.codes()
+  checker.close()
+  // a mapping's data, its functions (shouldReport) as their names
+  const plain = mappings => JSON.stringify(mappings.map(m => ({ ...m, data: Object.fromEntries(Object.entries(m.data).map(([k, v]) => [k, typeof v === "object" ? "fn" : v])) })))
+  let compared = 0
+  for (const file of files) {
+    const text = readFileSync(file, "utf8")
+    const scripts = generate(ts, text, { jq79: true })
+    if (!scripts) continue
+    const template = generateTemplate(ts, text, `./${basename(file)}`, [], { jq79: true })
+    for (const [name, code] of [[file + (scripts.typescript ? ".ts" : ".js"), scripts], [`${file}.template.ts`, template]]) {
+      if (!code) continue
+      compared++
+      assert.equal(codes.get(name)?.text, code.code, name)
+      assert.equal(plain(codes.get(name).mappings), plain(code.mappings), name)
+    }
+  }
+  assert.ok(compared > 100, `compared ${compared}`)
 })
 
 // ------------------------------------------------------------------ setup scripts

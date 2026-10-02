@@ -1,4 +1,4 @@
-// jq79-check as its users run it: dist/check.js in a process of its own, its
+// jq79-check as its users run it: dist/check.mjs in a process of its own, its
 // output and its exit code. What it reports is check.mjs's; this is the
 // command line around it, which is the public part of the jq79-check package
 import { test } from "node:test"
@@ -10,7 +10,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
-const cli = join(root, "dist/check.js")
+const cli = join(root, "dist/check.mjs")
 
 const run = (cwd, ...args) => {
   const { stdout, stderr, status } = spawnSync(process.execPath, [cli, ...args], { cwd, encoding: "utf8" })
@@ -83,6 +83,21 @@ test("--project: what the tsconfig includes, with its options", () => {
   assert.equal(status, 1)
   assert.deepEqual(out, [
     "src/Card.html:2:1 - error TS2322: Type 'string' is not assignable to type 'number'.",
+    "1 file(s) checked: 1 error(s), 0 warning(s)",
+  ])
+})
+
+test("--project: an include said by the config it extends, and a tsconfig with comments", () => {
+  const dir = project({
+    "tsconfig.base.json": `{\n  // what the app compiles\n  "include": ["src"],\n  "compilerOptions": { "noEmit": true, },\n}`,
+    "tsconfig.json": JSON.stringify({ extends: "./tsconfig.base.json", compilerOptions: { allowJs: true } }),
+    "src/deep/Broken.html": BROKEN,
+    "other/Broken.html": BROKEN,
+  })
+  const { out, status } = run(dir, "-p", "tsconfig.json")
+  assert.equal(status, 1)
+  assert.deepEqual(out, [
+    "src/deep/Broken.html:2:7 - error TS2552: Cannot find name 'cuont'. Did you mean 'count'?",
     "1 file(s) checked: 1 error(s), 0 warning(s)",
   ])
 })

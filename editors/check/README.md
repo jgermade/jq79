@@ -91,5 +91,8 @@ The helpers (`$`, `$reactive`, `Component79`, …) are typed from the `jq79`
 package when the project has it installed; without it they are `any`, and
 everything else is still checked.
 
-jq79-check runs its own TypeScript (5.9), whatever version the project uses:
-it needs TypeScript's JavaScript API, which TypeScript 7 doesn't have.
+jq79-check runs its own TypeScript, 7.0.2 (the native compiler), whatever
+version the project uses: it talks to the compiler through an API TypeScript
+still calls unstable, so the version is pinned, and moves when jq79-check
+does. As with any TypeScript 7, a `tsconfig.json` that doesn't say `strict`
+gets it on; without `--project` it is off.
