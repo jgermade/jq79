@@ -2,3 +2,5 @@
 /test/.grammars
 /dist
 *.vsix
+/poc/dist
+/poc/node_modules

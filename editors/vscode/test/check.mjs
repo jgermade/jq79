@@ -11,7 +11,10 @@ import { fileURLToPath } from "node:url"
 import { createRequire } from "node:module"
 
 const require = createRequire(import.meta.url)
-const { createChecker, findComponents, INFERRED_OPTIONS } = require("../dist/check.js")
+const { findComponents, INFERRED_OPTIONS, ...volar } = require("../dist/check.js")
+// JQ79_CHECKER=ts7 runs every test here on the TypeScript 7 proof of concept
+// instead (poc/check7.ts, `npm run poc:ts7`)
+const { createChecker } = process.env.JQ79_CHECKER === "ts7" ? await import("../poc/dist/check7.mjs") : volar
 const { generate } = require("../dist/component.js")
 const { generateTemplate } = require("../dist/template.js")
 const ts = require("typescript")
@@ -41,6 +44,7 @@ const check = async (files, options = STRICT) => {
       .sort((a, b) => a.range.start.line - b.range.start.line || a.range.start.character - b.range.start.character)
       .map(d => `${d.range.start.line + 1}:${d.range.start.character + 1} TS${d.code} ${d.message.split("\n")[0]}`)
   }
+  checker.close?.()
   return out
 }
 const one = async (text, options) => (await check({ "c.html": text }, options))["c.html"]
@@ -70,6 +74,7 @@ const corpus = async options => {
       if (d.severity === 1 || d.severity === 2) found.push({ d, file, line: `${relative(repo, file)}:${d.range.start.line + 1} TS${d.code} ${d.message}` })
     }
   }
+  checker.close?.()
   return found
 }
 

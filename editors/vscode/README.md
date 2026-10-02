@@ -366,5 +366,7 @@ node test/tokenize.mjs text.html.derivative some-component.html   # every token 
   HTML reader keeps offsets, which the runtime's doesn't need.
 - **The server** (`src/server.ts`, `src/language.ts`) is
   [Volar](https://volarjs.dev)'s, with TypeScript 5.9 shipped inside the
-  extension: Volar needs TypeScript's JavaScript API, which the native
-  TypeScript 7 doesn't have.
+  extension: Volar needs TypeScript's JavaScript API in its own process,
+  which the native TypeScript 7 doesn't have (its API, still unstable, talks
+  to the compiler as a separate process). `poc/` is jq79-check's checker on
+  that API, a proof of concept: `npm run poc:ts7`.
