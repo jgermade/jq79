@@ -1,0 +1,150 @@
+# Publishes the VS Code extension (editors/vscode/) to the Visual Studio
+# Marketplace and to Open VSX (Cursor, VSCodium and the rest), with its own
+# versions: tags are jq79-vscode@<version>, beside jq79's v<version> and
+# jq79-check@<version>. The .vsix is attached to a GitHub release of that tag.
+#
+# Secrets, in the production environment - either one is enough, and a
+# registry without its secret is skipped:
+# - VSCE_PAT: an Azure DevOps personal access token, organization "All
+#   accessible organizations", scope Marketplace > Manage, from the account
+#   that owns the "jgermade" publisher (marketplace.visualstudio.com/manage)
+# - OVSX_PAT: an open-vsx.org access token. Once, before the first publish:
+#   sign the publisher agreement on open-vsx.org, then
+#   `npx ovsx create-namespace jgermade -p <token>`
+
+name: Release VS Code extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write # push the version commit and tag, create the GitHub release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.ref == 'refs/heads/main'
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      # before anything else: a run with nowhere to publish fails here, not
+      # after the tests
+      - name: Registries
+        id: registries
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          echo "marketplace=$([ -n "$VSCE_PAT" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "openvsx=$([ -n "$OVSX_PAT" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ -z "$VSCE_PAT" ] && [ -z "$OVSX_PAT" ]; then
+            echo "::error::Neither VSCE_PAT nor OVSX_PAT is set in the production environment"
+            exit 1
+          fi
+          [ -n "$VSCE_PAT" ] || echo "::warning::No VSCE_PAT: the Marketplace is skipped"
+          [ -n "$OVSX_PAT" ] || echo "::warning::No OVSX_PAT: Open VSX is skipped"
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Configure Git
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+
+      - name: Bump version
+        id: bump_version
+        run: |
+          VERSION=$(npm version "${{ inputs.bump }}" --no-git-tag-version)
+          VERSION=${VERSION#v}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "vsix=jq79-vscode-$VERSION.vsix" >> "$GITHUB_OUTPUT"
+
+      # `## Unreleased` becomes this version; the GitHub release's notes are
+      # that section
+      - name: Changelog
+        env:
+          VERSION: ${{ steps.bump_version.outputs.version }}
+        run: |
+          sed -i "s/^## Unreleased\$/## $VERSION ($(date -u +%F))/" CHANGELOG.md
+          awk -v head="## $VERSION " 'index($0, head) == 1 { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "::warning::CHANGELOG.md has no ## Unreleased section"
+            echo "See [CHANGELOG.md](https://github.com/jgermade/jq79/blob/main/editors/vscode/CHANGELOG.md)." > "$RUNNER_TEMP/notes.md"
+          fi
+
+      # vscode:prepublish builds dist/ first
+      - name: Package
+        env:
+          VSIX: ${{ steps.bump_version.outputs.vsix }}
+        run: |
+          npm run package
+          unzip -l "$VSIX" | tee "$RUNNER_TEMP/vsix.txt"
+          for f in extension/package.json extension/dist/extension.js extension/dist/server.js \
+                   extension/node_modules/typescript/lib/typescript.js extension/icon.png \
+                   extension/LICENSE.txt extension/changelog.md extension/readme.md; do
+            grep -q " $f\$" "$RUNNER_TEMP/vsix.txt" || { echo "::error::$f is missing from $VSIX"; exit 1; }
+          done
+
+      # kept before publishing: if one registry takes the version and the
+      # other fails, the run stops before the commit, and this is the .vsix
+      # to publish by hand to the one that's missing
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bump_version.outputs.vsix }}
+          path: editors/vscode/${{ steps.bump_version.outputs.vsix }}
+          if-no-files-found: error
+
+      - name: Publish to the Visual Studio Marketplace
+        if: steps.registries.outputs.marketplace == 'true'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce@4.0.0 publish --packagePath "${{ steps.bump_version.outputs.vsix }}"
+
+      - name: Publish to Open VSX
+        if: steps.registries.outputs.openvsx == 'true'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --yes ovsx@1.2.0 publish "${{ steps.bump_version.outputs.vsix }}"
+
+      - name: Commit and tag
+        env:
+          VERSION: ${{ steps.bump_version.outputs.version }}
+        run: |
+          git add package.json package-lock.json CHANGELOG.md
+          git commit -m "chore(release): jq79-vscode@$VERSION"
+          # annotated: --follow-tags pushes no other kind
+          git tag -a "jq79-vscode@$VERSION" -m "jq79-vscode@$VERSION"
+          git push origin HEAD --follow-tags
+
+      # not --latest: that badge stays on the library's own releases
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump_version.outputs.version }}
+          VSIX: ${{ steps.bump_version.outputs.vsix }}
+        run: |
+          gh release create "jq79-vscode@$VERSION" "$VSIX" \
+            --title "jq79 for VS Code $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest=false
