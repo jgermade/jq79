@@ -1200,3 +1200,32 @@ class Scope implements EffectScope {
 }
 
 export const createEffectScope = (scope: Record<string, any>, deep = false): EffectScope => new Scope(scope, deep)
+
+// a derived value: `get`'s result on `.value`, recomputed whenever anything it
+// read changes - in any store, the way any effect is woken. What comes back is
+// a store, so it does everything one does (passed as a prop, held in another
+// store and bridged there, $on("value")), seen through a read-only view: a
+// write would be overwritten by the next recompute, so it is refused aloud
+// instead (see RECORD/2026-10-01.computed.md)
+export type Computed<T> = ReactiveDeepData<{ readonly value: T }>
+
+export const $computed = <T>(get: () => T): Computed<T> => {
+  const box = $reactive({ value: undefined as T })
+  box.$effect(() => {
+    let value: T
+    try {
+      value = get()
+    } catch (error) {
+      // left to propagate, it would throw out of whatever write woke it -
+      // `cart.items.push(x)` failing for code that has nothing to do with it
+      console.error("jq79: error in $computed, keeping its last value", error)
+      return
+    }
+    box.value = value
+  })
+  const refuse = (_target: object, key: string | symbol): boolean => {
+    console.warn(`jq79: a $computed is read-only - the write to ${String(key)} was ignored`)
+    return true
+  }
+  return new Proxy(box, { set: refuse, deleteProperty: refuse, defineProperty: refuse }) as Computed<T>
+}

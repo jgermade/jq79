@@ -202,3 +202,47 @@ any component a perfectly good app-wide store — import it where you need it.
 A component drops its subscription to a store it was handed when it's destroyed,
 so a long-lived store doesn't accumulate listeners from components that are
 gone. Outside a component, `store.$dispose()` does the same by hand.
+
+## Derived values: `$computed`
+
+`$computed(get)` keeps the result of `get` on `.value`, and recomputes it
+whenever anything `get` read changes, in any store. It's the shared-state
+counterpart of `$:`: a derived value you can export, pass as a prop, or hand to
+several components.
+
+```js
+// store.js
+import { $reactive, $computed } from "jq79"
+
+export const cart = $reactive({ items: [] })
+export const total = $computed(() => cart.items.reduce((sum, item) => sum + item.price, 0))
+
+total.value                  // 0
+cart.items.push({ price: 3 })
+total.value                  // 3
+```
+
+```html
+<!-- CartTotal.html -->
+<script :setup="{ total }"></script>
+<p>Total: {{ total.value }}</p>
+```
+
+- **It's a store**, so it does what a store does: `total.$on("value", …)`,
+  `total.$effect(…)`, being passed as a prop, or held in another store and
+  [shared](#shared-state-pass-a-store-not-an-object) from there.
+- **Read-only.** Writing `.value` warns and is ignored.
+- **It only notifies when the result changes**, for primitives:
+  `$computed(() => list.items.length > 0)` wakes its readers when the answer
+  flips, not on every push. An object result notifies every time, because each
+  run returns a new object.
+- **If `get` throws**, the error is logged and `.value` keeps its last value.
+  The write that triggered the recompute doesn't throw.
+- **It's eager**: it recomputes on every change, even if nobody reads `.value`.
+  `total.$dispose()` stops it.
+
+It's also available in setup scripts and factory ctx. There, it's disposed with
+the component that created it, so one made over a long-lived store doesn't keep
+running after the component is gone. For a value only the component's own
+template shows, `$: total = …` is still simpler: `{{ total }}` instead of
+`{{ total.value }}`.

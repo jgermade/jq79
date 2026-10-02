@@ -197,11 +197,16 @@ test("the helpers are in scope, typed", async () => {
     `  const all: Element[] = $$self("li")`,
     `  const filled: boolean = $slots.footer`,
     `  $updateModel(n)`,
+    `  const off: () => void = $destroyed(() => clearTimeout(0))`,
+    `  const double = $computed(() => n * 2)`,
+    `  const d: number = double.value`,
+    `  const stop: () => void = $attached(() => {}, { immediate: false })`,
+    `  $detached(stop)`,
     `  $emit()`,
     `</script>`,
   ].join("\n"))
   assert.equal(errors.length, 1, errors.join("\n"))
-  assert.match(errors[0], /^10:3 TS2554 /)
+  assert.match(errors[0], /^15:3 TS2554 /)
 })
 
 test("a sibling component is in scope, unless a prop takes its name", async () => {
