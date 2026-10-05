@@ -57,3 +57,10 @@ jobs:
       - name: jq79-check packs
         working-directory: editors/check
         run: npm pack --dry-run
+
+      # what *Release VS Code extension* publishes: that it still packages
+      # (icon, license, README links) is checked here, not on release day
+      - name: The extension packs
+        run: |
+          npm run package
+          rm jq79-vscode-*.vsix

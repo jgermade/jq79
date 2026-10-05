@@ -5,6 +5,16 @@
   "version": "0.12.0",
   "publisher": "jgermade",
   "license": "ISC",
+  "author": "Jesus Germade <jesus@germade.dev>",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#3178c6",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/jgermade/jq79/tree/main/editors/vscode#readme",
+  "bugs": {
+    "url": "https://github.com/jgermade/jq79/issues"
+  },
   "private": true,
   "repository": {
     "type": "git",
@@ -145,7 +155,7 @@
     "pretest": "node test/fetch-grammars.mjs && node build.mjs && node node_modules/typescript/bin/tsc -p .",
     "test": "node --test test/grammars.mjs test/check.mjs test/server.mjs test/cli.mjs && JQ79_CHECKER=ts7 node --test test/check.mjs",
     "check": "node dist/check.mjs",
-    "package": "npx --yes @vscode/vsce package --skip-license"
+    "package": "npx --yes @vscode/vsce@4.0.0 package --baseContentUrl https://github.com/jgermade/jq79/blob/main/editors/vscode --baseImagesUrl https://github.com/jgermade/jq79/raw/main/editors/vscode"
   },
   "dependencies": {
     "typescript": "~5.9.3"

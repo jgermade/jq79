@@ -44,7 +44,8 @@ the checker's command line is a package of its own, [`editors/check/`](editors/c
 (`jq79-check`): the extension's `dist/check.mjs`, which reads a component with
 the same generator and checks it with TypeScript 7 (the editor keeps Volar and
 TypeScript 5.9; `npm test` runs the checks on both), released by the
-*Release jq79-check* workflow. Its plan is
+*Release jq79-check* workflow. The extension itself is released by the
+*Release VS Code extension* workflow, to the Marketplace and Open VSX. Its plan is
 [RECORD/2026-09-28.an-editor-extension.md](RECORD/2026-09-28.an-editor-extension.md).
 
 ## Commands
