@@ -16,6 +16,11 @@ export default defineConfig([
     minify: true,
     clean: true,
     target: "es2020",
+    // the CJS and IIFE builds get an empty import.meta, which resolveBare in
+    // jq79.ts expects and guards: the warning would print on every build
+    esbuildOptions(options) {
+      options.logOverride = { ...options.logOverride, "empty-import-meta": "silent" }
+    },
   },
   {
     // the generator safe mode runs on (RECORD/2026-09-23.no-unsafe-eval.md),

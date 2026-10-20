@@ -289,6 +289,24 @@ A **bare** specifier (`lodash-es`) is the exception, left untouched for the
 import map or the bundler to answer — that is who owns it, and resolving it
 would quietly turn it into a path.
 
+That holds for a bare `.html` too, though `fetch()` knows nothing of import
+maps: jq79 asks the map itself (`import.meta.resolve`) before fetching. The same
+goes for `Component79.fetch()` and `fetchAll()`:
+
+```html
+<script type="importmap">{ "imports": { "@app/": "/components/" } }</script>
+```
+
+```js
+const Panel = await import("@app/panel.html")   // /components/panel.html
+```
+
+The component keeps the resolved URL, so its own `./` imports land next to it.
+A specifier the map doesn't name is fetched as written. Two limits: the map is
+read as the library's module sees it, so a `scopes` entry counts only if it
+covers `jq79.js`; and the classic-script and CommonJS builds (`jq79.global.js`,
+`jq79.cjs`) have no `import.meta`, so there a bare `.html` is never mapped.
+
 Under the [Vite plugin](vite-plugin.md), literal specifiers are hoisted into
 real module imports at build time and never reach any of this — the bundler
 resolves them, so an npm package works whether or not the page has an import map.

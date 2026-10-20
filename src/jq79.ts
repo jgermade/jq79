@@ -3351,8 +3351,10 @@ const importResource = (url: string): Promise<any> =>
 // For the same reason a *root-absolute* specifier is resolved too, not passed
 // through: `/x.js` means the page's root to whoever wrote it, and the page is
 // the only base under which the two branches agree. Bare specifiers ("lodash")
-// are the exception that stays untouched - they belong to the import map or
-// the bundler, and resolving one would quietly turn it into a path.
+// are the exception that stays untouched here - they belong to the import map
+// or the bundler, and resolving one against a base would quietly turn it into
+// a path. A bare *.html* one still reaches the map: fetchComponent asks it,
+// since fetch() cannot (see resolveBare)
 //
 // The base is absolutized first, the way hotKey does and for the same reason:
 // the filename may itself be relative ("./card.html", from an import() in a
@@ -3902,7 +3904,32 @@ const warnIfStuck = (component: Component79, gates: Promise<void>[]) => {
   Promise.all(gates).then(() => clearTimeout(timer))
 }
 
-const fetchComponent = async (url: string): Promise<Component79> => {
+// a bare specifier belongs to the import map, and native import() reads one -
+// fetch() never does, so `fetch("@app/card.html")` asks the page's directory
+// for a folder named "@app". A bare URL is resolved here through the same map,
+// with the function import() itself would use, so the component gets the URL
+// its own relative imports, its precompiled script and its HMR key resolve
+// against. That includes a relative path written without "./" ("views/x.html"):
+// it reaches the map too, and changes only if the map names it. One the map
+// does not name throws, and goes on unchanged, as it did before.
+//
+// The map is read as this module sees it: a `scopes` entry applies when it
+// covers jq79.js, not the component. Guarded because the CJS and classic-script
+// builds (jq79.cjs, jq79.global.js) have no import.meta, and there bare URLs go
+// to fetch() as they are
+const resolveBare = (url: string): string => {
+  if (RESOLVABLE_SPECIFIER_RE.test(url)) return url
+  const resolve = (import.meta as { resolve?: (spec: string) => string }).resolve
+  if (typeof resolve !== "function") return url
+  try {
+    return resolve(url)
+  } catch {
+    return url
+  }
+}
+
+const fetchComponent = async (rawUrl: string): Promise<Component79> => {
+  const url = resolveBare(rawUrl)
   // under safeEval()'s worker, the component's functions arrive beside it,
   // and both have to be in before anyone can render it
   const [text] = await Promise.all([
