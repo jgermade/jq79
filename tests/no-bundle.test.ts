@@ -157,6 +157,15 @@ describe("no bundle", () => {
     expect(document.querySelector(".panel-heading")?.textContent).toBe("Inbox")
   })
 
+  it("fetches a bare specifier the import map doesn't name as written", async () => {
+    const { Component79 } = await import(pathToFileURL(dist("jq79.js")).href)
+
+    // the map is asked first (import.meta.resolve), and one that has no entry
+    // for it throws - which leaves the URL as it was, not a file:// guess
+    await expect(Component79.fetch("@nada/x.html")).rejects
+      .toThrow("failed to fetch component from @nada/x.html: 404")
+  })
+
   it("runs the page a static host would serve, verbatim", async () => {
     // tests/fixtures/no-bundle/index.html is a deployable page: a #app div and
     // a module script that imports jq79 from a CDN and mounts a fetched
