@@ -29,11 +29,22 @@ body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100
    the flex-grown remainder rather than a height of its own */
 #app { flex: 1; min-height: 0; }
 #app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1rem; }
+
+/* on screen from the first paint until the layout is: the app renders once its
+   panes are imported, which on a cold cache is a few round trips away. mount()
+   appends rather than replacing, so the spinner steps aside on its own once the
+   container is there, and a failure's innerHTML takes it away with the rest. It
+   fades in late, so a warm load never flashes it */
+#app .loading { min-height: calc(100dvh - var(--header-h)); display: grid; place-content: center; justify-items: center; gap: 0.9rem; color: var(--muted); font-size: 0.9rem; animation: loading-in 300ms 200ms ease-out backwards; }
+#app .loading::before { content: ""; width: 2rem; height: 2rem; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: loading-spin 0.8s linear infinite; }
+#app:has(.tutorial-container) .loading { display: none; }
+@keyframes loading-in { from { opacity: 0; } }
+@keyframes loading-spin { to { transform: rotate(1turn); } }
 </style>
 </head>
 <body>
 {{header}}
-<div id="app"></div>
+<div id="app"><div class="loading" role="status">Loading the tutorial…</div></div>
 <script type="module">
 import { Component79 } from "../jq79.js"
 
