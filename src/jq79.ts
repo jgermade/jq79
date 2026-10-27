@@ -3979,7 +3979,10 @@ const componentSource = (url: string): Promise<string> => {
   if (!text) {
     text = downloadComponent(url)
     componentCache.set(key, text)
-    text.catch(() => componentCache?.get(key) === text && componentCache.delete(key))
+    const pending = text
+    pending.catch(() => {
+      if (componentCache?.get(key) === pending) componentCache.delete(key)
+    })
   }
   return text
 }
