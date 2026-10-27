@@ -1341,6 +1341,12 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     } finally {
       nestingDepth--
     }
+    // a child whose script holds its render paints later than this template:
+    // its owner's $mounted() waits for it. Absent under renderComponent(),
+    // where no instance owns the template
+    const box: PendingScripts | undefined = (scope as any)[PENDING_SCRIPTS]
+    if (box) instance.holdOwner(box.owner)
+
     // the box holds this instance and nothing else, so appending is the whole
     // of it; without one, the end anchor is the only fixed point there is - and
     // its parentNode is the fragment before this site is inserted and the real
@@ -3717,9 +3723,13 @@ const UNFILLED_PROPS = Symbol("jq79.unfilledProps")
 // awaited $mounted() is exactly the case the count keeps quiet. Read live, so
 // an :if that opens after everything settled is judged against the scripts as
 // they are then, not as they were at the first paint
+//
+// It also names the instance whose render generation it belongs to, so a
+// nested component rendered anywhere in that template - an :each row, slot
+// content - can tell its owner it hasn't painted yet (see holdOwner)
 const PENDING_SCRIPTS = Symbol("jq79.pendingScripts")
 
-type PendingScripts = { count: number }
+type PendingScripts = { count: number; owner: Component79 }
 
 // default-import interop for factory scripts: real modules expose .default,
 // while importing an .html component resolves to the Component79 itself
@@ -4082,6 +4092,14 @@ export class Component79 {
   // must not resolve on attach alone - a script awaiting it would wake to an
   // empty component and find nothing to query
   private renderDone = false
+  // how many components this generation's first render created that haven't
+  // painted yet - a child whose script awaits an import paints after this
+  // template does. $mounted() means the DOM below is there to query, so it
+  // waits for them too (RECORD/2026-10-22.mounted-waits-for-children.md)
+  private held = 0
+  // set by the usage site of a nested instance that hadn't painted when it was
+  // rendered: tells the owner it has, or that it never will (destroyed first)
+  private onPaint: (() => void) | null = null
   // what this render generation's scripts asked to run when it is torn down
   // ($destroyed). Created on the first call, and taken by destroy() before
   // anything else goes, so a hook still sees the DOM and the store
@@ -4334,7 +4352,7 @@ export class Component79 {
     // renders, so a component nested inside itself pays for it once per level -
     // and the depth guard at MAX_NESTING_DEPTH only beats a RangeError while
     // this function stays small (see the note in docs/development.md)
-    Object.defineProperty(raw, PENDING_SCRIPTS, { value: { count: 0 } as PendingScripts })
+    Object.defineProperty(raw, PENDING_SCRIPTS, { value: { count: 0, owner: this } as PendingScripts })
 
     const store = $reactive(raw)
     const fx = createEffectScope(store)
@@ -4389,6 +4407,7 @@ export class Component79 {
     const mounted = new Promise<void>(resolve => { resolveMounted = resolve })
     this.resolveMounted = resolveMounted
     this.renderDone = false
+    this.held = 0
 
     // $destroyed(fn) runs fn when this generation is torn down: destroy(), a
     // re-render, a hot reload, or a parent's :if/:each removing it - never
@@ -4800,8 +4819,27 @@ export class Component79 {
   // whichever lands last calls this. In the ordinary synchronous flow the render
   // is already done and this is the attach; for a component whose first render
   // a script held back, it is the other way round
+  //
+  // "Rendered" includes the components the template created: one whose own
+  // render a script held back counts in `held` until it paints
   private settleMounted() {
-    if (this.renderDone && this.mountRoot) this.resolveMounted?.()
+    if (!this.renderDone || this.held > 0) return
+    const onPaint = this.onPaint
+    this.onPaint = null
+    onPaint?.()
+    if (this.mountRoot) this.resolveMounted?.()
+  }
+
+  // Internal: called by the usage site right after rendering this instance
+  // into `owner`'s template. One that has painted already - every synchronous
+  // component - costs nothing more
+  holdOwner(owner: Component79) {
+    if (this.renderDone && this.held === 0) return
+    owner.held++
+    this.onPaint = () => {
+      owner.held--
+      owner.settleMounted()
+    }
   }
 
   // detaches from the DOM while keeping all state; a later mount() re-attaches
@@ -4837,6 +4875,14 @@ export class Component79 {
     const hooks = this.destroyHooks
     this.destroyHooks = null
     hooks?.forEach(fn => runHook(fn, "$destroyed"))
+    // before the children go: each one destroyed unpainted releases this
+    // instance, and that must not resolve a generation that is going away
+    this.resolveMounted = null
+    // and one destroyed before it painted releases its owner, which would
+    // otherwise wait for a paint that is never coming
+    const onPaint = this.onPaint
+    this.onPaint = null
+    onPaint?.()
     this.detach()
     this.fx?.dispose()
     this.fx = null

@@ -137,8 +137,33 @@ export const OPERATIONS = [
   },
 ]
 
-export const waitForRows = (page, n) =>
-  page.waitForFunction(count => document.querySelectorAll("#tbody tr").length === count, n, { timeout: 15000 })
+// jq79's own, measured by run-ab.mjs and by nothing that compares frameworks:
+// the rows above as <Row> components, in a list of their own (#ctbody - see
+// frameworks/keyed/jq79/src/App.html). The suite above renders plain elements,
+// so a change to how a nested component is created or torn down never reached
+// it. See RECORD/2026-10-22.mounted-waits-for-children.md
+export const COMPONENT_OPERATIONS = [
+  {
+    id: "createComponents1k",
+    label: "Create 1,000 component rows",
+    prepare: async page => {},
+    clicks: ["#runcomponents"],
+    expect: { componentRows: 1000 },
+  },
+  {
+    id: "clearComponents1k",
+    label: "Clear 1,000 component rows",
+    prepare: async page => {
+      await page.click("#runcomponents")
+      await waitForRows(page, 1000, "#ctbody .crow")
+    },
+    clicks: ["#clearcomponents"],
+    expect: { componentRows: 0 },
+  },
+]
+
+export const waitForRows = (page, n, selector = "#tbody tr") =>
+  page.waitForFunction(([count, selector]) => document.querySelectorAll(selector).length === count, [n, selector], { timeout: 15000 })
 
 // runs entirely inside the page (one round-trip) so Playwright's own IPC
 // doesn't get counted as part of the operation. Every element is resolved
@@ -169,6 +194,7 @@ export const clickAndTime = (page, clicks, expect) =>
       }
       check("rows", document.querySelectorAll("#tbody tr").length, expect.rows)
       check("selected rows", document.querySelectorAll("#tbody tr.danger").length, expect.selectedRows)
+      check("component rows", document.querySelectorAll("#ctbody .crow").length, expect.componentRows)
       if (expect.updateMarks != null) {
         // the update walks every 10th row, so row 1 carries one " !!!" per click
         const label = document.querySelector("#tbody tr:nth-child(1) td:nth-child(2) a")?.textContent ?? ""
@@ -198,9 +224,11 @@ export const median = samples => {
 // an answer for the rest: run-ab.mjs re-measures just the operations its
 // regression gate is about to fail on, and paying for the other seven to
 // confirm one is what would make that confirmation too expensive to do
-export const measureApp = async (page, url, samples, only = null) => {
+//
+// `operations` is the suite: OPERATIONS unless the caller knows the app has more
+export const measureApp = async (page, url, samples, only = null, operations = OPERATIONS) => {
   const results = []
-  for (const op of OPERATIONS) {
+  for (const op of operations) {
     if (only && !only.includes(op.id)) continue
     const times = []
     for (let i = 0; i < samples; i++) {

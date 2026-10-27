@@ -86,6 +86,8 @@ new Component79(src)
 </script>
 ```
 
+  "Rendered" includes the components the template renders. A child whose own script holds its template back — `const Row = await import("./row.html")`, a fetch — paints after its parent does, and the parent's `await $mounted()` waits for it, so `$(".row")` below the line finds the row. Only the first render counts: a component an `:if` adds later doesn't hold anything. A child that never settles holds its parent's `$mounted()` too (the child's "has been waiting" warning names it).
+
   Reactivity is unaffected by where a declaration sits: variables declared after the `await` are pre-declared on the store before the first render (as `undefined`), so the template can bind to them from the start and updates when the assignment runs. If the component is never mounted, the code after `await $mounted()` never runs.
 
   Put the yield *above* the slow part when you want chrome or a skeleton on screen straight away — the whole template is what waits, static markup included:

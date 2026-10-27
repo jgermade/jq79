@@ -697,6 +697,54 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("holds the parent's $mounted() until a child whose script awaits has painted", async () => {
+      // the child stands in for one that imports a component: its template
+      // waits, so it paints after the parent's does
+      const leaf = deferred()
+      vi.stubGlobal("loadLeaf", () => leaf.promise)
+      const child = new Component79(
+        `<script :setup>let label = await loadLeaf()</script><b class="leaf">{{ label }}</b>`
+      )
+      const seen: Array<string | null> = []
+      vi.stubGlobal("seen", seen)
+      const jq79 = new Component79(
+        `<script :setup>await $mounted()\nseen.push($(".leaf")?.textContent ?? null)</script>` +
+        // :each, so the usage site finds its owner through an item scope
+        `<div><Child :each="n in [1, 2]" /></div>`
+      ).render({ Child: child }).mount(host)
+
+      await flush()
+      expect(seen).toEqual([])
+
+      leaf.settle("ready")
+      await flush()
+      expect(seen).toEqual(["ready"])
+      jq79.destroy()
+    })
+
+    it("releases the parent's $mounted() when an unpainted child is removed", async () => {
+      // settled at the end: a script left pending for good is tracked page-wide,
+      // and holds back the expression warnings of every test after this one
+      const slow = deferred()
+      vi.stubGlobal("slow", () => slow.promise)
+      const child = new Component79(`<script :setup>let x = await slow()</script><b>{{ x }}</b>`)
+      let mounted = false
+      vi.stubGlobal("done", () => { mounted = true })
+      const jq79 = new Component79(
+        `<script :setup>await $mounted()\ndone()</script><div><Child :if="show" /></div>`
+      ).render({ Child: child, show: true }).mount(host)
+
+      await flush()
+      expect(mounted).toBe(false)
+
+      jq79.data!.show = false
+      await flush()
+      expect(mounted).toBe(true)
+      jq79.destroy()
+      slow.settle()
+      await flush()
+    })
+
     it("waits for a script that is still running even when a later one yields", async () => {
       const slow = deferred()
       vi.stubGlobal("slowThing", () => slow.promise)
