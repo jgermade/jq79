@@ -3849,6 +3849,11 @@ export const hotUpdate = (filename: string, src: string): number => {
   // parsed once and shared by every instance - which is already what a
   // definition and the clones :component makes from it do
   const parts = parseComponentString(src)
+  // the next fetch of this file - a component mounted after the edit - gets the
+  // edit, not the source the cache held from before it
+  componentCache?.forEach((_, url) => {
+    if (hotKey(url) === key) componentCache!.set(url, Promise.resolve(src))
+  })
   // the file is the hot-reload unit, so one reparse serves every component it
   // declares: an instance is handed the parts of the component it *is*, by
   // name. A name that is no longer in the file (a <template> renamed or
@@ -3938,17 +3943,53 @@ const resolveBare = (url: string): string => {
   }
 }
 
-const fetchComponent = async (rawUrl: string): Promise<Component79> => {
-  const url = resolveBare(rawUrl)
+// a component's source by the absolute URL it came from, so a file that a
+// page fetches, fetchAll()s and import()s from a dozen setup scripts is
+// downloaded once (Component79.cache). The text, not the component: each
+// fetch still hands back an instance of its own, as it always has - mounting
+// one never touches another. A promise, so two requests in flight share one
+// download; a failed one is dropped, and the next request tries again.
+// Under safeEval()'s worker the entry settles once the precompiled functions
+// are in too, so those load once per file as well
+let componentCache: Map<string, Promise<string>> | null = new Map()
+
+const cacheKey = (url: string): string => {
+  try {
+    return new URL(url, document.baseURI).href.replace(/#.*$/, "")
+  } catch {
+    return url
+  }
+}
+
+const downloadComponent = (url: string): Promise<string> =>
   // under safeEval()'s worker, the component's functions arrive beside it,
   // and both have to be in before anyone can render it
-  const [text] = await Promise.all([
+  Promise.all([
     fetch(url).then(response => {
       if (!response.ok) throw new Error(`failed to fetch component from ${url}: ${response.status}`)
       return response.text()
     }),
     safeEvalWorker?.then(() => loadPrecompiled(url)),
-  ])
+  ]).then(([text]) => text)
+
+const componentSource = (url: string): Promise<string> => {
+  if (!componentCache) return downloadComponent(url)
+  const key = cacheKey(url)
+  let text = componentCache.get(key)
+  if (!text) {
+    text = downloadComponent(url)
+    componentCache.set(key, text)
+    const pending = text
+    pending.catch(() => {
+      if (componentCache?.get(key) === pending) componentCache.delete(key)
+    })
+  }
+  return text
+}
+
+const fetchComponent = async (rawUrl: string): Promise<Component79> => {
+  const url = resolveBare(rawUrl)
+  const text = await componentSource(url)
   // the URL names the component's scripts in devtools, and is where the
   // browser will look for the source when a breakpoint lands in one
   return new Component79(text, { filename: url })
@@ -4287,6 +4328,24 @@ export class Component79 {
     const worker = options.worker ?? (options.nonce ? false : DEFAULT_WORKER_URL)
     if (worker !== false) steps.push(safeEvalWorker ??= startWorker(worker))
     return Promise.all(steps).then(() => undefined)
+  }
+
+  // whether fetch(), fetchAll() and a setup script's import() of an .html
+  // download a file once and reuse its source after that. On by default:
+  //
+  //   Component79.cache()        // true - is it on?
+  //   Component79.cache(false)   // off, and what it held is dropped
+  //   Component79.clearCache()   // stays on, starts empty
+  //
+  // Returns the setting as it stands after the call
+  static cache(enabled?: boolean): boolean {
+    if (enabled === false) componentCache = null
+    else if (enabled === true) componentCache ??= new Map()
+    return !!componentCache
+  }
+
+  static clearCache(): void {
+    componentCache?.clear()
   }
 
   static fetch(url: string): PendingComponent79 {

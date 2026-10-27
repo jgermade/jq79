@@ -1,6 +1,6 @@
 # Keys and identity
 
-[Lists and conditions](#01-basics/03-lists-and-conditions) said the list is
+[Lists and conditions](#02-templates/02-lists-and-conditions) said the list is
 diffed by key. This lesson is about what that buys you, because the difference
 doesn't show until the list *moves*.
 

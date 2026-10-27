@@ -120,9 +120,11 @@ Written for users, but they're where the behaviour is specified:
 [DOM helpers](docs/dom-helpers.md), [Vite plugin](docs/vite-plugin.md),
 [dev server](docs/dev-server.md), [Content Security Policy](docs/csp.md).
 
-Docs and the site are generated from the repo's own markdown
+Docs and the site are generated from the repo's own sources
 ([`scripts/build-site.mjs`](scripts/build-site.mjs)) — edit the `.md`, not `site/`
-(which is wiped on every build and gitignored).
+(which is wiped on every build and gitignored). The landing page is
+[`landing/index.html`](landing/index.html), written by hand and independent of
+the README; its hero demo is [`landing/counter.html`](landing/counter.html).
 
 ## The tutorial
 

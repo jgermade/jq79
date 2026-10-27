@@ -418,11 +418,11 @@ const exercises = readdirSync(TUTORIAL, { withFileTypes: true })
 // the wrong people. What one-way invites is a name that quietly matches nothing;
 // the last test in this block is what closes that
 const CLONING_EXERCISES = new Set([
-  "01-basics/05-forms-and-scope",
-  "01-basics/06-keys-and-identity",
-  "01-basics/06-keys-and-identity (solution)",
+  "02-templates/04-forms-and-scope",
+  "02-templates/05-keys-and-identity",
+  "02-templates/05-keys-and-identity (solution)",
   "03-components/01-nested-components (solution)",
-  "03-components/06-spreading-props",
+  "03-components/04-spreading-props",
 ])
 
 describe("the clone path renders every tutorial exercise identically", () => {
@@ -460,7 +460,7 @@ describe("the clone path renders every tutorial exercise identically", () => {
       // an idle box and not enough on a loaded one: two consecutive macrotasks
       // can both land while a component's async work is still pending, and the
       // read returns an intermediate state. Seen failing as the NULL CONTROL -
-      // two interpreted mounts of 03-components/03-shared-state disagreeing -
+      // two interpreted mounts of 04-state/01-shared-state disagreeing -
       // reproduced by running this file with every core busy.
       //
       // So: poll on a real delay until the DOM has been unchanged for a quiet

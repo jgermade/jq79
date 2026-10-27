@@ -19,17 +19,16 @@
 <title>Tutorial · jq79</title>
 {{icons}}
 <style>
-/* the site's palette, its header chrome, and the code-token colors the markdown
-   pages are highlighted with - the same classes hljs emits in the browser, so
-   the prose, the editor and the diff are dressed by one stylesheet */
+/* the site's theme - palette, header, code tokens - shared with every page the
+   build generates, so the prose, the editor and the diff are dressed by one
+   stylesheet with the rest of the site */
 {{styles}}
 
-* { box-sizing: border-box; }
-body { margin: 0; display: flex; flex-direction: column; min-height: 100vh; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--body-bg); color: var(--fg); }
+body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
 /* the tutorial lays itself out against the viewport minus the header, so #app is
    the flex-grown remainder rather than a height of its own */
 #app { flex: 1; min-height: 0; }
-#app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; color: #fff; }
+#app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1rem; }
 </style>
 </head>
 <body>

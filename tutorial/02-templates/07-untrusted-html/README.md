@@ -1,6 +1,6 @@
 # Untrusted HTML
 
-[Attributes](#01-basics/04-attributes) introduced `:html`, and the sanitizer it
+[Attributes](#02-templates/03-attributes) introduced `:html`, and the sanitizer it
 runs everything through. The sanitizer asks *how*: whatever executes is gone —
 `<script>`, event handlers, `javascript:` URLs — along with any tag or attribute
 not on a small allowlist. That's the XSS defense, and it is not negotiable: no

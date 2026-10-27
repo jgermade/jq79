@@ -4,73 +4,50 @@
   click is reported as `tutorial:go` with the exercise's flat index.
 -->
 <script :setup="{ sections, path }">
-  const go = index => $emit("tutorial:go", index)
+  // on a narrow screen the list folds away once a lesson is picked
+  const go = index => {
+    collapsed = true
+    $emit("tutorial:go", index)
+  }
 
   let collapsed = true
+
+  $: flat = sections.flatMap(section => section.exercises)
+  $: current = flat.find(exercise => exercise.path === path)
 </script>
 
 <aside class="toc" :class="{ collapsed }">
   <div class="collapse-toggle">
-    <button @click="collapsed = !collapsed">
-      <span :if="collapsed">☰</span>
-      <span :else>✕</span>
-      Table of contents
+    <button @click="collapsed = !collapsed" :aria-expanded="String(!collapsed)">
+      <span class="count">{{ current ? current.index + 1 : 1 }}/{{ flat.length }}</span>
+      <span class="current">{{ current?.title }}</span>
+      <span class="chevron" aria-hidden="true">{{ collapsed ? "▾" : "▴" }}</span>
     </button>
   </div>
-  <div class="chapter" :each="section in sections" :key="section.slug">
-    <h3>{{ section.title }}</h3>
-    <button
-      :each="exercise in section.exercises"
-      :key="exercise.path"
-      :class="exercise.path === path ? 'link active' : 'link'"
-      @click="go(exercise.index)"
-    >{{ exercise.title }}</button>
+  <div class="chapters">
+    <div class="chapter" :each="section in sections" :key="section.slug">
+      <h3>{{ section.title }}</h3>
+      <button
+        :each="exercise in section.exercises"
+        :key="exercise.path"
+        :class="exercise.path === path ? 'link active' : 'link'"
+        @click="go(exercise.index)"
+      >{{ exercise.title }}</button>
+    </div>
   </div>
 </aside>
 
 <style>
-  .toc { padding: 1.2rem 0.8rem; }
+  .toc { background: var(--bg-soft); border-bottom: 1px solid var(--line); }
 
-  /* collapse toggle: only visible on narrow screens */
-  .collapse-toggle { display: none; }
+  /* below 80rem the toc is a bar naming the lesson, which opens into the list */
   .collapse-toggle button {
     display: flex;
     align-items: center;
-    gap: 0.4em;
+    gap: 0.75rem;
     width: 100%;
-    padding: 0.4em 0.6rem;
+    padding: 0.75rem 1rem;
     border: 0;
-    border-radius: 6px;
-    background: none;
-    color: var(--accent);
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .collapse-toggle button:hover { background: var(--code-bg); }
-
-  @media (max-width: 47.99rem) {
-    .collapse-toggle { display: block; }
-    .toc.collapsed .chapter { display: none; }
-    .toc { padding: 0; }
-  }
-
-  .chapter h3 {
-    margin: 0 0 0.4em;
-    padding: 0 0.6rem;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-  }
-  .chapter + .chapter { margin-top: 1.4rem; }
-  .link {
-    display: block;
-    width: 100%;
-    padding: 0.4em 0.6rem;
-    border: 0;
-    border-radius: 6px;
     background: none;
     color: var(--fg);
     font: inherit;
@@ -78,6 +55,42 @@
     text-align: left;
     cursor: pointer;
   }
-  .link:hover { background: var(--code-bg); }
-  .link.active { background: var(--accent); color: #fff; }
+  .collapse-toggle .count { flex: none; padding: 0.1rem 0.55rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 700 0.75rem var(--mono); }
+  .collapse-toggle .current { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .collapse-toggle .chevron { color: var(--muted); }
+
+  .chapters { padding: 0.5rem 0.6rem 1rem; max-height: 60vh; overflow-y: auto; }
+  .toc.collapsed .chapters { display: none; }
+
+  @media (min-width: 80rem) {
+    .toc { border-bottom: 0; border-right: 1px solid var(--line); }
+    .collapse-toggle { display: none; }
+    .toc.collapsed .chapters, .chapters { display: block; max-height: none; padding: 1.2rem 0.75rem; }
+  }
+
+  .chapter h3 {
+    margin: 0 0 0.35em;
+    padding: 0 0.6rem;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  .chapter + .chapter { margin-top: 1.3rem; }
+  .link {
+    display: block;
+    width: 100%;
+    padding: 0.4em 0.65rem;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.92rem;
+    line-height: 1.35;
+    text-align: left;
+    cursor: pointer;
+  }
+  .link:hover { background: var(--accent-soft); }
+  .link.active { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 </style>

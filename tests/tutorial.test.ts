@@ -146,7 +146,7 @@ describe("tutorial", () => {
   // a lesson with no solution/ is a demonstration: the app hides its solution
   // button and swaps the live preview for the resulting-html pane. The list is
   // deliberate - a solution *forgotten* on a real exercise still fails here
-  const DEMOS = new Set(["03-components/04-scoped-styles"])
+  const DEMOS = new Set(["03-components/07-scoped-styles"])
 
   describe.each(exercises)("$path", ({ path, files, solution }) => {
     it(`has an ${ENTRY} to mount, and a solution unless it's a demo`, () => {
@@ -157,7 +157,7 @@ describe("tutorial", () => {
 
     // a tick rather than rendered(): what is under test is that nothing throws,
     // and an exercise is allowed to render nothing at all - the starting file
-    // of 04-scripts/03 has no DOM until its request resolves. The wait is only
+    // of 05-data-and-the-dom/01 has no DOM until its request resolves. The wait is only
     // to give a rejecting setup script somewhere to land
     it("mounts its starting files without throwing", async () => {
       expect(() => mount(files, host)).not.toThrow()
@@ -177,14 +177,14 @@ describe("tutorial", () => {
     return { ...exercise.files, ...exercise.solution }
   }
 
-  it("01-basics/01: interpolates the greeting", () => {
-    mount(solutionOf("01-basics/01-your-first-component"), host)
+  it("01-getting-started/01: interpolates the greeting", () => {
+    mount(solutionOf("01-getting-started/01-your-first-component"), host)
 
     expect(host.shadowRoot?.querySelector("h1")?.textContent).toBe("Hello jq79!")
   })
 
-  it("01-basics/02: counts clicks and keeps `doubled` in sync", () => {
-    mount(solutionOf("01-basics/02-reactive-state"), host)
+  it("02-templates/01: counts clicks and keeps `doubled` in sync", () => {
+    mount(solutionOf("02-templates/01-reactive-state"), host)
     const button = host.shadowRoot!.querySelector("button")!
 
     expect(button.textContent).toContain("clicked 0 times")
@@ -196,8 +196,8 @@ describe("tutorial", () => {
     expect(host.shadowRoot?.querySelector("p")?.textContent).toBe("doubled: 4")
   })
 
-  it("01-basics/03: renders the list and reacts to toggling a todo", () => {
-    mount(solutionOf("01-basics/03-lists-and-conditions"), host)
+  it("02-templates/02: renders the list and reacts to toggling a todo", () => {
+    mount(solutionOf("02-templates/02-lists-and-conditions"), host)
     const items = host.shadowRoot!.querySelectorAll("li")
 
     expect(items.length).toBe(3)
@@ -222,8 +222,8 @@ describe("tutorial", () => {
     expect(cards[1].querySelector("strong")?.textContent).toBe("Linus")
   })
 
-  it("03-components/06: spreads the whole profile object into the card as props", async () => {
-    mount(solutionOf("03-components/06-spreading-props"), host)
+  it("03-components/04: spreads the whole profile object into the card as props", async () => {
+    mount(solutionOf("03-components/04-spreading-props"), host)
     await rendered(host)
 
     const card = host.shadowRoot!.querySelector("article")!
@@ -235,8 +235,8 @@ describe("tutorial", () => {
     expect(card.querySelector(".status")?.classList.contains("online")).toBe(true)
   })
 
-  it("03-components/07: renders the tree with a component the same file declares, recursively", async () => {
-    mount(solutionOf("03-components/07-one-file"), host)
+  it("03-components/06: renders the tree with a component the same file declares, recursively", async () => {
+    mount(solutionOf("03-components/06-one-file"), host)
     await rendered(host)
 
     const entries = [...host.shadowRoot!.querySelectorAll(".entry > span")].map(el => el.textContent)
@@ -246,8 +246,8 @@ describe("tutorial", () => {
     expect(host.shadowRoot!.querySelectorAll(".folder")).toHaveLength(1)
   })
 
-  it("03-components/08: fills the list's slot with the parent's own markup and helper", async () => {
-    mount(solutionOf("03-components/08-slots"), host)
+  it("03-components/05: fills the list's slot with the parent's own markup and helper", async () => {
+    mount(solutionOf("03-components/05-slots"), host)
     await rendered(host)
 
     const rows = [...host.shadowRoot!.querySelectorAll("li")].map(el => el.textContent?.replace(/\s+/g, " ").trim())
@@ -261,8 +261,8 @@ describe("tutorial", () => {
     expect(host.shadowRoot!.querySelector(".empty")?.textContent?.trim()).toBe("Nothing to show")
   })
 
-  it("01-basics/04: drives the button's attributes, the status text and its class", () => {
-    mount(solutionOf("01-basics/04-attributes"), host)
+  it("02-templates/03: drives the button's attributes, the status text and its class", () => {
+    mount(solutionOf("02-templates/03-attributes"), host)
     const button = host.shadowRoot!.querySelector("button")!
     const status = host.shadowRoot!.querySelector(".status")!
 
@@ -280,8 +280,8 @@ describe("tutorial", () => {
     expect(status.classList.contains("status")).toBe(true)
   })
 
-  it("01-basics/05: writes through :with, and keeps the browser from submitting the form", () => {
-    mount(solutionOf("01-basics/05-forms-and-scope"), host)
+  it("02-templates/04: writes through :with, and keeps the browser from submitting the form", () => {
+    mount(solutionOf("02-templates/04-forms-and-scope"), host)
     const root = host.shadowRoot!
     const field = (selector: string, value: string) => {
       const input = root.querySelector(selector) as HTMLInputElement
@@ -304,8 +304,8 @@ describe("tutorial", () => {
     expect(root.querySelector(".saved")?.textContent).toBe("saved: Ada (ada@lovelace.dev)")
   })
 
-  it("04-scripts/03: renders a loading state, then the users it fetched", async () => {
-    mount(solutionOf("04-scripts/03-loading-data"), host)
+  it("05-data-and-the-dom/01: renders a loading state, then the users it fetched", async () => {
+    mount(solutionOf("05-data-and-the-dom/01-loading-data"), host)
 
     // the point of the exercise: there is DOM before the request resolves
     expect(host.shadowRoot?.querySelector(".loading")?.textContent).toBe("loading…")
@@ -324,8 +324,8 @@ describe("tutorial", () => {
     ])
   })
 
-  it("04-scripts/04: debounces the search - one run for a burst of keystrokes", async () => {
-    mount(solutionOf("04-scripts/04-keeping-state-out-of-the-store"), host)
+  it("04-state/02: debounces the search - one run for a burst of keystrokes", async () => {
+    mount(solutionOf("04-state/02-keeping-state-out-of-the-store"), host)
     const input = host.shadowRoot!.querySelector(".search") as HTMLInputElement
 
     // with `timer` still in the store, the second of these would re-enter the
@@ -368,8 +368,8 @@ describe("tutorial", () => {
     expect(readout()).toBe("last value emitted: 1")
   })
 
-  it("02-no-bundle/01: renders a component no bundler resolved, fetched from the host", async () => {
-    mount(solutionOf("02-no-bundle/01-no-build-step"), host)
+  it("01-getting-started/02: renders a component no bundler resolved, fetched from the host", async () => {
+    mount(solutionOf("01-getting-started/02-no-build-step"), host)
 
     // the template is up before the request is: the <Sticker> tags render
     // nothing while the import is in flight, and fill in when it lands
@@ -385,8 +385,8 @@ describe("tutorial", () => {
     )
   })
 
-  it("02-no-bundle/02: fetches the chart on the first click, and not before", async () => {
-    mount(solutionOf("02-no-bundle/02-loading-on-demand"), host)
+  it("05-data-and-the-dom/02: fetches the chart on the first click, and not before", async () => {
+    mount(solutionOf("05-data-and-the-dom/02-loading-on-demand"), host)
     await rendered(host)
 
     // nothing asked for it, so it isn't there
@@ -404,15 +404,15 @@ describe("tutorial", () => {
     expect(host.shadowRoot?.querySelector(".chart .value")?.textContent).toBe("32")
   })
 
-  it("04-scripts/01: focuses its own search box once mounted", async () => {
-    mount(solutionOf("04-scripts/01-reaching-the-dom"), host)
+  it("05-data-and-the-dom/03: focuses its own search box once mounted", async () => {
+    mount(solutionOf("05-data-and-the-dom/03-reaching-the-dom"), host)
     await rendered(host)
 
     expect(host.shadowRoot!.activeElement).toBe(host.shadowRoot!.querySelector(".search"))
   })
 
-  it("04-scripts/02: wires the factory's methods and $effect", () => {
-    mount(solutionOf("04-scripts/02-factory-scripts"), host)
+  it("05-data-and-the-dom/04: wires the factory's methods and $effect", () => {
+    mount(solutionOf("05-data-and-the-dom/04-factory-scripts"), host)
     const [inc, reset] = [...host.shadowRoot!.querySelectorAll("button")]
     const readout = () => host.shadowRoot!.querySelector("p")?.textContent
 
@@ -436,8 +436,8 @@ describe("tutorial", () => {
 
   const startOf = (path: string) => exercises.find(candidate => candidate.path === path)!.files
 
-  it("01-basics/06: without :key, a reorder rebuilds the rows and typing is lost", () => {
-    mount(startOf("01-basics/06-keys-and-identity"), host)
+  it("02-templates/05: without :key, a reorder rebuilds the rows and typing is lost", () => {
+    mount(startOf("02-templates/05-keys-and-identity"), host)
     const root = host.shadowRoot!
     const inputs = () => [...root.querySelectorAll("input")] as HTMLInputElement[]
 
@@ -448,8 +448,8 @@ describe("tutorial", () => {
     expect(inputs().map(input => input.value)).toEqual(["", "", ""])
   })
 
-  it("01-basics/06: with :key, the row travels with its player, typing intact", () => {
-    mount(solutionOf("01-basics/06-keys-and-identity"), host)
+  it("02-templates/05: with :key, the row travels with its player, typing intact", () => {
+    mount(solutionOf("02-templates/05-keys-and-identity"), host)
     const root = host.shadowRoot!
     const inputs = () => [...root.querySelectorAll("input")] as HTMLInputElement[]
 
@@ -460,8 +460,8 @@ describe("tutorial", () => {
     expect(inputs().map(input => input.value)).toEqual(["", "", "captain"])
   })
 
-  it("01-basics/07: iterates the object's entries, touching only the written key", () => {
-    mount(solutionOf("01-basics/07-objects-and-entries"), host)
+  it("02-templates/06: iterates the object's entries, touching only the written key", () => {
+    mount(solutionOf("02-templates/06-objects-and-entries"), host)
     const root = host.shadowRoot!
     const rows = () => [...root.querySelectorAll("li")].map(li => li.textContent)
 
@@ -477,8 +477,8 @@ describe("tutorial", () => {
     expect(root.querySelectorAll("li")[1]).toBe(untouched)
   })
 
-  it("01-basics/08: without a policy, clean-protocol destinations sail through", () => {
-    mount(startOf("01-basics/08-untrusted-html"), host)
+  it("02-templates/07: without a policy, clean-protocol destinations sail through", () => {
+    mount(startOf("02-templates/07-untrusted-html"), host)
     const root = host.shadowRoot!
 
     // mallory's executable bits never made it in - that's the sanitizer's
@@ -492,8 +492,8 @@ describe("tutorial", () => {
     expect(root.querySelector('img[src*="tracker.evil.example"]')).toBeTruthy()
   })
 
-  it("01-basics/08: the policy keeps ada's docs link and strips every other destination", () => {
-    mount(solutionOf("01-basics/08-untrusted-html"), host)
+  it("02-templates/07: the policy keeps ada's docs link and strips every other destination", () => {
+    mount(solutionOf("02-templates/07-untrusted-html"), host)
     const root = host.shadowRoot!
 
     // *.germade.dev covers docs.germade.dev - the one href left standing
@@ -508,8 +508,8 @@ describe("tutorial", () => {
     expect(root.querySelector("img")?.hasAttribute("src")).toBe(false)
   })
 
-  it("03-components/05: a prop copied once at setup hears neither direction afterward", async () => {
-    mount(startOf("03-components/05-two-way-binding"), host)
+  it("03-components/03: a prop copied once at setup hears neither direction afterward", async () => {
+    mount(startOf("03-components/03-two-way-binding"), host)
     await rendered(host)
     const root = host.shadowRoot!
     const input = root.querySelector("input") as HTMLInputElement
@@ -529,8 +529,8 @@ describe("tutorial", () => {
     expect(input.value).toBe("Grace")
   })
 
-  it("03-components/05: :model drives the field both ways - typing and reset alike", async () => {
-    mount(solutionOf("03-components/05-two-way-binding"), host)
+  it("03-components/03: :model drives the field both ways - typing and reset alike", async () => {
+    mount(solutionOf("03-components/03-two-way-binding"), host)
     await rendered(host)
     const root = host.shadowRoot!
     const input = root.querySelector("input") as HTMLInputElement
@@ -546,8 +546,8 @@ describe("tutorial", () => {
     expect(root.querySelector("p")?.textContent).toBe('the store says: "Ada"')
   })
 
-  it("03-components/03: a plain object passed to both children falls out of sync", async () => {
-    mount(startOf("03-components/03-shared-state"), host)
+  it("04-state/01: a plain object passed to both children falls out of sync", async () => {
+    mount(startOf("04-state/01-shared-state"), host)
     await rendered(host)
     const root = host.shadowRoot!
 
@@ -563,8 +563,8 @@ describe("tutorial", () => {
   // the shadow-rooted preview can't show `scoped` (mountShadow ignores it), so
   // these hold the README's "what reaches the page" story to a real mount()
 
-  it("03-components/04: unscoped, the card's CSS lands in the head as written", () => {
-    const files = startOf("03-components/04-scoped-styles")
+  it("03-components/07: unscoped, the card's CSS lands in the head as written", () => {
+    const files = startOf("03-components/07-scoped-styles")
     const before = document.head.querySelectorAll("style").length
     const added = () => [...document.head.querySelectorAll("style")].slice(before)
 
@@ -578,8 +578,8 @@ describe("tutorial", () => {
     expect(added()).toHaveLength(0)
   })
 
-  it("03-components/04: scoped, the card is stamped and its CSS rewritten to require it", () => {
-    const files = startOf("03-components/04-scoped-styles")
+  it("03-components/07: scoped, the card is stamped and its CSS rewritten to require it", () => {
+    const files = startOf("03-components/07-scoped-styles")
     const before = document.head.querySelectorAll("style").length
     const added = () => [...document.head.querySelectorAll("style")].slice(before)
 
@@ -594,8 +594,8 @@ describe("tutorial", () => {
     expect(added()).toHaveLength(0)
   })
 
-  it("03-components/03: every holder of the store sees a child's write", async () => {
-    mount(solutionOf("03-components/03-shared-state"), host)
+  it("04-state/01: every holder of the store sees a child's write", async () => {
+    mount(solutionOf("04-state/01-shared-state"), host)
     await rendered(host)
     const root = host.shadowRoot!
     const [pear, melon] = [...root.querySelectorAll(".lines button")] as HTMLButtonElement[]
@@ -698,7 +698,7 @@ describe("the tutorial app", () => {
 
   it("opens on the first exercise, with its files in the editor and its preview mounted", () => {
     expect(host.querySelectorAll(".link").length).toBe(exercises.length)
-    expect(host.querySelector(".link.active")?.textContent).toBe("01-basics/01-your-first-component")
+    expect(host.querySelector(".link.active")?.textContent).toBe("01-getting-started/01-your-first-component")
     expect((host.querySelector("textarea") as HTMLTextAreaElement).value).toContain("Hello world!")
     expect(previewRoot(host).querySelector("h1")?.textContent).toBe("Hello world!")
   })
@@ -714,7 +714,7 @@ describe("the tutorial app", () => {
   it("empties the preview the moment another exercise is opened", async () => {
     expect(previewRoot(host).querySelector("h1")?.textContent).toBe("Hello world!")
 
-    linkTo(host, "01-basics/02-reactive-state").click()
+    linkTo(host, "02-templates/01-reactive-state").click()
 
     // no settle(): the recompile is debounced, and until it runs there is
     // nothing to show - what was on screen belonged to the exercise just closed
@@ -823,7 +823,7 @@ describe("the tutorial app", () => {
   })
 
   it("applies the solution once it's accepted, and re-renders the preview", async () => {
-    linkTo(host, "01-basics/02-reactive-state").click()
+    linkTo(host, "02-templates/01-reactive-state").click()
     await settle()
 
     await solve(host)
@@ -831,7 +831,7 @@ describe("the tutorial app", () => {
     expect(host.querySelector(".diff")).toBeFalsy()
 
     const editor = host.querySelector("textarea") as HTMLTextAreaElement
-    expect(editor.value).toBe(exercises[1].solution[ENTRY])
+    expect(editor.value).toBe(exercises[2].solution[ENTRY])
     expect(editor.readOnly).toBe(false)
 
     // and the preview is running the solution: its button counts clicks
@@ -843,7 +843,7 @@ describe("the tutorial app", () => {
   })
 
   it("swaps a demo lesson's preview for the resulting html, per selected file", async () => {
-    linkTo(host, "03-components/04-scoped-styles").click()
+    linkTo(host, "03-components/07-scoped-styles").click()
     await settle()
 
     // nothing to solve: no solution button, no live stage - the pane is for reading

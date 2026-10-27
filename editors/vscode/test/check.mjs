@@ -59,10 +59,10 @@ const one = async (text, options) => (await check({ "c.html": text }, options))[
 // exercise is to add. With checkJs, DOM typing that is TypeScript's own joins
 // it (DOM_TYPING, below)
 const EXERCISES = [
-  "tutorial/01-basics/02-reactive-state/app.html:6 TS2304 Cannot find name 'doubled'.",
-  "tutorial/01-basics/03-lists-and-conditions/app.html:12 TS2552 Cannot find name 'todo'. Did you mean 'todos'?",
-  "tutorial/01-basics/07-objects-and-entries/app.html:6 TS2304 Cannot find name 'fruit'.",
-  "tutorial/01-basics/07-objects-and-entries/app.html:6 TS2304 Cannot find name 'count'.",
+  "tutorial/02-templates/01-reactive-state/app.html:6 TS2304 Cannot find name 'doubled'.",
+  "tutorial/02-templates/02-lists-and-conditions/app.html:12 TS2552 Cannot find name 'todo'. Did you mean 'todos'?",
+  "tutorial/02-templates/06-objects-and-entries/app.html:6 TS2304 Cannot find name 'fruit'.",
+  "tutorial/02-templates/06-objects-and-entries/app.html:6 TS2304 Cannot find name 'count'.",
 ]
 
 const corpus = async options => {

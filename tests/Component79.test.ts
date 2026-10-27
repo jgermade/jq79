@@ -13,6 +13,9 @@ describe("Component79", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    // tests reuse URLs with a different stubbed fetch each: one test's
+    // download must not answer the next one's
+    Component79.clearCache()
     host.remove()
   })
 
@@ -250,6 +253,51 @@ describe("Component79", () => {
 
     await expect(Component79.fetch("/missing.html").mount(host)).rejects.toThrow("404")
     expect(host.innerHTML).toBe("")
+  })
+
+  describe("the component cache", () => {
+    afterEach(() => {
+      Component79.cache(true)
+    })
+
+    it("downloads a URL once, and hands back an instance per fetch", async () => {
+      const fetched = vi.fn(async () => ({ ok: true, text: async () => `<b class="c">{{ n }}</b>` }))
+      vi.stubGlobal("fetch", fetched)
+
+      const [a, b] = await Promise.all([Component79.fetch("/cached.html"), Component79.fetch("/cached.html")])
+      const [c] = await Component79.fetchAll(["/cached.html#again"])
+
+      expect(Component79.cache()).toBe(true)
+      expect(fetched).toHaveBeenCalledTimes(1)
+      expect(a).not.toBe(b)
+      a.mount(host, { n: 1 })
+      c.mount(host, { n: 2 })
+      expect($$(host, ".c").map(el => el.textContent)).toEqual(["1", "2"])
+    })
+
+    it("tries again after a failed download", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, text: async () => "" })))
+      await expect(Component79.fetch("/flaky.html")).rejects.toThrow("500")
+
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => `<i class="ok"></i>` })))
+      ;(await Component79.fetch("/flaky.html")).mount(host)
+      expect($(host, ".ok")).not.toBeNull()
+    })
+
+    it("downloads every time once turned off, and clearCache() empties it", async () => {
+      const fetched = vi.fn(async () => ({ ok: true, text: async () => `<i></i>` }))
+      vi.stubGlobal("fetch", fetched)
+
+      await Component79.fetch("/a.html")
+      Component79.clearCache()
+      await Component79.fetch("/a.html")
+      expect(fetched).toHaveBeenCalledTimes(2)
+
+      expect(Component79.cache(false)).toBe(false)
+      await Component79.fetch("/a.html")
+      await Component79.fetch("/a.html")
+      expect(fetched).toHaveBeenCalledTimes(4)
+    })
   })
 
   it("fetch() refuses an array, naming fetchAll", () => {

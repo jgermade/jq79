@@ -66,7 +66,7 @@
      below: same font, same padding, same wrapping. The <pre> is the one in flow,
      so it sizes the pane's scroll height and the textarea stretches to match -
      which means neither ever scrolls on its own and there's no scroll to sync. */
-  .code { height: 100%; overflow: auto; background: var(--code-bg); }
+  .code { height: 100%; overflow: auto; background: var(--code-bg); color: var(--code-fg); }
   .code-layers { position: relative; min-height: 100%; }
 
   .code-shadow,
@@ -74,6 +74,8 @@
     margin: 0;
     padding: 1rem;
     border: 0;
+    border-radius: 0;
+    overflow: visible;
     font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     tab-size: 2;
     white-space: pre-wrap;
@@ -95,11 +97,11 @@
     height: 100%;
     background: transparent;
     color: transparent;
-    caret-color: var(--fg);
+    caret-color: var(--code-fg);
     resize: none;
     overflow: hidden;
   }
   .editor:focus { outline: 0; }
   /* the text is transparent, so the selection has to be the thing you can see */
-  .editor::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .editor::selection { background: rgb(106 165 245 / 0.35); }
 </style>

@@ -673,6 +673,21 @@ describe("hot reload", () => {
     expect(document.querySelector(".card")?.textContent).toBe("grace — after")
   })
 
+  it("hands the edit to the next fetch, not the source cached before it", async () => {
+    const url = file()
+    const fetched = vi.fn(async () => ({ ok: true, text: async () => `<i class="v">one</i>` }))
+    vi.stubGlobal("fetch", fetched)
+    try {
+      ;(await Component79.fetch(url)).mount(host())
+      hotUpdate(url, `<i class="v">two</i>`)
+      ;(await Component79.fetch(url)).mount(host())
+      expect([...host().querySelectorAll(".v")].map(el => el.textContent)).toEqual(["two", "two"])
+      expect(fetched).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it("stays where it was mounted, among its siblings", () => {
     const url = file()
     host().innerHTML = `<b class="before"></b><span id="slot"></span><b class="after"></b>`

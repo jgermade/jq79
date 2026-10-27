@@ -89,14 +89,16 @@
   preview.run()
 </script>
 
-<div class="output">
+<div class="output live">
   <div class="preview"></div>
   <pre class="error" :if="error">{{ error }}</pre>
 </div>
 
 <style>
-  .output { flex: 1 1 45%; overflow: auto; }
-  .preview { padding: 1rem; }
+  .output.live { flex: 1 1 42%; min-height: 12rem; overflow: auto; border-top: 1px solid var(--line); }
+  /* the exercises are written for a light page, so the stage is one in both themes */
+  .output.live { background: #fff; color: #0e1626; color-scheme: light; }
+  .preview { padding: 1.25rem; }
 
   /* a compile is a full remount - a fresh stage, mounted all at once - so the
      exercise fades in instead of snapping onto the page, on the first render
@@ -110,6 +112,8 @@
 
   .error {
     margin: 0;
+    border: 0;
+    border-radius: 0;
     padding: 0.8rem 1rem;
     background: #ffeef0;
     color: #b3202d;

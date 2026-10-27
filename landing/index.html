@@ -1,0 +1,612 @@
+<!--
+  The site's landing page, written by hand and independent of the README.
+  scripts/build-site.mjs fills the `{{holes}}` (the shared theme, header, footer,
+  favicons, and numbers it measures at build time: version, size, coverage) and
+  highlights every <x-code lang="…" title="…"> sample. Samples are set aside
+  before the holes are filled, so template syntax inside one is left alone.
+
+  The live demo in the hero is ./counter.html, fetched and mounted at runtime by
+  the jq79.js this site serves - the page does what it describes.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jq79 · reactive components in plain .html files</title>
+<meta name="description" content="A tiny reactive component library: single-file .html components, Svelte-style setup scripts, fine-grained updates. No compiler, no bundler, no dependencies.">
+{{icons}}
+<style>
+{{styles}}
+
+/* --- layout ---------------------------------------------------------------- */
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
+section { padding: 4rem 0; }
+@media (min-width: 48rem) { section { padding: 6rem 0; } .wrap { padding: 0 1.5rem; } }
+.eyebrow { display: inline-block; margin: 0 0 0.8rem; color: var(--accent); font: 700 0.78rem/1 var(--font); text-transform: uppercase; letter-spacing: 0.12em; }
+h2.title { margin: 0 0 1rem; font-size: clamp(1.8rem, 5vw, 2.6rem); line-height: 1.1; letter-spacing: -0.03em; font-weight: 800; }
+.intro { max-width: 40rem; margin: 0 0 2.5rem; color: var(--muted); font-size: 1.1rem; }
+.code { margin: 0; min-width: 0; }
+.code figcaption { padding: 0.55rem 1rem; background: var(--code-bg); border: 1px solid var(--code-line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; color: #93a0bb; font: 500 0.78rem/1.2 var(--mono); }
+.code figcaption + pre { margin: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+.code pre { margin: 0; }
+.code + .code { margin-top: 0.75rem; }
+
+/* --- hero ------------------------------------------------------------------ */
+.hero { position: relative; overflow: hidden; padding: 3rem 0 4rem; border-bottom: 1px solid var(--line); }
+.hero::before { content: ""; position: absolute; inset: -40% -20% auto; height: 120%; background: radial-gradient(closest-side, var(--accent-soft), transparent 70%), radial-gradient(closest-side at 80% 30%, rgb(247 223 30 / 0.13), transparent 70%); pointer-events: none; }
+.hero .wrap { position: relative; display: grid; gap: 2.5rem; }
+@media (min-width: 64rem) { .hero { padding: 6rem 0; } .hero .wrap { grid-template-columns: 1.05fr 1fr; align-items: center; gap: 4rem; } }
+.pill { display: inline-flex; flex-wrap: wrap; gap: 0.35rem 0.6rem; align-items: center; padding: 0.35rem 0.8rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 0.82rem; }
+.pill b { color: var(--fg); font-weight: 600; }
+.pill i { width: 4px; height: 4px; border-radius: 50%; background: var(--line); }
+.hero h1 { margin: 1.2rem 0 1rem; font-size: clamp(2.4rem, 9vw, 4.2rem); line-height: 1.02; letter-spacing: -0.045em; font-weight: 850; }
+.hero h1 .file { font-family: var(--mono); font-weight: 700; letter-spacing: -0.06em; background: linear-gradient(transparent 62%, rgb(247 223 30 / 0.55) 62%); padding: 0 0.05em; }
+.hero .lead { margin: 0 0 1.8rem; max-width: 34rem; color: var(--muted); font-size: clamp(1.05rem, 2.6vw, 1.22rem); }
+.hero .lead strong { color: var(--fg); }
+.ctas { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+.install { display: inline-flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.6rem 0.55rem 1rem; border: 1px dashed var(--line); border-radius: 999px; font: 500 0.9rem var(--mono); color: var(--fg); background: var(--surface); }
+.install span::before { content: "$ "; color: var(--muted); }
+.copy { border: 0; border-radius: 999px; padding: 0.3rem 0.65rem; background: var(--accent-soft); color: var(--accent); font: 600 0.75rem var(--font); cursor: pointer; }
+.copy:hover { background: var(--accent); color: var(--on-accent); }
+
+.demo { min-width: 0; border-radius: calc(var(--radius) + 4px); background: var(--code-bg); border: 1px solid var(--code-line); box-shadow: var(--shadow); overflow: hidden; }
+.demo .bar { display: flex; align-items: center; gap: 0.4rem; padding: 0.7rem 1rem; border-bottom: 1px solid var(--code-line); color: #93a0bb; font: 500 0.78rem var(--mono); }
+.demo .bar i { width: 10px; height: 10px; border-radius: 50%; background: #2a3654; }
+.demo .bar span { margin-left: 0.5rem; }
+.demo .code pre { border: 0; border-radius: 0; background: none; }
+.demo .result { margin: 0 0.75rem 0.75rem; padding: 1.1rem; border-radius: var(--radius); background: #ffffff; color: #0e1626; min-height: 7.2rem; }
+.demo .result-label { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; color: #5a6478; font: 600 0.72rem var(--font); text-transform: uppercase; letter-spacing: 0.08em; }
+.demo .result-label em { font-style: normal; color: #1f8f5a; text-transform: none; letter-spacing: 0; }
+
+/* --- what you don't need --------------------------------------------------- */
+.nots { padding: 2rem 0; border-bottom: 1px solid var(--line); background: var(--bg-soft); }
+.nots ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem 1.6rem; }
+.nots li { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.nots li s { text-decoration-thickness: 2px; text-decoration-color: rgb(255 100 120 / 0.8); color: var(--fg); }
+
+/* --- why ------------------------------------------------------------------- */
+.features { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 48rem) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 72rem) { .features { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.feature { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.4rem; border: 1px solid var(--line); border-radius: calc(var(--radius) + 4px); background: var(--surface); min-width: 0; }
+.feature h3 { margin: 0; font-size: 1.12rem; letter-spacing: -0.01em; }
+.feature p { margin: 0; color: var(--muted); font-size: 0.97rem; }
+.feature .code { margin-top: auto; padding-top: 0.6rem; }
+.feature pre { font-size: 12.5px; }
+.feature .icon { width: 2.4rem; height: 2.4rem; display: grid; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 1.15rem; font-weight: 800; }
+
+/* --- guide ----------------------------------------------------------------- */
+.guide { border-top: 1px solid var(--line); }
+.guide-layout { display: grid; gap: 2rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 64rem) { .guide-layout { grid-template-columns: 15rem minmax(0, 1fr); gap: 4rem; } }
+.steps-nav { position: sticky; top: var(--header-h); z-index: 5; margin: 0 -1rem; padding: 0.6rem 1rem; background: var(--header-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.steps-nav ol { position: relative; list-style: none; margin: 0; padding: 0; display: flex; gap: 0.4rem; overflow-x: auto; scrollbar-width: none; }
+.steps-nav ol::-webkit-scrollbar { display: none; }
+.steps-nav a { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.35rem 0.75rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); text-decoration: none; font-size: 0.88rem; white-space: nowrap; background: var(--surface); }
+.steps-nav a b { font: 700 0.75rem var(--mono); color: var(--accent); }
+.steps-nav a:hover, .steps-nav a.on { color: var(--fg); border-color: var(--accent); }
+@media (min-width: 64rem) {
+  .steps-nav { top: calc(var(--header-h) + 2rem); align-self: start; margin: 0; padding: 0; background: none; backdrop-filter: none; -webkit-backdrop-filter: none; border: 0; }
+  .steps-nav ol { flex-direction: column; gap: 0.15rem; overflow: visible; }
+  .steps-nav a { border: 0; border-radius: 8px; white-space: normal; background: none; padding: 0.45rem 0.7rem; }
+  .steps-nav a.on { background: var(--accent-soft); }
+}
+.step { padding: 2.5rem 0; border-bottom: 1px solid var(--line); min-width: 0; scroll-margin-top: calc(var(--header-h) + 3.5rem); }
+@media (min-width: 64rem) { .step { scroll-margin-top: calc(var(--header-h) + 1.5rem); } }
+.step:first-child { padding-top: 0.5rem; }
+.step:last-child { border-bottom: 0; }
+.step h3 { display: flex; align-items: baseline; gap: 0.8rem; margin: 0 0 0.8rem; font-size: clamp(1.35rem, 4vw, 1.7rem); letter-spacing: -0.02em; line-height: 1.2; }
+.step h3 b { font: 700 0.95rem var(--mono); color: var(--accent); }
+.step > p, .step li { color: var(--muted); max-width: 44rem; }
+.step > p strong, .step li strong { color: var(--fg); }
+.step ul { padding-left: 1.2rem; }
+.step .pair { display: grid; gap: 0.75rem; grid-template-columns: minmax(0, 1fr); margin: 1.2rem 0; }
+@media (min-width: 72rem) { .step .pair.split { grid-template-columns: repeat(2, minmax(0, 1fr)); } .step .pair.split .code + .code { margin-top: 0; } }
+.step .more { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.2rem; }
+.step .more a { display: inline-flex; gap: 0.4rem; align-items: center; padding: 0.4rem 0.85rem; border-radius: 999px; background: var(--bg-soft); border: 1px solid var(--line); color: var(--fg); text-decoration: none; font-size: 0.88rem; font-weight: 500; }
+.step .more a:hover { border-color: var(--accent); color: var(--accent); }
+.step .more a.try { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+
+/* --- tutorial / docs / perf bands ------------------------------------------ */
+.band { background: var(--bg-soft); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.tutorial-card { display: grid; gap: 2rem; align-items: center; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 64rem) { .tutorial-card { grid-template-columns: 1fr 1fr; gap: 4rem; } }
+.chapters { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; counter-reset: chapter; }
+.chapters li { display: flex; gap: 1rem; align-items: baseline; padding: 0.9rem 1.1rem; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); counter-increment: chapter; }
+.chapters li::before { content: "0" counter(chapter); font: 700 0.85rem var(--mono); color: var(--accent); }
+.chapters li span { color: var(--muted); font-size: 0.9rem; }
+.docs-grid { display: grid; gap: 0.75rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 40rem) { .docs-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 64rem) { .docs-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.docs-grid a { display: block; padding: 1.1rem 1.2rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--fg); text-decoration: none; transition: border-color 0.15s, transform 0.15s; }
+.docs-grid a:hover { border-color: var(--accent); transform: translateY(-2px); }
+.docs-grid b { display: block; margin-bottom: 0.2rem; }
+.docs-grid span { color: var(--muted); font-size: 0.9rem; }
+.numbers { display: grid; gap: 0.75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 0 2rem; }
+@media (min-width: 48rem) { .numbers { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.numbers div { padding: 1.1rem 1.2rem; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); }
+.numbers b { display: block; font-size: clamp(1.5rem, 5vw, 2rem); letter-spacing: -0.03em; }
+.numbers span { color: var(--muted); font-size: 0.88rem; }
+.final { text-align: center; }
+.final .ctas { justify-content: center; }
+</style>
+</head>
+<body>
+{{header}}
+
+<main>
+<!-- ======================================================================= -->
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <span class="pill"><b>v{{version}}</b><i></i>{{gzip}} gzipped<i></i>0 dependencies</span>
+      <h1>Reactive components in plain <span class="file">.html</span> files</h1>
+      <p class="lead">jq79 parses and mounts single-file components <strong>in the browser, at runtime</strong>. No compiler, no bundler, no virtual DOM — one script from a CDN and any static host is the whole stack.</p>
+      <div class="ctas">
+        <a class="btn primary" href="tutorial/">Start the tutorial →</a>
+        <a class="btn" href="#guide">Read the guide</a>
+        <span class="install"><span>npm i jq79</span><button class="copy" data-copy="npm i jq79" type="button">copy</button></span>
+      </div>
+    </div>
+
+    <div class="demo">
+      <div class="bar"><i></i><i></i><i></i><span>counter.html</span></div>
+      {{demoCode}}
+      <div class="result">
+        <div class="result-label">Live result <em id="demo-status">fetching counter.html…</em></div>
+        <div id="demo"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="nots" aria-label="What jq79 doesn't need">
+  <ul class="wrap">
+    <li><s>compiler</s></li>
+    <li><s>bundler</s></li>
+    <li><s>config file</s></li>
+    <li><s>virtual DOM</s></li>
+    <li><s>dependencies</s></li>
+    <li><s>build output</s></li>
+  </ul>
+</div>
+
+<!-- ======================================================================= -->
+<section id="why">
+  <div class="wrap">
+    <span class="eyebrow">Why jq79</span>
+    <h2 class="title">The file you write is the file you ship</h2>
+    <p class="intro">Most component frameworks need a toolchain between your source and the browser. jq79 moves that step into a {{gzip}} runtime, so the browser can take your components as they are.</p>
+
+    <div class="features">
+      <article class="feature">
+        <div class="icon" aria-hidden="true">⚡</div>
+        <h3>No build step</h3>
+        <p>Import the library from a CDN, fetch a component from your own host, mount it. That is the whole deployment.</p>
+        <x-code lang="html" title="index.html">
+          <script type="module">
+            import { C79 } from "https://esm.sh/jq79"
+            C79.fetch("./app.html").mount("#app")
+          </script>
+        </x-code>
+      </article>
+
+      <article class="feature">
+        <div class="icon" aria-hidden="true">📄</div>
+        <h3>A component is one file</h3>
+        <p>Markup, a setup script and styles side by side, in a <code>.html</code> file any editor, server or CDN already understands.</p>
+        <x-code lang="html" title="hello.html">
+          <script :setup="{ name }"></script>
+
+          <h1>Hello {{ name }}!</h1>
+
+          <style scoped> h1 { color: tomato } </style>
+        </x-code>
+      </article>
+
+      <article class="feature">
+        <div class="icon" aria-hidden="true">🧮</div>
+        <h3>Variables are state</h3>
+        <p>Top-level <code>let</code> and <code>const</code> are reactive, and <code>$:</code> derives from them. No hooks, no signals to unwrap, no <code>setState</code>.</p>
+        <x-code lang="html">
+          <script :setup>
+            let price = 4
+            let quantity = 2
+            $: total = price * quantity
+          </script>
+        </x-code>
+      </article>
+
+      <article class="feature">
+        <div class="icon" aria-hidden="true">🎯</div>
+        <h3>Fine-grained updates</h3>
+        <p>Proxies track what each binding read. A write re-runs only those bindings — no diffing, no re-rendering the component.</p>
+        <x-code lang="js">
+          rows[3].label = "renamed"
+          // one text node changes; the other
+          // 999 rows aren't even looked at
+        </x-code>
+      </article>
+
+      <article class="feature">
+        <div class="icon" aria-hidden="true">📦</div>
+        <h3>Code splitting is the file system</h3>
+        <p>An <code>import()</code> of an <code>.html</code> fetches that component when the line runs. The chunk is the file; there's no chunk graph to configure.</p>
+        <x-code lang="js">
+          const Chart = await import("./Chart.html")
+        </x-code>
+      </article>
+
+      <article class="feature">
+        <div class="icon" aria-hidden="true">🧰</div>
+        <h3>Tooling when you want it</h3>
+        <p>A dev server with hot reload, a Vite plugin, TypeScript in setup scripts, a VS Code extension, and a CSP-safe mode. All optional.</p>
+        <x-code lang="sh">
+          npx jq79 dev   # serve + hot reload
+        </x-code>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section id="guide" class="guide">
+  <div class="wrap">
+    <span class="eyebrow">Guide</span>
+    <h2 class="title">From an empty folder to an app</h2>
+    <p class="intro">In the order you'll need it: install, put it on a page, write components, compose them, share state, load data, and ship.</p>
+
+    <div class="guide-layout">
+      <nav class="steps-nav" aria-label="Guide steps">
+        <ol>
+          <li><a href="#install"><b>01</b>Install</a></li>
+          <li><a href="#page"><b>02</b>Put it on a page</a></li>
+          <li><a href="#component"><b>03</b>Write a component</a></li>
+          <li><a href="#templates"><b>04</b>Templates</a></li>
+          <li><a href="#compose"><b>05</b>Compose components</a></li>
+          <li><a href="#state"><b>06</b>Stores &amp; services</a></li>
+          <li><a href="#data"><b>07</b>Data &amp; the DOM</a></li>
+          <li><a href="#develop"><b>08</b>Develop</a></li>
+          <li><a href="#ship"><b>09</b>Ship</a></li>
+        </ol>
+      </nav>
+
+      <div class="steps">
+        <!-- 01 ------------------------------------------------------------- -->
+        <article class="step" id="install">
+          <h3><b>01</b>Install</h3>
+          <p>Nothing to install if you don't want to: every major CDN serves the package. Pin a version in production.</p>
+          <div class="pair split">
+            <x-code lang="html" title="from a CDN, as a module">
+              <script type="module">
+                import { C79 } from "https://esm.sh/jq79"
+                // or https://cdn.jsdelivr.net/npm/jq79/+esm
+              </script>
+            </x-code>
+            <x-code lang="html" title="or as a classic script">
+              <script src="https://cdn.jsdelivr.net/npm/jq79/dist/jq79.global.js"></script>
+              <script>
+                const { C79 } = jq79
+              </script>
+            </x-code>
+          </div>
+          <p>With npm, for a bundler or the dev tools:</p>
+          <x-code lang="sh" title="terminal">
+            npm install jq79
+          </x-code>
+          <div class="more"><a href="docs/components.html">Components docs</a></div>
+        </article>
+
+        <!-- 02 ------------------------------------------------------------- -->
+        <article class="step" id="page">
+          <h3><b>02</b>Put it on a page</h3>
+          <p><code>C79.fetch()</code> downloads a component and hands back a pending one you can mount straight away — every call queues on the download. The second argument is the component's props.</p>
+          <x-code lang="html" title="index.html">
+            <!doctype html>
+            <main id="app"></main>
+
+            <script type="module">
+              import { C79 } from "https://esm.sh/jq79"
+
+              C79.fetch("./app.html").mount("#app", { title: "Today" })
+            </script>
+          </x-code>
+          <p>Awaiting it gives you the component itself; <code>fetchAll()</code> loads several in parallel. <strong>Each URL is downloaded once</strong> and reused by later fetches and imports — <code>Component79.cache(false)</code> turns that off.</p>
+          <x-code lang="js">
+            const app = await C79.fetch("./app.html").mount("#app")
+            const [Header, Footer] = await C79.fetchAll(["./Header.html", "./Footer.html"])
+          </x-code>
+          <div class="more"><a class="try" href="tutorial/#01-getting-started/02-no-build-step">Try it: No build step</a><a href="docs/components.html#loading-remote-components">Loading components</a></div>
+        </article>
+
+        <!-- 03 ------------------------------------------------------------- -->
+        <article class="step" id="component">
+          <h3><b>03</b>Write a component</h3>
+          <p>Markup, an optional <code>&lt;script :setup&gt;</code> and an optional <code>&lt;style&gt;</code>, in any order.</p>
+          <x-code lang="html" title="app.html">
+            <script :setup="{ title }">
+              let todos = []
+              let draft = ""
+
+              $: left = todos.filter(todo => !todo.done).length
+
+              const add = () => {
+                todos = [...todos, { text: draft, done: false }]
+                draft = ""
+              }
+            </script>
+
+            <h1>{{ title }} <small>{{ left }} left</small></h1>
+
+            <form @submit.prevent="add">
+              <input :value="draft" @input="draft = $event.target.value">
+              <button :disabled="!draft">add</button>
+            </form>
+
+            <style scoped>
+              small { color: gray; font-weight: normal; }
+            </style>
+          </x-code>
+          <ul>
+            <li><strong><code>:setup="{ title }"</code></strong> declares the props the component takes, with optional defaults.</li>
+            <li><strong>Top-level <code>let</code>/<code>const</code></strong> become reactive; assigning to them — from a handler, a timer or a <code>.then()</code> — updates the DOM.</li>
+            <li><strong><code>$:</code></strong> re-runs whenever what it reads changes.</li>
+            <li><strong><code>scoped</code></strong> keeps the styles inside this component.</li>
+          </ul>
+          <div class="more"><a class="try" href="tutorial/#01-getting-started/01-your-first-component">Try it: Your first component</a><a href="docs/setup-scripts.html">Setup scripts</a></div>
+        </article>
+
+        <!-- 04 ------------------------------------------------------------- -->
+        <article class="step" id="templates">
+          <h3><b>04</b>Templates: bind, branch, loop</h3>
+          <p>Expressions in <code>{{ }}</code>, attributes with <code>:name</code>, events with <code>@name</code>, structure with <code>:if</code> and <code>:each</code>.</p>
+          <x-code lang="html">
+            <ul>
+              <li :each="todo in todos" :key="todo.id" :class.done="todo.done">
+                <input type="checkbox" :checked="todo.done"
+                       @change="todo.done = $event.target.checked">
+                {{ todo.text }}
+              </li>
+            </ul>
+
+            <p :if="!todos.length">Nothing to do.</p>
+            <p :elseif="left === 0">All done 🎉</p>
+            <p :else>{{ left }} to go</p>
+
+            <a :href="`/todos/${id}`" @click.prevent="open(id)">details</a>
+          </x-code>
+          <p>Event modifiers (<code>.prevent</code>, <code>.stop</code>, <code>.once</code>…), <code>:class</code> as string/object/array, <code>:html</code> with a sanitizer, <code>:with</code> to narrow scope.</p>
+          <div class="more"><a class="try" href="tutorial/#02-templates/02-lists-and-conditions">Try it: Lists and conditions</a><a href="docs/template-syntax.html">Template syntax</a></div>
+        </article>
+
+        <!-- 05 ------------------------------------------------------------- -->
+        <article class="step" id="compose">
+          <h3><b>05</b>Compose components</h3>
+          <p>Import a component in the setup script and use it as a tag. Props go down, <code>$emit</code> events come up, and <code>:model</code> wires both ways.</p>
+          <div class="pair split">
+            <x-code lang="html" title="TodoList.html">
+              <script :setup>
+                const TodoItem = await import("./TodoItem.html")
+
+                let todos = [{ id: 1, text: "write a component" }]
+                const remove = todo => { todos = todos.filter(t => t !== todo) }
+              </script>
+
+              <ul>
+                <TodoItem :each="todo in todos" :key="todo.id"
+                          :todo @remove="remove(todo)" />
+              </ul>
+            </x-code>
+            <x-code lang="html" title="TodoItem.html">
+              <script :setup="{ todo }"></script>
+
+              <li>
+                {{ todo.text }}
+                <button @click="$emit('remove')">×</button>
+              </li>
+            </x-code>
+          </div>
+          <p>Slots pass markup instead of data, and several components can live in one file with <code>&lt;template name&gt;</code>.</p>
+          <x-code lang="html">
+            <Card>
+              <template :slot.header><h2>{{ title }}</h2></template>
+              <p>{{ body }}</p>
+            </Card>
+          </x-code>
+          <div class="more"><a class="try" href="tutorial/#03-components/01-nested-components">Try it: Nested components</a><a href="docs/components.html#props">Props</a><a href="docs/components.html#slots">Slots</a></div>
+        </article>
+
+        <!-- 06 ------------------------------------------------------------- -->
+        <article class="step" id="state">
+          <h3><b>06</b>Stores &amp; services</h3>
+          <p>When two components need the same state, make it a store. <code>$reactive</code> works anywhere — including a plain module, which is all an app-wide service needs to be. <code>$computed</code> derives from it.</p>
+          <x-code lang="js" title="cart.js">
+            import { $reactive, $computed } from "https://esm.sh/jq79"
+
+            export const cart = $reactive({ items: [] })
+
+            export const total = $computed(() =>
+              cart.items.reduce((sum, item) => sum + item.price, 0)
+            )
+
+            export const add = item => { cart.items = [...cart.items, item] }
+          </x-code>
+          <x-code lang="html" title="CartBadge.html">
+            <script :setup>
+              const { cart, total } = await import("./cart.js")
+            </script>
+
+            <span>{{ cart.items.length }} items · {{ total.value }} €</span>
+          </x-code>
+          <p>Every component that holds the store sees every write, whoever made it. A store passed as a prop is shared the same way — no context API, no injection.</p>
+          <div class="more"><a class="try" href="tutorial/#04-state/01-shared-state">Try it: Shared state</a><a href="docs/reactive-data.html">Reactive data</a></div>
+        </article>
+
+        <!-- 07 ------------------------------------------------------------- -->
+        <article class="step" id="data">
+          <h3><b>07</b>Data &amp; the DOM</h3>
+          <p>A setup script can <code>await</code>. The template waits for it — or renders straight away from <code>await $mounted()</code>, and fills in when the data lands. After it, the component's DOM is there to query with <code>$self</code>.</p>
+          <x-code lang="html" title="Users.html">
+            <script :setup>
+              let users = []
+              let loading = true
+
+              await $mounted()            // render now, fill in later
+              $self("input").focus()
+
+              users = await fetch("/api/users").then(r => r.json())
+              loading = false
+            </script>
+
+            <input placeholder="search">
+            <p :if="loading">loading…</p>
+            <ul :else>
+              <li :each="user in users" :key="user.id">{{ user.name }}</li>
+            </ul>
+          </x-code>
+          <div class="more"><a class="try" href="tutorial/#05-data-and-the-dom/01-loading-data">Try it: Loading data</a><a href="docs/setup-scripts.html#effects-run-before-the-template-exists">Effects and the DOM</a><a href="docs/dom-helpers.html">DOM helpers</a></div>
+        </article>
+
+        <!-- 08 ------------------------------------------------------------- -->
+        <article class="step" id="develop">
+          <h3><b>08</b>Develop</h3>
+          <p><strong>No bundler:</strong> <code>npx jq79 dev</code> serves your folder as-is and hot-reloads the components you edit, keeping their state.</p>
+          <x-code lang="sh" title="terminal">
+            npx jq79 dev            # http://localhost:4179
+          </x-code>
+          <p><strong>With Vite:</strong> the plugin imports <code>.html</code> components as modules, with HMR and TypeScript in setup scripts. The same files keep working when fetched at runtime.</p>
+          <div class="pair split">
+            <x-code lang="js" title="vite.config.js">
+              import { jq79 } from "jq79/vite"
+
+              export default { plugins: [jq79()] }
+            </x-code>
+            <x-code lang="js" title="main.js">
+              import App from "./App.html"
+
+              App.mount("#app")
+            </x-code>
+          </div>
+          <p><strong>In your editor:</strong> the VS Code extension highlights and type-checks components; <code>jq79-check</code> does the same in CI.</p>
+          <div class="more"><a href="docs/dev-server.html">Dev server</a><a href="docs/vite-plugin.html">Vite plugin</a><a href="https://marketplace.visualstudio.com/items?itemName=jgermade.jq79-vscode">VS Code extension</a></div>
+        </article>
+
+        <!-- 09 ------------------------------------------------------------- -->
+        <article class="step" id="ship">
+          <h3><b>09</b>Ship</h3>
+          <p>Upload the folder to any static host — GitHub Pages, S3, a CDN. There's no build output because there's no build. For a page with a strict Content Security Policy, <code>safeEval</code> runs without <code>'unsafe-eval'</code>, with or without a bundler.</p>
+          <x-code lang="js">
+            import { C79 } from "https://esm.sh/jq79@%VERSION%"   // pin it
+
+            await C79.safeEval()        // no new Function, ever
+            C79.fetch("./app.html").mount("#app")
+          </x-code>
+          <div class="more"><a href="docs/csp.html">Content Security Policy</a><a href="https://github.com/jgermade/jq79/releases">Releases</a></div>
+        </article>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section class="band" id="tutorial">
+  <div class="wrap tutorial-card">
+    <div>
+      <span class="eyebrow">Tutorial</span>
+      <h2 class="title">Learn it by doing, in the browser</h2>
+      <p class="intro">{{lessons}} short lessons, each a component you edit with a live preview beside it. Because there is no compiler, the tutorial runs the real library: the component you write is the component that mounts.</p>
+      <a class="btn primary" href="tutorial/">Open the tutorial →</a>
+    </div>
+    <ol class="chapters">
+      {{chapters}}
+    </ol>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section id="numbers">
+  <div class="wrap">
+    <span class="eyebrow">By the numbers</span>
+    <h2 class="title">Small, tested, measured</h2>
+    <div class="numbers">
+      <div><b>{{gzip}}</b><span>gzipped, the whole runtime</span></div>
+      <div><b>0</b><span>runtime dependencies</span></div>
+      <div><b>{{coverage}}</b><span>line coverage</span></div>
+      <div><b>{{lessons}}</b><span>tested tutorial lessons</span></div>
+    </div>
+    <p class="intro">Updates are where jq79 is fastest: a write reaches only the bindings that read the path it changed, so updating rows in a 10,000-row table costs what the changed rows cost. Every release is measured on the js-framework-benchmark row table, against itself and against React, Vue, Svelte and Preact.</p>
+    <a class="btn" href="benchmark/">See the benchmark →</a>
+  </div>
+</section>
+
+<!-- ======================================================================= -->
+<section class="band" id="docs">
+  <div class="wrap">
+    <span class="eyebrow">Reference</span>
+    <h2 class="title">Documentation</h2>
+    <div class="docs-grid">
+      <a href="docs/components.html"><b>Components</b><span>Lifecycle, props, slots, styles, loading and caching.</span></a>
+      <a href="docs/template-syntax.html"><b>Template syntax</b><span>Bindings, conditionals, lists, events, :model.</span></a>
+      <a href="docs/setup-scripts.html"><b>Setup scripts</b><span>Reactive variables, $:, $emit, imports, TypeScript.</span></a>
+      <a href="docs/reactive-data.html"><b>Reactive data</b><span>$reactive stores, $effect, $computed.</span></a>
+      <a href="docs/dom-helpers.html"><b>DOM helpers</b><span>$, $$ and $create.</span></a>
+      <a href="docs/dev-server.html"><b>Dev server</b><span>npx jq79 dev: serve and hot-reload.</span></a>
+      <a href="docs/vite-plugin.html"><b>Vite plugin</b><span>Bundled components, HMR, preprocessors.</span></a>
+      <a href="docs/csp.html"><b>Content Security Policy</b><span>safeEval: no 'unsafe-eval' needed.</span></a>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <h2 class="title">One file. No build. Go.</h2>
+    <p class="intro" style="margin-left:auto;margin-right:auto">Paste the page from step 02 into a folder, add an <code>app.html</code>, and open it.</p>
+    <div class="ctas">
+      <a class="btn primary" href="tutorial/">Start the tutorial →</a>
+      <a class="btn" href="https://github.com/jgermade/jq79">Star on GitHub</a>
+    </div>
+  </div>
+</section>
+</main>
+
+{{footer}}
+
+<script type="module">
+  // the hero's live demo: this page has no build step either
+  import { C79 } from "./jq79.js"
+
+  const status = document.querySelector("#demo-status")
+  C79.fetch("./examples/counter.html")
+    .mountShadow("#demo")
+    .then(() => { status.textContent = "mounted at runtime" })
+    .catch(() => { status.textContent = "couldn't load the demo" })
+
+  for (const button of document.querySelectorAll("[data-copy]")) {
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy)
+        button.textContent = "copied"
+        setTimeout(() => { button.textContent = "copy" }, 1500)
+      } catch {}
+    })
+  }
+
+  // highlights the guide step being read
+  const links = new Map([...document.querySelectorAll(".steps-nav a")].map(a => [a.hash.slice(1), a]))
+  const seen = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      links.forEach(a => a.classList.remove("on"))
+      const link = links.get(entry.target.id)
+      if (!link) continue
+      link.classList.add("on")
+      // on a phone the steps are one scrolling row: keep the current one in view
+      const row = link.closest("ol")
+      if (row.scrollWidth > row.clientWidth) row.scrollTo({ left: link.offsetLeft - 16, behavior: "smooth" })
+    }
+  }, { rootMargin: "-30% 0px -60% 0px" })
+  document.querySelectorAll(".step").forEach(step => seen.observe(step))
+</script>
+</body>
+</html>

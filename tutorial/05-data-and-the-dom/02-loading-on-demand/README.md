@@ -28,8 +28,8 @@ component to it is what puts the chart on screen.
 Which leaves the gap in between. A fetch takes as long as it takes, and a button
 that does nothing visible when clicked reads as a broken button — so say it out
 loud: flip a `loading` flag before the `await` and clear it after. That is the
-shape every request in a setup script takes, and the one
-[loading data](#04-scripts/03-loading-data) comes back to with data instead of a
+shape every request in a setup script takes — the one
+[loading data](#05-data-and-the-dom/01-loading-data) used for data, here for a
 component.
 
 > **Your turn:** fetch `./examples/Chart.html` on the first click and render it
