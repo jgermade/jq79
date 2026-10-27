@@ -26,6 +26,11 @@
       const host = $self(".preview")
       if (!host) return
 
+      // this run supersedes a pending one: the effect's first pass armed the
+      // debounce during setup, and left alone it remounted the stage a quarter
+      // of a second after $mounted had rendered it - the fade-in twice, a flicker
+      clearTimeout(timer)
+
       instance?.destroy()
       instance = null
       error = ""
