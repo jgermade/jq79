@@ -21,6 +21,14 @@
   }
   const select = id => { selected = id }
   const remove = id => { data = data.filter(row => row.id !== id) }
+
+  // the same rows as components, in a list of their own: the table above is the
+  // js-framework-benchmark app and stays exactly that, and this one is what the
+  // A/B harness reaches through renderNestedComponent with
+  // (COMPONENT_OPERATIONS in scripts/lib/benchmark-ops.mjs)
+  let componentData = []
+  const runComponents = () => { componentData = buildData(1000) }
+  const clearComponents = () => { componentData = [] }
 </script>
 
 <div class="container">
@@ -49,6 +57,12 @@
           <div class="col-sm-6 smallpad">
             <button type="button" class="btn btn-primary btn-block" id="swaprows" @click="swapRows">Swap Rows</button>
           </div>
+          <div class="col-sm-6 smallpad">
+            <button type="button" class="btn btn-primary btn-block" id="runcomponents" @click="runComponents">Create 1,000 component rows</button>
+          </div>
+          <div class="col-sm-6 smallpad">
+            <button type="button" class="btn btn-primary btn-block" id="clearcomponents" @click="clearComponents">Clear component rows</button>
+          </div>
         </div>
       </div>
     </div>
@@ -63,5 +77,19 @@
       </tr>
     </tbody>
   </table>
+  <!-- not a table: a component tag can't sit where a <tr> goes, and the
+       parser moves it out (docs/template-syntax.md) -->
+  <div id="ctbody">
+    <Row :each="row in componentData" :key="row.id" :row />
+  </div>
   <span class="preloadicon glyphicon glyphicon-remove" aria-hidden="true"></span>
 </div>
+
+<template name="Row">
+  <script :setup="{ row }"></script>
+  <div class="crow">
+    <span class="col-md-1">{{ row.id }}</span>
+    <span class="col-md-4"><a>{{ row.label }}</a></span>
+    <span class="col-md-1"><a><span class="glyphicon glyphicon-remove" aria-hidden="true"></span></a></span>
+  </div>
+</template>
