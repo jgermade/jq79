@@ -18,8 +18,10 @@ import { precompile } from "../src/precompile"
 type Tree = { tag: string; attrs: Record<string, string>; children: (Tree | string)[] }
 
 // the tree elementToAST reads off the DOM: elements and non-empty texts, a
-// <template>'s children from its content, comments dropped. Tags lowercased,
-// because an SVG tag keeps its case in the DOM and precompile never reads it
+// <template>'s children from its content, comments dropped. Tags and attribute
+// names lowercased, because inside an <svg> the DOM gives both their SVG case
+// (linearGradient, viewBox) and precompile reads neither: the only names it
+// reads are directives, `:` and `@` ones, which no SVG case applies to
 const domTree = (source: string): (Tree | string)[] => {
   const doc = new DOMParser().parseFromString(`<template>${source}</template>`, "text/html")
   const walk = (parent: ParentNode): (Tree | string)[] =>
@@ -29,7 +31,7 @@ const domTree = (source: string): (Tree | string)[] => {
       const el = node as Element
       return [{
         tag: el.tagName.toLowerCase(),
-        attrs: Object.fromEntries(Array.from(el.attributes).map(attr => [attr.name, attr.value])),
+        attrs: Object.fromEntries(Array.from(el.attributes).map(attr => [attr.name.toLowerCase(), attr.value])),
         children: walk(el instanceof HTMLTemplateElement ? el.content : el),
       }]
     })
@@ -60,7 +62,7 @@ describe("parseHTML", () => {
     "a > and a newline inside a value": `<p :if="a > b &&\n c" :title='x > y'>{{ n }}</p>`,
     "a < that opens nothing": `<p>{{ a < b }} and 1 <2</p>`,
     "uppercase names": `<DIV :IF="x" Class="A"><SPAN>{{ y }}</SPAN></DIV>`,
-    "svg, self-closing inside it": `<svg :width="w"><circle :r="r" /><title>{{ t }}</title></svg><p>{{ after }}</p>`,
+    "svg, self-closing inside it": `<svg :width="w" viewBox="0 0 4 4"><circle :r="r" /><title>{{ t }}</title></svg><p>{{ after }}</p>`,
     "template content": `<template :if="x"><b>{{ inside }}</b></template><template name="Row"><li>{{ row }}</li></template>`,
     "a stray end tag": `<p>{{ a }}</b>{{ b }}</p>`,
     "slot tags with dots": `<slot.header :title="t">{{ fallback }}</slot.header>`,
