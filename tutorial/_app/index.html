@@ -29,11 +29,56 @@ body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100
    the flex-grown remainder rather than a height of its own */
 #app { flex: 1; min-height: 0; }
 #app .failed { max-width: 860px; margin: 0 auto; padding: 2rem 1rem; }
+
+/* on screen from the first paint until the layout is: the app renders once its
+   panes are imported, which on a cold cache is a few round trips away. mount()
+   appends rather than replacing, so the loader steps aside on its own once the
+   container is there, and a failure's innerHTML takes it away with the rest. It
+   fades in late, so a warm load never flashes it.
+   The loader is the logo's glyphs, without its tile, inlined with the 7 and the
+   9 split into the lines they are drawn with, and it takes turns between two
+   things. First a wave of motion, in the logo's yellow: j and q hop, the 7's
+   three strokes slide up their diagonal one after another, and the 9's three
+   rings ripple from the outside in, each glyph coming apart and back together.
+   Then, with everything still, a sweep of colour - left to right, outermost
+   line first, blue, red, green - each line fading to its colour and straight
+   back to yellow, so the colour passes through the lines like a band before
+   the next wave. The viewBox is the logo's 410-unit box cropped to where the
+   pieces travel */
+#app .loading { min-height: calc(100dvh - var(--header-h)); display: grid; place-content: center; justify-items: center; gap: 1rem; color: var(--muted); font-size: 0.9rem; animation: loading-in 300ms 200ms ease-out backwards; }
+#app .loading svg { width: 6.5rem; height: auto; color: var(--fg); }
+/* one 1.7s loop: the wave in its first 0.8s, the colour in the rest */
+#app .loading g { animation: 1.7s var(--delay) ease-in-out infinite; }
+#app .loading .hop { animation-name: loading-hop; }
+#app .loading .slide { animation-name: loading-slide; }
+/* the rings' common centre, in the logo's 410-unit box */
+#app .loading .ripple { animation-name: loading-ripple; transform-origin: 337.5px 282.8px; }
+#app .loading .line path { animation: loading-sweep 1.7s var(--sweep) ease-in-out infinite; }
+#app:has(.tutorial-container) .loading { display: none; }
+@keyframes loading-in { from { opacity: 0; } }
+@keyframes loading-hop { 0%, 26.5%, 100% { transform: none; } 10.6% { transform: translateY(-60px); } }
+/* along the 7's diagonal */
+@keyframes loading-slide { 0%, 26.5%, 100% { transform: none; } 10.6% { transform: translate(14px, -38px); } }
+@keyframes loading-ripple { 0%, 26.5%, 100% { transform: none; } 10.6% { transform: scale(1.2); } }
+/* from 0.8s, once the wave is over: 0.25s to the colour, 0.25s back */
+@keyframes loading-sweep { 0%, 47.1% { fill: #f7df1e; } 61.8% { fill: var(--color); } 76.5%, 100% { fill: #f7df1e; } }
 </style>
 </head>
 <body>
 {{header}}
-<div id="app"></div>
+<div id="app"><div class="loading" role="status">
+  <svg viewBox="114 176 278 205" fill-rule="evenodd" aria-hidden="true">
+    <g class="hop" style="--delay: 0s"><path fill="currentColor" transform="translate(124.396 344.79)scale(134.97872)" d="M.001.221C.101.19.166.114.166-.034v-.51H.088v.508c0 .135-.053.171-.114.192zm.066-.924c0 .032.024.056.056.056A.055.055 0 0 0 .18-.703.055.055 0 0 0 .123-.76a.055.055 0 0 0-.056.057"/></g>
+    <g class="hop" style="--delay: 0.06s"><path fill="currentColor" transform="translate(158.545 344.79)scale(134.97872)" d="M.474-.52a.4.4 0 0 0-.155-.029c-.18 0-.265.123-.265.299 0 .186.094.26.206.26a.22.22 0 0 0 .134-.042h.004v.226h.076zm-.167.039q.055 0 .09.016v.354a.15.15 0 0 1-.115.053C.207-.058.133-.1.133-.26c0-.146.068-.221.174-.221"/></g>
+    <g class="slide line" style="--delay: 0.11s; --sweep: 0s; --color: #4363d8"><path fill="#f7df1e" transform="translate(233.729 344.79)scale(150.67392)" d="M0.003 -0.677 h 0.286 L 0.044 0 H 0.015 l 0.184 -0.509 H 0.003 v -0.027 h 0.205 l 0.016 -0.043 H 0.003 v -0.027 h 0.231 L 0.25 -0.649 H 0.003 z"/></g>
+    <g class="slide line" style="--delay: 0.15s; --sweep: 0.05s; --color: #e6194b"><path fill="#f7df1e" transform="translate(233.729 344.79)scale(150.67392)" d="M0.33 -0.677 h 0.029 L 0.114 0 H 0.085 z"/></g>
+    <g class="slide line" style="--delay: 0.2s; --sweep: 0.1s; --color: #3cb44b"><path fill="#f7df1e" transform="translate(233.729 344.79)scale(150.67392)" d="M0.4 -0.677 h 0.029 L 0.185 0 h -0.03 z"/></g>
+    <g class="ripple line" style="--delay: 0.22s; --sweep: 0.15s; --color: #4363d8"><path fill="#f7df1e" transform="translate(292.144 344.79)scale(156.952)" d="M0.216 -0.162 A 0.26 0.26 0 0 1 0.057 -0.3 a 0.25 0.25 0 0 1 0.011 -0.237 a 0.25 0.25 0 0 1 0.092 -0.092 a 0.25 0.25 0 0 1 0.259 0 a 0.254 0.254 0 0 1 0.113 0.304 a 0.3 0.3 0 0 1 -0.038 0.072 l -0.002 0.002 l -0.001 0.001 l -0.001 0.001 L 0.296 0 H 0.262 l 0.137 -0.176 a 0.3 0.3 0 0 1 -0.064 0.02 L 0.213 0 H 0.179 l 0.118 -0.152 H 0.29 L 0.247 -0.155 L 0.125 0 H 0.091 z M0.29 -0.637 q -0.063 0 -0.116 0.032 a 0.2 0.2 0 0 0 -0.082 0.082 a 0.227 0.227 0 0 0 0.198 0.344 a 0.23 0.23 0 0 0 0.197 -0.344 a 0.2 0.2 0 0 0 -0.082 -0.082 a 0.2 0.2 0 0 0 -0.115 -0.032"/></g>
+    <g class="ripple line" style="--delay: 0.27s; --sweep: 0.2s; --color: #e6194b"><path fill="#f7df1e" transform="translate(292.144 344.79)scale(156.952)" d="M0.289 -0.221 a 0.19 0.19 0 0 1 -0.162 -0.093 a 0.2 0.2 0 0 1 -0.025 -0.095 a 0.18 0.18 0 0 1 0.093 -0.161 a 0.2 0.2 0 0 1 0.094 -0.026 q 0.05 0 0.095 0.026 a 0.2 0.2 0 0 1 0.067 0.067 a 0.18 0.18 0 0 1 0 0.189 a 0.189 0.189 0 0 1 -0.162 0.093 M0.289 -0.569 a 0.159 0.159 0 0 0 -0.138 0.08 a 0.15 0.15 0 0 0 -0.022 0.08 q 0 0.044 0.022 0.081 a 0.16 0.16 0 0 0 0.057 0.057 a 0.15 0.15 0 0 0 0.081 0.022 a 0.15 0.15 0 0 0 0.081 -0.022 a 0.16 0.16 0 0 0 0.057 -0.057 a 0.15 0.15 0 0 0 0.022 -0.081 a 0.15 0.15 0 0 0 -0.022 -0.08 a 0.16 0.16 0 0 0 -0.138 -0.08"/></g>
+    <g class="ripple line" style="--delay: 0.31s; --sweep: 0.25s; --color: #3cb44b"><path fill="#f7df1e" transform="translate(292.144 344.79)scale(156.952)" d="M0.289 -0.29 a 0.1 0.1 0 0 1 -0.06 -0.016 a 0.1 0.1 0 0 1 -0.042 -0.043 a 0.1 0.1 0 0 1 -0.017 -0.06 a 0.1 0.1 0 0 1 0.017 -0.06 a 0.1 0.1 0 0 1 0.042 -0.042 a 0.113 0.113 0 0 1 0.12 0 q 0.028 0.015 0.043 0.042 a 0.1 0.1 0 0 1 0.016 0.06 a 0.1 0.1 0 0 1 -0.016 0.06 a 0.1 0.1 0 0 1 -0.043 0.043 a 0.1 0.1 0 0 1 -0.06 0.016 M0.289 -0.5 a 0.09 0.09 0 0 0 -0.079 0.045 a 0.1 0.1 0 0 0 -0.013 0.046 q 0 0.025 0.013 0.047 a 0.1 0.1 0 0 0 0.033 0.032 a 0.1 0.1 0 0 0 0.046 0.013 a 0.1 0.1 0 0 0 0.046 -0.013 a 0.1 0.1 0 0 0 0.034 -0.032 a 0.1 0.1 0 0 0 0 -0.093 a 0.1 0.1 0 0 0 -0.034 -0.033 A 0.1 0.1 0 0 0 0.289 -0.5"/></g>
+  </svg>
+  <span>Loading the tutorial…</span>
+</div></div>
 <script type="module">
 import { Component79 } from "../jq79.js"
 

@@ -55,7 +55,7 @@ h2.title { margin: 0 0 1rem; font-size: clamp(1.8rem, 5vw, 2.6rem); line-height:
 .demo .bar i { width: 10px; height: 10px; border-radius: 50%; background: #2a3654; }
 .demo .bar span { margin-left: 0.5rem; }
 .demo .code pre { border: 0; border-radius: 0; background: none; }
-.demo .result { margin: 0 0.75rem 0.75rem; padding: 1.1rem; border-radius: var(--radius); background: #ffffff; color: #0e1626; min-height: 7.2rem; }
+.demo .result { padding: 1.1rem; background: #ffffff; color: #0e1626; min-height: 7.2rem; }
 .demo .result-label { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; color: #5a6478; font: 600 0.72rem var(--font); text-transform: uppercase; letter-spacing: 0.08em; }
 .demo .result-label em { font-style: normal; color: #1f8f5a; text-transform: none; letter-spacing: 0; }
 
@@ -63,13 +63,21 @@ h2.title { margin: 0 0 1rem; font-size: clamp(1.8rem, 5vw, 2.6rem); line-height:
 .nots { padding: 2rem 0; border-bottom: 1px solid var(--line); background: var(--bg-soft); }
 .nots ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem 1.6rem; }
 .nots li { color: var(--muted); font-weight: 600; white-space: nowrap; }
-.nots li s { text-decoration-thickness: 2px; text-decoration-color: rgb(255 100 120 / 0.8); color: var(--fg); }
+/* a NO, its line running out of it and through the word hidden behind the e's
+   bar: as thick as the bar, centred on half the x-height. The line is an
+   underline: those are painted behind the letters, and their offset is measured
+   from the baseline, so it lands on the bar in any font. The en space in front of
+   the word carries it out to the NO, and the negative margin tucks it under the
+   O's side bearing. */
+.nots li::before { content: "NO"; color: var(--accent); font-weight: 800; }
+.nots li s { margin-left: -0.08em; text-decoration-line: underline; text-decoration-thickness: 0.085em; text-decoration-color: var(--accent); text-decoration-skip-ink: none; text-underline-offset: calc(-0.51ex - 0.0425em); color: var(--fg); }
+.nots li s::before { content: "\2002"; }
 
 /* --- why ------------------------------------------------------------------- */
 .features { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 48rem) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 72rem) { .features { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-.feature { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.4rem; border: 1px solid var(--line); border-radius: calc(var(--radius) + 4px); background: var(--surface); min-width: 0; }
+.feature { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.4rem; min-width: 0; }
 .feature h3 { margin: 0; font-size: 1.12rem; letter-spacing: -0.01em; }
 .feature p { margin: 0; color: var(--muted); font-size: 0.97rem; }
 .feature .code { margin-top: auto; padding-top: 0.6rem; }
