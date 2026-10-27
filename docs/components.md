@@ -387,6 +387,28 @@ It's a plain promise, not a chainable handle: mounting a *list* of components
 has no single meaning. Like `Promise.all`, the first failure rejects the whole
 call — fetch the URLs separately if you want one 404 to leave the rest usable.
 
+### The component cache
+
+A URL is downloaded once. `fetch`, `fetchAll` and a setup script's
+`import("./row.html")` keep the source of every file they fetched, by its
+absolute URL, and the next request for it is answered from there — ten
+components that import the same `row.html` make one request. Each call still
+hands back a component of its own: what is cached is the file's text, never an
+instance.
+
+It's on by default:
+
+```js
+Component79.cache()        // true: is it on?
+Component79.cache(false)   // off - every fetch downloads again, and what it held is dropped
+Component79.cache(true)    // back on, empty
+Component79.clearCache()   // stays on, starts empty
+```
+
+A failed download isn't cached, so the next request tries again. Under the
+[dev server](dev-server.md), an edited file replaces its cached source, so a
+component mounted after the edit gets the edit too.
+
 ### Parsing from a string
 
 `parseComponent(source)` is a shorthand for `new Component79(source)`:
