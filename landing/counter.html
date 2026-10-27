@@ -6,9 +6,9 @@
 <button @click="count = count + step">
   clicked {{ count }} times
 </button>
-<p :if="count > 0">double is {{ double }}</p>
+<span :if="count > 0">double is {{ double }}</span>
 
 <style scoped>
   button { font: 600 1rem system-ui; padding: .7em 1.2em; border: 0; border-radius: 99px; background: #3178c6; color: white; }
-  p { font: 1rem system-ui; }
+  span { font: 1rem system-ui; margin-left: .8em; }
 </style>

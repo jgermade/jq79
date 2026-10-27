@@ -62,8 +62,11 @@ h2.title { margin: 0 0 1rem; font-size: clamp(1.8rem, 5vw, 2.6rem); line-height:
 /* --- what you don't need --------------------------------------------------- */
 .nots { padding: 2rem 0; border-bottom: 1px solid var(--line); background: var(--bg-soft); }
 .nots ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.6rem 1.6rem; }
-.nots li { color: var(--muted); font-weight: 600; white-space: nowrap; }
-.nots li s { text-decoration-thickness: 2px; text-decoration-color: rgb(255 100 120 / 0.8); color: var(--fg); }
+.nots li { color: var(--muted); font-weight: 600; white-space: nowrap; isolation: isolate; }
+/* a red NO, its line running out of it and under the word, behind the letters */
+.nots li::before { content: "NO"; margin-right: 0.4em; color: rgb(240 80 100); font-weight: 800; }
+.nots li s { position: relative; text-decoration: none; color: var(--fg); }
+.nots li s::before { content: ""; position: absolute; z-index: -1; left: -0.4em; right: 0; top: calc(50% - 1px); height: 2px; background: rgb(240 80 100); }
 
 /* --- why ------------------------------------------------------------------- */
 .features { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); }
