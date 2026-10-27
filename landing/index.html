@@ -72,7 +72,7 @@ h2.title { margin: 0 0 1rem; font-size: clamp(1.8rem, 5vw, 2.6rem); line-height:
 .features { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 48rem) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 72rem) { .features { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-.feature { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.4rem; border: 1px solid var(--line); border-radius: calc(var(--radius) + 4px); background: var(--surface); min-width: 0; }
+.feature { display: flex; flex-direction: column; gap: 0.6rem; padding: 1.4rem; min-width: 0; }
 .feature h3 { margin: 0; font-size: 1.12rem; letter-spacing: -0.01em; }
 .feature p { margin: 0; color: var(--muted); font-size: 0.97rem; }
 .feature .code { margin-top: auto; padding-top: 0.6rem; }
