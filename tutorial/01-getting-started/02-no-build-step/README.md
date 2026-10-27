@@ -53,8 +53,9 @@ in arrived over the network as a `.html` file.
 
 ## The same is true inside a component
 
-A component uses another one by importing it from its setup script. The next
-section is about that — here, all that matters is where the file comes from:
+A component uses another one by importing it from its setup script.
+[Components](#03-components/01-nested-components) are about that — here, all that
+matters is where the file comes from:
 
 ```html
 <script :setup>

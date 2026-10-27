@@ -29,5 +29,5 @@ Clicking a todo already toggles it, because mutating a property of a reactive
 object is tracked just like assigning to a variable.
 
 There's more to `:each` — what `:key` actually buys you, a second binding, and
-iterating plain objects — in [Keys and identity](#01-basics/06-keys-and-identity)
-and [Objects and entries](#01-basics/07-objects-and-entries).
+iterating plain objects — in [Keys and identity](#02-templates/05-keys-and-identity)
+and [Objects and entries](#02-templates/06-objects-and-entries).

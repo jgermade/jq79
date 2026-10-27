@@ -179,52 +179,58 @@
 
 <style>
   /* --- mobile-first layout ------------------------------------------------
-     On narrow screens the four panes stack vertically: toc, lesson, then the
-     work column (tabs + editor + preview). The toc is collapsible so the user
-     can get to the editor without scrolling past it. On wider screens the toc
-     pins to the left and the lesson sits beside the work column. */
+     Narrow screens: one column that scrolls with the page - the toc as a
+     collapsible bar, the lesson, then the work column (tabs, editor, preview)
+     at a height of its own. From 56rem the lesson and the work column sit side
+     by side and the app takes the viewport, each pane scrolling on its own; the
+     toc stays a bar above them until 80rem, where it becomes a sidebar. */
 
   .tutorial-container {
-    display: grid;
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr;
-    gap: 1px;
-    background: var(--line);
-    height: calc(100vh - 2.5rem);
-    height: calc(100dvh - 2.5rem);
-  }
-
-  .tutorial-container > * {
+    display: flex;
+    flex-direction: column;
     background: var(--bg);
-    overflow-y: auto;
   }
 
-  /* the work column fills the remaining height on mobile */
-  .work { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+  .work {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-top: 1px solid var(--line);
+  }
 
-  /* tablet: lesson and work sit side by side, toc stays on top */
-  @media (min-width: 48rem) {
+  .pane {
+    position: relative;
+    height: 60vh;
+    height: 60svh;
+    min-height: 18rem;
+  }
+
+  @media (min-width: 56rem) {
     .tutorial-container {
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: auto 1fr;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+      grid-template-rows: auto minmax(0, 1fr);
+      height: calc(100dvh - var(--header-h));
     }
-    .tutorial-container > .toc  { grid-column: 1 / -1; }
+    .tutorial-container .toc { grid-column: 1 / -1; }
+    .tutorial-container .text { overflow-y: auto; }
+    .work { border-top: 0; border-left: 1px solid var(--line); }
+    .pane { height: auto; flex: 1 1 58%; min-height: 10rem; }
   }
 
-  /* desktop: three-column layout, toc pinned to the left */
-  @media (min-width: 72rem) {
-    .tutorial-container {
-      grid-template-columns: 15rem 1fr 1fr;
-      grid-template-rows: 1fr;
-    }
+  @media (min-width: 80rem) {
+    .tutorial-container { grid-template-columns: 16rem minmax(0, 1fr) minmax(0, 1.2fr); grid-template-rows: minmax(0, 1fr); }
+    .tutorial-container .toc { grid-column: auto; overflow-y: auto; }
   }
 
-  /* the work column renders with the template, but the three panes it holds are
-     fetched like the two above it: <Editor> and <Diff> in .pane, <Preview> under
-     it. They land whenever their request comes back, so they fade in on their own
-     rather than with the column that was already there waiting for them */
-  .tutorial-container > *,
-  .pane > *,
+  /* the work column renders with the template, but the panes it holds are
+     fetched like the two beside it: <Editor> and <Diff> in .pane, <Preview>
+     under it. They land whenever their request comes back, so they fade in on
+     their own rather than with the column that was already there */
+  .tutorial-container .toc,
+  .tutorial-container .text,
+  .pane .code,
+  .pane .diff,
   .work > .output {
     animation: pane-in 250ms ease-out;
   }
@@ -235,8 +241,10 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .tutorial-container > *,
-    .pane > *,
+    .tutorial-container .toc,
+    .tutorial-container .text,
+    .pane .code,
+    .pane .diff,
     .work > .output { animation: none; }
   }
 
@@ -246,54 +254,44 @@
     display: flex;
     align-items: center;
     gap: 0.3rem;
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--line);
+    padding: 0.45rem 0.6rem;
+    background: var(--code-bg);
+    border-bottom: 1px solid var(--code-line);
+    overflow-x: auto;
+    scrollbar-width: none;
   }
+  .tabs::-webkit-scrollbar { display: none; }
   .tabs .spacer { flex: 1; }
   /* .ghost is the diff bar's cancel button too: the tutorial mounts into the
      page rather than a shadow root, so one stylesheet dresses all of its chrome */
   .tab, .ghost {
-    padding: 0.3em 0.7em;
+    flex: none;
+    padding: 0.35em 0.8em;
     border: 0;
-    border-radius: 6px;
+    border-radius: 8px;
     background: none;
-    font: inherit;
-    font-size: 0.85rem;
+    font: 500 0.82rem var(--mono);
     cursor: pointer;
+    white-space: nowrap;
   }
-  /* a tab names a file the user is about to read, so it stays legible: --muted
-     is dim enough on the editor's chrome that the file you aren't in reads as
-     disabled rather than merely inactive */
-  .tab { color: var(--fg); opacity: 0.65; }
-  .tab:hover { background: var(--code-bg); opacity: 1; }
-  .tab.active { background: var(--code-bg); opacity: 1; font-weight: 600; }
-  .ghost { color: var(--accent); }
-  .ghost:hover { background: var(--code-bg); }
+  /* a tab names a file the user is about to read, so it stays legible: the one
+     you aren't in reads as inactive, not disabled */
+  .tab { color: var(--code-fg); opacity: 0.6; }
+  .tab:hover { background: rgb(255 255 255 / 0.06); opacity: 1; }
+  .tab.active { background: rgb(255 255 255 / 0.1); opacity: 1; }
+  .ghost { color: #8fbcff; font-family: var(--font); font-weight: 600; }
+  .ghost:hover { background: rgb(143 188 255 / 0.12); }
   /* apply commits the reviewed solution, so it reads as the primary action next
      to cancel's ghost - same tab bar the diff overlays */
   .accept {
-    padding: 0.3em 0.9em;
+    flex: none;
+    padding: 0.35em 0.95em;
     border: 0;
-    border-radius: 6px;
-    background: var(--accent);
+    border-radius: 999px;
+    background: #3178c6;
     color: #fff;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
+    font: 600 0.82rem var(--font);
     cursor: pointer;
   }
   .accept:hover { filter: brightness(1.1); }
-
-  .pane {
-    position: relative;
-    flex: 1 1 55%;
-    min-height: 12rem;
-    border-bottom: 1px solid var(--line);
-  }
-
-  /* mobile: the toc is collapsible so the editor stays reachable */
-  @media (max-width: 47.99rem) {
-    .tutorial-container { height: auto; }
-    .work { height: 80vh; }
-  }
 </style>

@@ -1,0 +1,14 @@
+<script :setup="{ step = 1 }">
+  let count = 0
+  $: double = count * 2
+</script>
+
+<button @click="count = count + step">
+  clicked {{ count }} times
+</button>
+<p :if="count > 0">double is {{ double }}</p>
+
+<style scoped>
+  button { font: 600 1rem system-ui; padding: .7em 1.2em; border: 0; border-radius: 99px; background: #3178c6; color: white; }
+  p { font: 1rem system-ui; }
+</style>

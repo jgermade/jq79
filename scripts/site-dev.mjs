@@ -1,6 +1,6 @@
 // Serves site/ on localhost with livereload, rebuilding it whenever a source
-// the site is generated from changes (README, docs/, assets/, the build script
-// itself). Same output as `npm run site`, just on a watch loop.
+// the site is generated from changes (landing/, docs/, tutorial/, assets/, the
+// build script itself). Same output as `npm run site`, just on a watch loop.
 //
 //   npm run site.dev            → http://localhost:4179
 //   PORT=8080 npm run site.dev
@@ -13,7 +13,7 @@ import { watch } from "chokidar"
 import { createServer } from "vite"
 
 const PORT = Number(process.env.PORT ?? 4179)
-const WATCHED = ["README.md", "docs", "tutorial", "assets", "scripts/build-site.mjs"]
+const WATCHED = ["landing", "docs", "tutorial", "assets", "scripts/build-site.mjs"]
 
 // `mpa` serves docs/*.html at their own paths instead of falling back to a
 // single index; vite injects its own hmr client into every page it serves,
