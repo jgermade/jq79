@@ -46,7 +46,7 @@ same `.html` file works unchanged in all three delivery modes:
   files without a bundler in sight.
 
 The one thing the plugin can add is [`safeEval`](#safeeval--a-csp-without-unsafe-eval):
-each component's functions, precompiled into a script beside the bundle. The
+every component's functions, precompiled into one script beside the bundle. The
 source still travels verbatim; the precompiled script sits next to it.
 
 ## `<style lang>` — CSS preprocessors
@@ -256,13 +256,19 @@ jq79({ safeEval: true })              // Content-Security-Policy: script-src 'se
 jq79({ safeEval: { nonce: true } })   // Content-Security-Policy: script-src 'nonce-…'
 ```
 
-Every imported component is precompiled at build time, and its functions ship
-as a script of their own beside the bundle — `UserCard.html.jq79-[hash].js` —
-which the component's module waits for before it exports the component. The
-runtime then never calls `new Function`: with `true`, anything that wasn't
-precompiled is reported in the console instead; with `{ nonce: true }`, it is
-built as a `<script>` carrying the page's nonce. The build reports an expression
-that doesn't compile, with its file.
+Every imported component is precompiled at build time, and the functions of all
+of them ship as one script beside the bundle — `jq79-precompiled-[hash].js` —
+which each component's module waits for before it exports the component. They
+all wait for the same file, so it is downloaded once, and every page whose entry
+imports a component preloads it (`<link rel="preload" as="script">`), so it
+downloads alongside your entry module. The runtime then never calls
+`new Function`: with `true`, anything that wasn't precompiled is reported in the
+console instead; with `{ nonce: true }`, it is built as a `<script>` carrying
+the page's nonce. The build reports an expression that doesn't compile, with
+its file.
+
+In `vite dev` each component has a script of its own, so an edit reloads only
+that component's functions.
 
 The wait is a top-level `await` — Vite 7 and later target it by default; on
 Vite 5 or 6, set `build.target: "es2022"`. The whole story, the no-bundler

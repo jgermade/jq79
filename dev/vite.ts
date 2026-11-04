@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises"
-import { basename, relative } from "node:path"
+import { posix, relative } from "node:path"
 import { preprocessCSS, transformWithEsbuild } from "vite"
 import type { Plugin, ResolvedConfig } from "vite"
 // by package name rather than ../src: this file's types are emitted with dev/
@@ -35,8 +35,8 @@ export interface Jq79PluginOptions {
   // run the app without eval, for a CSP with no 'unsafe-eval' - the value
   // Component79.safeEval() takes, and meaning the same thing
   // (RECORD/2026-09-23.no-unsafe-eval.md). Every component is precompiled, and
-  // its functions ship as a script of their own. `true`: those and nothing
-  // else - whatever the build couldn't see is reported, never evaluated.
+  // their functions ship as one script beside the bundle. `true`: those and
+  // nothing else - whatever the build couldn't see is reported, never evaluated.
   // `{ nonce: true }`: whatever it couldn't see (a component built from a
   // string, an edit during HMR) is built as a <script> carrying the page's nonce
   safeEval?: boolean | { nonce?: boolean }
@@ -46,20 +46,23 @@ export interface Jq79PluginOptions {
 // Vite's own html handling (entries, asset pipeline) leaves them alone
 const COMPONENT_QUERY = "?jq79"
 
-// safeEval. A component's precompiled functions travel as a classic script of
-// their own - Card.html.jq79.js - and not inside its module: they compile
-// under `with`, which is a SyntaxError in strict code, and every module is
-// strict. In a build the script is an asset beside the chunk; in dev the
-// server hands it out (PRECOMPILED_PATH). Either way it pushes its functions
-// onto the queue the runtime drains (see "safe eval" in src/jq79.ts).
+// safeEval. Precompiled functions travel as a classic script, and not inside
+// a module: they compile under `with`, which is a SyntaxError in strict code,
+// and every module is strict. In a build it is one script for every component
+// - jq79-precompiled-[hash].js, an asset beside the chunks - and the pages that
+// need it preload it (RECORD/2026-11-04.one-precompiled-script.md); in dev each
+// component has its own, which the server hands out (PRECOMPILED_PATH). Either
+// way it pushes its functions onto the queue the runtime drains (see "safe
+// eval" in src/jq79.ts).
 //
 // The component's module waits for it - a top-level await - before it builds
 // anything, through a module every component module imports. That module
 // evaluates once, so safe mode is turned on once per app, and a page with no
 // nonce is reported once rather than once per component; and it loads each
-// script once, however many modules ask. The <script> carries the page's
-// nonce when there is one, so a CSP that works by nonce admits it; under
-// `script-src 'self'` the URL is what admits it.
+// script once, however many modules ask - in a build they all ask for the
+// same one, so the first await downloads it and the rest resolve at once. The
+// <script> carries the page's nonce when there is one, so a CSP that works by
+// nonce admits it; under `script-src 'self'` the URL is what admits it.
 //
 // Component79 is passed in rather than imported, so the module resolves
 // nothing: a bare "jq79" from a virtual importer is the one resolution that
@@ -105,6 +108,16 @@ export const safeEval = (Component79, url) => {
 // where the dev server hands out a component's precompiled script
 const PRECOMPILED_PATH = "/@jq79/precompiled.js"
 
+// a build's one precompiled script, named as an asset: assets/jq79-precompiled-[hash].js
+const PRECOMPILED_ASSET = "jq79-precompiled.js"
+// what a component's module passes for that script's URL in a build. The asset
+// is emitted in buildEnd, once every component is known - Rolldown has no
+// setAssetSource to fill it in later, and a module is loaded before the build
+// knows the rest - so a module can't name it by reference when it's loaded;
+// renderChunk writes the URL over this
+const PRECOMPILED_URL_PLACEHOLDER = "__JQ79_PRECOMPILED_URL__"
+const PRECOMPILED_URL_PLACEHOLDER_RE = /(["'`])__JQ79_PRECOMPILED_URL__\1/g
+
 // the plugin's safeEval option, as what the modules pass the runtime: null
 // for off, or Component79.safeEval's own options
 const safeEvalOptions = (option: Jq79PluginOptions["safeEval"]): { nonce?: boolean } | null => {
@@ -116,20 +129,55 @@ const safeEvalOptions = (option: Jq79PluginOptions["safeEval"]): { nonce?: boole
 // doesn't compile, so only the `with` form's failure is worth a word
 const SCOPED_BODY_RE = /^(?:let \$t;| return \()/
 
-// a component's precompiled functions, as the classic script that registers
-// them (precompiledScript, in jq79/precompile). Each is compiled here first -
-// node can, where the page may not - so the script holds only functions that
-// parse; one that doesn't ships as null, and the build says so
-const componentScript = (source: string, warn: (message: string) => void): string =>
-  precompiledScript(precompile(source), (params, body) => {
+// one precompiled function, and whether it parses
+type CheckedFunction = [params: string[], body: string, parses: boolean]
+
+// a component's precompiled functions, each compiled here first - node can,
+// where the page may not - so a script holds only functions that parse; one
+// that doesn't ships as null, and the build says so, once, with its file
+const componentFunctions = (source: string, warn: (message: string) => void): CheckedFunction[] =>
+  precompile(source).map(([params, body]) => {
     try {
       new Function(...params, body)
-      return true
+      return [params, body, true]
     } catch (error) {
       if (!SCOPED_BODY_RE.test(body)) warn(`${(error as Error).message}, in: ${body.length > 120 ? `${body.slice(0, 120)}…` : body}`)
-      return false
+      return [params, body, false]
     }
   })
+
+// the classic script that registers functions (precompiledScript, in
+// jq79/precompile): one component's in dev, every component's in a build. One
+// push, each function once - the runtime keys them by (params, body), so
+// `{{ name }}` written in ten components is one function, and a second entry
+// would only replace the first with itself
+const registeringScript = (functions: CheckedFunction[]): string => {
+  const unique = new Map<string, CheckedFunction>()
+  for (const fn of functions) {
+    const key = JSON.stringify([fn[0], fn[1]])
+    if (!unique.has(key)) unique.set(key, fn)
+  }
+  return precompiledScript(
+    [...unique.values()].map(([params, body]) => [params, body]),
+    (params, body) => unique.get(JSON.stringify([params, body]))?.[2] ?? false
+  )
+}
+
+type BundleFile = { type: string; fileName: string; moduleIds?: string[]; imports?: string[] }
+
+// whether a page's entry chunk waits for the precompiled script as it loads:
+// it, or a chunk it imports statically, holds a component module. A component
+// behind import() asks for the script when it is imported, and a preload the
+// page doesn't use straight away only earns a warning in the console
+const reachesComponent = (entry: BundleFile, bundle: Record<string, BundleFile>): boolean => {
+  const seen = new Set<string>()
+  const visit = (chunk: BundleFile | undefined): boolean => {
+    if (!chunk || chunk.type !== "chunk" || seen.has(chunk.fileName)) return false
+    seen.add(chunk.fileName)
+    return (chunk.moduleIds ?? []).some(id => id.endsWith(COMPONENT_QUERY)) || (chunk.imports ?? []).some(file => visit(bundle[file]))
+  }
+  return visit(entry)
+}
 
 // a <script> block with its attribute string, so `lang` can be read and the
 // body replaced - the same shape as STYLE_BLOCK_RE below, quote-aware so a
@@ -507,6 +555,11 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
   // for - so the server hands out what the plugin compiled and nothing else
   const devScripts = new Map<string, string>()
   const devIds = new Map<string, number>()
+  // build only: each component's functions, by file, for the one script
+  // buildEnd emits - its reference, and the file name renderChunk resolves it to
+  const buildFunctions = new Map<string, CheckedFunction[]>()
+  let precompiledRef: string | undefined
+  let precompiledFile: string | undefined
 
   let config: ResolvedConfig | null = null
 
@@ -561,19 +614,69 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
 
       // the component's functions, compiled after its TypeScript and styles are:
       // the runtime compiles what reaches it, and this is what reaches it
-      const script = componentScript(source, message => this.warn(`jq79: ${filename}: ${message}`))
+      const functions = componentFunctions(source, message => this.warn(`jq79: ${filename}: ${message}`))
       let url: string
       if (config?.command === "serve") {
         let devId = devIds.get(file)
         if (devId === undefined) devIds.set(file, devId = devIds.size)
-        devScripts.set(String(devId), script)
+        devScripts.set(String(devId), registeringScript(functions))
         // versioned, so an edit loads the new functions rather than a cached copy
         url = JSON.stringify(`${config.base}${PRECOMPILED_PATH.slice(1)}?id=${devId}&v=${Date.now()}`)
       } else {
-        const ref = this.emitFile({ type: "asset", name: `${basename(file)}.jq79.js`, source: script })
-        url = `import.meta.ROLLUP_FILE_URL_${ref}`
+        buildFunctions.set(file, functions)
+        url = JSON.stringify(PRECOMPILED_URL_PLACEHOLDER)
       }
       return { code: componentModule(source, include, filename, url), map: null }
+    },
+
+    buildStart() {
+      precompiledRef = undefined
+      precompiledFile = undefined
+    },
+
+    // the build's one precompiled script, from every component still in the
+    // module graph. What earlier builds recorded is kept and pruned rather than
+    // cleared in buildStart, so a watch rebuild that doesn't load a module again
+    // keeps its functions. Sorted by file, so the same sources make the same
+    // bytes, and the same hash
+    buildEnd(error) {
+      if (!safeEval || error || config?.command === "serve") return
+      const inGraph = new Set<string>()
+      for (const id of this.getModuleIds()) if (id.endsWith(COMPONENT_QUERY)) inGraph.add(id.slice(0, -COMPONENT_QUERY.length))
+      for (const file of buildFunctions.keys()) if (!inGraph.has(file)) buildFunctions.delete(file)
+      if (buildFunctions.size === 0) return
+      const functions = [...buildFunctions.keys()].sort().flatMap(file => buildFunctions.get(file)!)
+      precompiledRef = this.emitFile({ type: "asset", name: PRECOMPILED_ASSET, source: registeringScript(functions) })
+    },
+
+    // the placeholder, as what import.meta.ROLLUP_FILE_URL_<ref> renders to:
+    // the asset's path relative to the chunk, against the chunk's own URL - so
+    // `base` doesn't matter. Before minification, and part of the chunk's hash.
+    // The source map is left as it is: the placeholder sits on a line of its
+    // own with only `)` after it
+    renderChunk(code, chunk) {
+      if (precompiledRef === undefined || !code.includes(PRECOMPILED_URL_PLACEHOLDER)) return null
+      precompiledFile = this.getFileName(precompiledRef)
+      const path = JSON.stringify(posix.relative(posix.dirname(chunk.fileName), precompiledFile))
+      return { code: code.replace(PRECOMPILED_URL_PLACEHOLDER_RE, () => `new URL(${path}, import.meta.url).href`), map: null }
+    },
+
+    // a page that waits for the script asks for it as it parses, rather than
+    // once its entry has loaded and run. Same URL as the module's, and no
+    // crossorigin, as the <script> has none: a preload is only reused by a
+    // request that matches it. Vite's html.cspNonce stamps it with the nonce,
+    // after this hook - without it, `script-src 'nonce-…'` refuses a preload.
+    // Build only: dev has one script per component, versioned per edit
+    transformIndexHtml(_html, ctx) {
+      if (!safeEval || !precompiledFile || !ctx.bundle || !ctx.chunk) return
+      if (!reachesComponent(ctx.chunk as BundleFile, ctx.bundle as Record<string, BundleFile>)) return
+      const base = config?.base ?? "/"
+      let href = `${base}${precompiledFile}`
+      if (base === "" || base === "./") {
+        href = posix.relative(posix.dirname(ctx.path), `/${precompiledFile}`)
+        if (!href.startsWith(".")) href = `./${href}`
+      }
+      return [{ tag: "link", attrs: { rel: "preload", as: "script", href }, injectTo: "head" }]
     },
   }
 }
