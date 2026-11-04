@@ -32,6 +32,11 @@
 //            (Vite's html.cspNonce, filled per response): the same, and a
 //            component built from a string goes through the nonce
 //
+// Both pages preload the build's one precompiled script, and the browser
+// fetches it once: the <script> the module adds reuses the preload. Under the
+// nonce policy that holds only if the <link> carries the nonce too, which the
+// "no CSP violation" claim would catch (RECORD/2026-11-04.one-precompiled-script.md)
+//
 // And the no-bundle route: a static site with jq79-sw.js at its root, every
 // response under `script-src 'self'` - the worker's own included - and
 // `await Component79.safeEval()` on the page, visited for the first time in a
@@ -285,11 +290,14 @@ try {
   for (const [mode, path] of Object.entries(pages)) {
     const page = await browser.newPage()
     const errors = []
+    const precompiled = []
     page.on("console", message => { if (message.type() === "error") errors.push(message.text()) })
+    page.on("request", request => { if (/\/jq79-precompiled[^/]*\.js$/.test(request.url())) precompiled.push(request.url()) })
     await page.goto(`${origin}${path}`)
     await page.waitForFunction(() => window.__result, null, { timeout: 10_000 })
     const result = await page.evaluate(() => window.__result)
-    const detail = JSON.stringify({ ...result, errors })
+    const preload = await page.evaluate(() => document.querySelector('link[rel="preload"][as="script"]')?.href ?? null)
+    const detail = JSON.stringify({ ...result, errors, precompiled, preload })
 
     if (mode === "eval") {
       check(mode, "the CSP refuses eval: mounting a component with a script throws", /'unsafe-eval' is not an allowed source/.test(result.thrown ?? ""), detail)
@@ -303,6 +311,7 @@ try {
       check(mode, "renders on the stack it mounts on", result.before === "1/2++10ab", detail)
       check(mode, "reacts to clicks, $: included", result.after === "12/24++10abbig", detail)
       if (mode === "vite+n") check(mode, "builds a string component through the nonce", result.extra === "42", detail)
+      check(mode, "preloads the precompiled script, and fetches it once", preload !== null && precompiled.length === 1 && precompiled[0] === preload, detail)
       check(mode, "component styles apply, plain and scoped, with no 'unsafe-inline' in style-src", result.color === "rgb(1, 2, 3)" && result.scoped === "700", detail)
       check(mode, "the page records no CSP violation", result.violations?.length === 0, detail)
       check(mode, "and logs no error", errors.length === 0, detail)

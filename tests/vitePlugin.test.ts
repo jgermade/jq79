@@ -1,12 +1,13 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { join, posix, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { build, createLogger } from "vite"
 import { jq79 } from "../dev/vite"
 import { Component79 } from "../src/jq79"
+import { precompile } from "../src/precompile"
 
 // vitest runs from the repo root
 const fixture = (name: string) => resolve("tests/fixtures", name)
@@ -698,27 +699,92 @@ describe("jq79 vite plugin", () => {
       }
     })
 
-    it("emits a component's precompiled script and has its module wait for it; off, the module is unchanged", async () => {
-      const file = fixture("user-card.html")
+    it("emits one precompiled script for the build, which every component's module waits for; off, the module is unchanged", async () => {
+      const files = [fixture("user-card.html"), fixture("parent.html")]
       const emitted: any[] = []
-      const context = { emitFile: (asset: any) => { emitted.push(asset); return "ref0" }, warn: () => {} }
+      const context = {
+        warn: () => {},
+        emitFile: (asset: any) => { emitted.push(asset); return "ref0" },
+        getModuleIds: () => [...files.map(file => `${file}?jq79`), fixture("app.js")][Symbol.iterator](),
+        getFileName: () => "assets/jq79-precompiled-abc.js",
+      }
       const on: any = jq79({ safeEval: true })
-      const { code } = await on.load.call(context, `${file}?jq79`)
+      on.buildStart.call(context)
+      const codes: string[] = []
+      for (const file of files) codes.push((await on.load.call(context, `${file}?jq79`)).code)
 
-      expect(code).toContain('import { safeEval } from "virtual:jq79/safe-eval"')
-      expect(code).toContain("await safeEval(Component79, import.meta.ROLLUP_FILE_URL_ref0)")
+      // nothing is emitted while modules load: the build doesn't know them all yet
+      expect(emitted).toEqual([])
+      for (const code of codes) {
+        expect(code).toContain('import { safeEval } from "virtual:jq79/safe-eval"')
+        expect(code).toContain('await safeEval(Component79, "__JQ79_PRECOMPILED_URL__")')
+      }
+
+      on.buildEnd.call(context)
       expect(emitted).toHaveLength(1)
-      expect(emitted[0]).toMatchObject({ type: "asset", name: "user-card.html.jq79.js" })
-      expect(emitted[0].source).toContain("(self.__jq79precompiled = self.__jq79precompiled || []).push(")
+      expect(emitted[0]).toMatchObject({ type: "asset", name: "jq79-precompiled.js" })
+      // one push, holding both components' functions
+      const source: string = emitted[0].source
+      expect(source.match(/__jq79precompiled = /g)).toHaveLength(1)
+      expect(source).toContain("(self.__jq79precompiled = self.__jq79precompiled || []).push(")
+      expect(source).toContain("Hello, ${name}!")
+      expect(source).toContain('$__import(\\"./user-card.html\\")')
 
-      const resolved = await on.resolveId.call({}, "virtual:jq79/safe-eval", `${file}?jq79`)
+      // the placeholder becomes the URL import.meta.ROLLUP_FILE_URL_<ref> would have rendered
+      const chunk = { fileName: "assets/index-xyz.js" }
+      const rendered = on.renderChunk.call(context, `await safeEval(pe, "__JQ79_PRECOMPILED_URL__");\n`, chunk)
+      expect(rendered).toEqual({ code: `await safeEval(pe, new URL("jq79-precompiled-abc.js", import.meta.url).href);\n`, map: null })
+      expect(on.renderChunk.call(context, "const a = 1\n", chunk)).toBe(null)
+
+      const resolved = await on.resolveId.call({}, "virtual:jq79/safe-eval", `${files[0]}?jq79`)
       // a Vite page's functions come from its build: it never registers the worker
       expect(await on.load.call({}, resolved)).toContain('Component79.safeEval({"worker":false})')
       const nonce: any = jq79({ safeEval: { nonce: true } })
       expect(await nonce.load.call({}, resolved)).toContain('Component79.safeEval({"nonce":true,"worker":false})')
 
-      const { code: off } = await plugin.load.call({}, `${file}?jq79`)
+      const { code: off } = await plugin.load.call({}, `${files[0]}?jq79`)
       expect(off).not.toContain("safeEval")
+    })
+
+    it("a build's script holds each function once, in the same order whatever order the components loaded in", async () => {
+      const dir = join(BUNDLE_DIR, "shared-src")
+      await mkdir(dir, { recursive: true })
+      const a = join(dir, "a.html")
+      const b = join(dir, "b.html")
+      await writeFile(a, `<p>{{ name }}</p><i>{{ only.a }}</i>`)
+      await writeFile(b, `<p>{{ name }}</p><b>{{ only.b }}</b>`)
+
+      const scriptFor = async (order: string[], graph = order) => {
+        const emitted: any[] = []
+        const context = {
+          warn: () => {},
+          emitFile: (asset: any) => { emitted.push(asset); return "ref0" },
+          getModuleIds: () => graph.map(file => `${file}?jq79`)[Symbol.iterator](),
+        }
+        const on: any = jq79({ safeEval: true })
+        on.buildStart.call(context)
+        for (const file of order) await on.load.call(context, `${file}?jq79`)
+        on.buildEnd.call(context)
+        return emitted[0]?.source as string | undefined
+      }
+      const registered = (source: string) => {
+        const self: any = {}
+        new Function("self", source)(self)
+        return self.__jq79precompiled.map(([params, body]: [string[], string]) => `${params.join(",")}\n${body}`)
+      }
+
+      const source = (await scriptFor([a, b]))!
+      const keys = registered(source)
+      const expected = new Set([...precompile(await readFile(a, "utf8")), ...precompile(await readFile(b, "utf8"))]
+        .map(([params, body]) => `${params.join(",")}\n${body}`))
+      expect(new Set(keys)).toEqual(expected)
+      expect(keys).toHaveLength(expected.size) // `{{ name }}` is in both, and in the script once
+      expect(await scriptFor([b, a])).toBe(source) // same sources, same bytes, same hash
+
+      // a component that has left the module graph leaves the script too
+      expect(registered((await scriptFor([a, b], [a]))!)).toHaveLength(precompile(await readFile(a, "utf8")).length)
+      // and a build with no component emits nothing
+      expect(await scriptFor([], [])).toBeUndefined()
     })
 
     it("in dev, serves the precompiled script it compiled - and nothing else", async () => {
@@ -775,7 +841,7 @@ describe("jq79 vite plugin", () => {
       const append = document.head.append.bind(document.head)
       vi.spyOn(document.head, "append").mockImplementation((...nodes: (Node | string)[]) => {
         for (const node of nodes) {
-          if (node instanceof HTMLScriptElement && node.src.endsWith(".jq79.js")) {
+          if (node instanceof HTMLScriptElement && /\/jq79-precompiled[^/]*\.js$/.test(node.src)) {
             loaded.push({ src: node.src, nonce: node.getAttribute("nonce") })
             new RealFunction("self", readFileSync(fileURLToPath(node.src), "utf8"))(globalThis)
             queueMicrotask(() => node.dispatchEvent(new Event("load")))
@@ -802,9 +868,7 @@ describe("jq79 vite plugin", () => {
 
     it("safeEval: true - bundles an app that renders from its precompiled script alone, with eval blocked", async () => {
       const app = await buildSafeApp("safe-app", true, fixture("parent-app.js"))
-      expect(app.assets.sort()).toEqual(expect.arrayContaining([
-        expect.stringMatching(/^parent\.html\.jq79\.js$/), expect.stringMatching(/^user-card\.html\.jq79\.js$/),
-      ]))
+      expect(app.assets).toEqual(["jq79-precompiled.js"])
       const loaded = loadScripts()
       const inline = watchInlineScripts()
       const error = vi.spyOn(console, "error").mockImplementation(() => {})
@@ -816,7 +880,8 @@ describe("jq79 vite plugin", () => {
       await new Promise(resolve => setTimeout(resolve, 10))
 
       expect(container.querySelector(".greeting")?.textContent).toBe("Hello, Ada!")
-      expect(loaded.map(script => script.src.split("/").pop()).sort()).toEqual(["parent.html.jq79.js", "user-card.html.jq79.js"])
+      // two component modules wait for it, and it is loaded once
+      expect(loaded.map(script => script.src.split("/").pop())).toEqual(["jq79-precompiled.js"])
       expect(inline()).toEqual([]) // nothing built on the page
       expect(error).not.toHaveBeenCalled()
       Parent.destroy()
@@ -871,6 +936,128 @@ describe("jq79 vite plugin", () => {
       } finally {
         pageScript.remove()
       }
+    })
+
+    // an app build: pages as Vite builds them, not a lib
+    const buildPages = async (name: string, safeEval: any, config: Record<string, any> = {}) => {
+      const root = join(BUNDLE_DIR, name)
+      await mkdir(join(root, "nested"), { recursive: true })
+      for (const file of ["user-card.html", "parent.html"]) await writeFile(join(root, file), await readFile(fixture(file), "utf8"))
+      const page = (main: string) => `<!doctype html><html><head><script type="module" src="${main}"></script></head><body></body></html>`
+      const pages: Record<string, [string, string, string]> = {
+        // [page, its module, the module's source]
+        main: ["index.html", "main.js", `import Parent from "./parent.html"\nParent.mount(document.body)\n`],
+        nested: ["nested/page.html", "nested/main.js", `import { shared } from "../shared.js"\nshared.mount(document.body)\n`],
+        lazy: ["lazy.html", "lazy.js", `document.body.onclick = () => import("./user-card.html").then(m => m.default.mount(document.body))\n`],
+        plain: ["plain.html", "plain.js", `document.body.textContent = "no components here"\n`],
+        // entries that are nothing but an import of a shared chunk: Vite writes
+        // no <script> for them, only for the chunk they import
+        bootA: ["boot-a.html", "boot-a.js", `import "./boot.js"\n`],
+        bootB: ["boot-b.html", "boot-b.js", `import "./boot.js"\n`],
+      }
+      await writeFile(join(root, "shared.js"), `import UserCard from "./user-card.html"\nexport const shared = UserCard\n`)
+      await writeFile(join(root, "boot.js"), `import Parent from "./parent.html"\nParent.mount(document.body)\n`)
+      for (const [html, main, code] of Object.values(pages)) {
+        await writeFile(join(root, html), page(`./${main.split("/").pop()}`))
+        await writeFile(join(root, main), code)
+      }
+      const result: any = await build({
+        configFile: false,
+        logLevel: "silent",
+        root,
+        plugins: [jq79({ safeEval })],
+        resolve: { alias: { jq79: runtimePath } },
+        ...config,
+        build: {
+          write: false,
+          minify: false,
+          rollupOptions: { input: Object.fromEntries(Object.entries(pages).map(([key, [html]]) => [key, join(root, html)])) },
+        },
+      })
+      const output: any[] = (Array.isArray(result) ? result[0] : result).output
+      const html = (file: string) => output.find(out => out.fileName === file)?.source as string
+      return { output, html, precompiled: output.find(out => /jq79-precompiled/.test(out.fileName))?.fileName as string | undefined }
+    }
+    const preloads = (html: string) => [...html.matchAll(/<link rel="preload" as="script"[^>]*>/g)].map(match => match[0])
+
+    // what a browser on `pageUrl` would fetch: for the <link>, its href against
+    // the page; for the modules, the URL each chunk the page loads asks for -
+    // new URL(<path>, import.meta.url), with import.meta.url the chunk's <script
+    // src>, or a chunk it imports, which sits beside it
+    const fetchedFrom = (app: Awaited<ReturnType<typeof buildPages>>, page: string, pageUrl: string) => {
+      const html = app.html(page)
+      const link = /<link rel="preload" as="script"[^>]*href="([^"]+)"/.exec(html)?.[1]
+      const chunks = app.output.filter(out => out.type === "chunk")
+      const modules = new Set<string>()
+      for (const [, src] of html.matchAll(/<script type="module"[^>]*src="([^"]+)"/g)) {
+        const entry = chunks.find(chunk => src.replace(/[?#].*$/, "").endsWith(chunk.fileName))
+        const loaded = [entry, ...chunks.filter(chunk => entry?.imports.includes(chunk.fileName))]
+        for (const chunk of loaded) {
+          const chunkUrl = new URL(posix.relative(posix.dirname(entry.fileName), chunk.fileName), new URL(src, pageUrl))
+          for (const [, path] of chunk.code.matchAll(/await safeEval\([^,]+, new URL\("([^"]+)", import\.meta\.url\)\.href\)/g)) {
+            modules.add(new URL(path, chunkUrl).href)
+          }
+        }
+      }
+      return { link: link && new URL(link, pageUrl).href, modules: [...modules] }
+    }
+
+    it("safeEval - an app's pages preload the precompiled script, when their entry waits for it", async () => {
+      const app = await buildPages("preload-app", true)
+      expect(app.precompiled).toMatch(/^assets\/jq79-precompiled-[\w-]+\.js$/)
+
+      // statically imported, from the entry or from a chunk it imports
+      expect(preloads(app.html("index.html"))).toEqual([`<link rel="preload" as="script" href="/${app.precompiled}">`])
+      expect(preloads(app.html("nested/page.html"))).toEqual([`<link rel="preload" as="script" href="/${app.precompiled}">`])
+      // an entry with no <script> of its own: the link is found from the chunk it imports
+      expect(preloads(app.html("boot-a.html"))).toEqual([`<link rel="preload" as="script" href="/${app.precompiled}">`])
+      expect(preloads(app.html("boot-a.html"))).toEqual(preloads(app.html("boot-b.html")))
+      // behind import(), or not at all: the page would preload what it doesn't use yet
+      expect(preloads(app.html("lazy.html"))).toEqual([])
+      expect(preloads(app.html("plain.html"))).toEqual([])
+      for (const page of ["index.html", "nested/page.html", "boot-a.html"]) {
+        const fetched = fetchedFrom(app, page, `https://example.test/${page}`)
+        expect(fetched.modules).toEqual([fetched.link])
+      }
+
+      // every module asks for the same file, the one the pages preload
+      const urls = new Set(app.output.filter(out => out.type === "chunk")
+        .flatMap(chunk => [...chunk.code.matchAll(/await safeEval\([^,]+, new URL\("([^"]+)", import\.meta\.url\)\.href\)/g)]
+          .map(match => new URL(match[1], `https://example.test/${chunk.fileName}`).pathname)))
+      expect(urls).toEqual(new Set([`/${app.precompiled}`]))
+    })
+
+    it("safeEval - the preload follows a relative base, and takes Vite's html.cspNonce", async () => {
+      const app = await buildPages("preload-relative-app", { nonce: true }, { base: "./", html: { cspNonce: "N0NCE" } })
+      const [main] = preloads(app.html("index.html"))
+      const [nested] = preloads(app.html("nested/page.html"))
+      expect(main).toMatch(new RegExp(`href="\\./${app.precompiled}"`))
+      expect(nested).toMatch(new RegExp(`href="\\.\\./${app.precompiled}"`))
+      // a preload is checked against script-src: under a nonce policy it needs the nonce
+      expect(main).toContain(`nonce="N0NCE"`)
+      expect(nested).toContain(`nonce="N0NCE"`)
+      for (const page of ["index.html", "nested/page.html", "boot-a.html"]) {
+        const fetched = fetchedFrom(app, page, `https://example.test/app/${page}`)
+        expect(fetched.modules).toEqual([fetched.link])
+      }
+    })
+
+    it("safeEval - the preload follows renderBuiltUrl, to where the modules ask for the script", async () => {
+      const app = await buildPages("preload-cdn-app", true, {
+        experimental: { renderBuiltUrl: (file: string) => `https://cdn.example.test/v1/${file}?from=cdn` },
+      })
+      expect(preloads(app.html("index.html"))).toEqual([`<link rel="preload" as="script" href="https://cdn.example.test/v1/${app.precompiled}">`])
+      for (const page of ["index.html", "nested/page.html", "boot-a.html"]) {
+        const fetched = fetchedFrom(app, page, `https://example.test/${page}`)
+        expect(fetched.link).toBe(`https://cdn.example.test/v1/${app.precompiled}`)
+        expect(fetched.modules).toEqual([fetched.link])
+      }
+    })
+
+    it("safeEval off - no precompiled script, and nothing preloaded", async () => {
+      const app = await buildPages("preload-off-app", false)
+      expect(app.precompiled).toBeUndefined()
+      expect(preloads(app.html("index.html"))).toEqual([])
     })
 
     it("safeEval: { nonce: true } - on a page with no nonce, says so once, however many components the app imports", async () => {

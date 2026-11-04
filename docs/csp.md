@@ -45,11 +45,13 @@ Content-Security-Policy: script-src 'self'
 ```
 
 Your app code doesn't change. At build time every imported `.html` component
-is precompiled: its functions are compiled in node, and ship as a script of
-their own beside the bundle (`UserCard.html.jq79-[hash].js`). The component's
-module waits for that script before it exports the component, so it can be
-mounted the moment it's imported. In `vite dev` the dev server hands the same
-scripts out, and an edit reloads them.
+is precompiled: its functions are compiled in node, and the functions of every
+component ship as one script beside the bundle (`jq79-precompiled-[hash].js`).
+Each component's module waits for that script before it exports the component,
+so it can be mounted the moment it's imported, and the page preloads it with a
+`<link rel="preload" as="script">`, so it downloads alongside your entry module
+rather than after it. In `vite dev` the dev server hands out one script per
+component, and an edit reloads it.
 
 A function that doesn't compile — a typo in an expression — is reported by the
 build with its file, and renders nothing on the page, as it would with eval.
@@ -119,7 +121,12 @@ await Component79.safeEval({ nonce: true })
 
 In Vite, [`html.cspNonce`](https://vite.dev/config/shared-options#html-cspnonce)
 puts a placeholder nonce on the page's own tags, for your server to replace with
-each response's.
+each response's. That includes the `<link rel="preload">` for the precompiled
+script, which needs it: a preload is checked against `script-src`, and without
+the nonce the browser refuses it. The page still works, but the script only
+starts downloading once your entry module runs, and the console reports a CSP
+violation. If your server adds nonces to the page some other way, it has to add
+one to that `<link>` too.
 
 This still turns a component's text into code in the browser, as eval does —
 only through a door that jq79 alone holds the key to. That is only worth
