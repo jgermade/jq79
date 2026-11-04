@@ -179,6 +179,36 @@ const reachesComponent = (entry: BundleFile, bundle: Record<string, BundleFile>)
   return visit(entry)
 }
 
+// a <script src>, quote-aware, and not a data-src
+const SCRIPT_SRC_RE = /<script\b(?:"[^"]*"|'[^']*'|[^>"'])*?\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi
+
+// `file` as the page has to write it to get the URL a module asks for: the
+// file relative to the module's chunk, against that chunk's own URL - which
+// is what new URL(..., import.meta.url) resolves. The chunk's URL is read off
+// the page, from the <script src> Vite wrote for it, so `base`, a relative
+// base and renderBuiltUrl are already in it. Any of the bundle's chunks will
+// do, because chunks import each other by relative path - and it has to be
+// any: an entry that is nothing but imports gets no <script> of its own, only
+// its imports do. null when no script on the page loads one of them: no
+// preload is better than one at the wrong URL, which downloads twice
+const precompiledHref = (html: string, bundle: Record<string, BundleFile>, file: string): string | null => {
+  const chunks = Object.values(bundle).filter(out => out.type === "chunk").map(out => out.fileName)
+  for (const match of html.matchAll(SCRIPT_SRC_RE)) {
+    const src = (match[1] ?? match[2] ?? match[3]).replace(/[?#].*$/, "")
+    const chunk = chunks.find(name => src === name || src.endsWith(`/${name}`))
+    if (chunk === undefined) continue
+    const path = posix.relative(posix.dirname(chunk), file)
+    // a full URL, or a protocol-relative one
+    if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(src)) {
+      const scheme = src.startsWith("//") ? "https:" : ""
+      return new URL(path, scheme + src).href.slice(scheme.length)
+    }
+    const href = posix.join(posix.dirname(src), path)
+    return src.startsWith("/") || href.startsWith(".") ? href : `./${href}`
+  }
+  return null
+}
+
 // a <script> block with its attribute string, so `lang` can be read and the
 // body replaced - the same shape as STYLE_BLOCK_RE below, quote-aware so a
 // ">" inside an attribute value (`:setup="{ n = a > 1 }"`) doesn't end the tag
@@ -662,20 +692,19 @@ export function jq79(options: Jq79PluginOptions = {}): Plugin {
     },
 
     // a page that waits for the script asks for it as it parses, rather than
-    // once its entry has loaded and run. Same URL as the module's, and no
-    // crossorigin, as the <script> has none: a preload is only reused by a
-    // request that matches it. Vite's html.cspNonce stamps it with the nonce,
-    // after this hook - without it, `script-src 'nonce-…'` refuses a preload.
-    // Build only: dev has one script per component, versioned per edit
-    transformIndexHtml(_html, ctx) {
+    // once its entry has loaded and run. Same URL as the module's
+    // (precompiledHref), and no crossorigin, as the <script> has none: a
+    // preload is only reused by a request that matches it. Vite's html.cspNonce
+    // stamps it with the nonce, after this hook - without it,
+    // `script-src 'nonce-…'` refuses a preload. Build only: dev has one script
+    // per component, versioned per edit. Vite writes the page's <script> tags
+    // before it runs this hook, in every version the plugin supports
+    transformIndexHtml(html, ctx) {
       if (!safeEval || !precompiledFile || !ctx.bundle || !ctx.chunk) return
-      if (!reachesComponent(ctx.chunk as BundleFile, ctx.bundle as Record<string, BundleFile>)) return
-      const base = config?.base ?? "/"
-      let href = `${base}${precompiledFile}`
-      if (base === "" || base === "./") {
-        href = posix.relative(posix.dirname(ctx.path), `/${precompiledFile}`)
-        if (!href.startsWith(".")) href = `./${href}`
-      }
+      const bundle = ctx.bundle as Record<string, BundleFile>
+      if (!reachesComponent(ctx.chunk as BundleFile, bundle)) return
+      const href = precompiledHref(html, bundle, precompiledFile)
+      if (href === null) return
       return [{ tag: "link", attrs: { rel: "preload", as: "script", href }, injectTo: "head" }]
     },
   }

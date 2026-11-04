@@ -1,7 +1,7 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { readFileSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { join, posix, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { build, createLogger } from "vite"
@@ -950,8 +950,13 @@ describe("jq79 vite plugin", () => {
         nested: ["nested/page.html", "nested/main.js", `import { shared } from "../shared.js"\nshared.mount(document.body)\n`],
         lazy: ["lazy.html", "lazy.js", `document.body.onclick = () => import("./user-card.html").then(m => m.default.mount(document.body))\n`],
         plain: ["plain.html", "plain.js", `document.body.textContent = "no components here"\n`],
+        // entries that are nothing but an import of a shared chunk: Vite writes
+        // no <script> for them, only for the chunk they import
+        bootA: ["boot-a.html", "boot-a.js", `import "./boot.js"\n`],
+        bootB: ["boot-b.html", "boot-b.js", `import "./boot.js"\n`],
       }
       await writeFile(join(root, "shared.js"), `import UserCard from "./user-card.html"\nexport const shared = UserCard\n`)
+      await writeFile(join(root, "boot.js"), `import Parent from "./parent.html"\nParent.mount(document.body)\n`)
       for (const [html, main, code] of Object.values(pages)) {
         await writeFile(join(root, html), page(`./${main.split("/").pop()}`))
         await writeFile(join(root, main), code)
@@ -975,6 +980,28 @@ describe("jq79 vite plugin", () => {
     }
     const preloads = (html: string) => [...html.matchAll(/<link rel="preload" as="script"[^>]*>/g)].map(match => match[0])
 
+    // what a browser on `pageUrl` would fetch: for the <link>, its href against
+    // the page; for the modules, the URL each chunk the page loads asks for -
+    // new URL(<path>, import.meta.url), with import.meta.url the chunk's <script
+    // src>, or a chunk it imports, which sits beside it
+    const fetchedFrom = (app: Awaited<ReturnType<typeof buildPages>>, page: string, pageUrl: string) => {
+      const html = app.html(page)
+      const link = /<link rel="preload" as="script"[^>]*href="([^"]+)"/.exec(html)?.[1]
+      const chunks = app.output.filter(out => out.type === "chunk")
+      const modules = new Set<string>()
+      for (const [, src] of html.matchAll(/<script type="module"[^>]*src="([^"]+)"/g)) {
+        const entry = chunks.find(chunk => src.replace(/[?#].*$/, "").endsWith(chunk.fileName))
+        const loaded = [entry, ...chunks.filter(chunk => entry?.imports.includes(chunk.fileName))]
+        for (const chunk of loaded) {
+          const chunkUrl = new URL(posix.relative(posix.dirname(entry.fileName), chunk.fileName), new URL(src, pageUrl))
+          for (const [, path] of chunk.code.matchAll(/await safeEval\([^,]+, new URL\("([^"]+)", import\.meta\.url\)\.href\)/g)) {
+            modules.add(new URL(path, chunkUrl).href)
+          }
+        }
+      }
+      return { link: link && new URL(link, pageUrl).href, modules: [...modules] }
+    }
+
     it("safeEval - an app's pages preload the precompiled script, when their entry waits for it", async () => {
       const app = await buildPages("preload-app", true)
       expect(app.precompiled).toMatch(/^assets\/jq79-precompiled-[\w-]+\.js$/)
@@ -982,9 +1009,16 @@ describe("jq79 vite plugin", () => {
       // statically imported, from the entry or from a chunk it imports
       expect(preloads(app.html("index.html"))).toEqual([`<link rel="preload" as="script" href="/${app.precompiled}">`])
       expect(preloads(app.html("nested/page.html"))).toEqual([`<link rel="preload" as="script" href="/${app.precompiled}">`])
+      // an entry with no <script> of its own: the link is found from the chunk it imports
+      expect(preloads(app.html("boot-a.html"))).toEqual([`<link rel="preload" as="script" href="/${app.precompiled}">`])
+      expect(preloads(app.html("boot-a.html"))).toEqual(preloads(app.html("boot-b.html")))
       // behind import(), or not at all: the page would preload what it doesn't use yet
       expect(preloads(app.html("lazy.html"))).toEqual([])
       expect(preloads(app.html("plain.html"))).toEqual([])
+      for (const page of ["index.html", "nested/page.html", "boot-a.html"]) {
+        const fetched = fetchedFrom(app, page, `https://example.test/${page}`)
+        expect(fetched.modules).toEqual([fetched.link])
+      }
 
       // every module asks for the same file, the one the pages preload
       const urls = new Set(app.output.filter(out => out.type === "chunk")
@@ -1002,6 +1036,22 @@ describe("jq79 vite plugin", () => {
       // a preload is checked against script-src: under a nonce policy it needs the nonce
       expect(main).toContain(`nonce="N0NCE"`)
       expect(nested).toContain(`nonce="N0NCE"`)
+      for (const page of ["index.html", "nested/page.html", "boot-a.html"]) {
+        const fetched = fetchedFrom(app, page, `https://example.test/app/${page}`)
+        expect(fetched.modules).toEqual([fetched.link])
+      }
+    })
+
+    it("safeEval - the preload follows renderBuiltUrl, to where the modules ask for the script", async () => {
+      const app = await buildPages("preload-cdn-app", true, {
+        experimental: { renderBuiltUrl: (file: string) => `https://cdn.example.test/v1/${file}?from=cdn` },
+      })
+      expect(preloads(app.html("index.html"))).toEqual([`<link rel="preload" as="script" href="https://cdn.example.test/v1/${app.precompiled}">`])
+      for (const page of ["index.html", "nested/page.html", "boot-a.html"]) {
+        const fetched = fetchedFrom(app, page, `https://example.test/${page}`)
+        expect(fetched.link).toBe(`https://cdn.example.test/v1/${app.precompiled}`)
+        expect(fetched.modules).toEqual([fetched.link])
+      }
     })
 
     it("safeEval off - no precompiled script, and nothing preloaded", async () => {
