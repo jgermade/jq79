@@ -123,9 +123,10 @@ In Vite, [`html.cspNonce`](https://vite.dev/config/shared-options#html-cspnonce)
 puts a placeholder nonce on the page's own tags, for your server to replace with
 each response's. That includes the `<link rel="preload">` for the precompiled
 script, which needs it: a preload is checked against `script-src`, and without
-the nonce the browser refuses it and downloads the script a second time. If your
-server adds nonces to the page some other way, it has to add one to that
-`<link>` too.
+the nonce the browser refuses it. The page still works, but the script only
+starts downloading once your entry module runs, and the console reports a CSP
+violation. If your server adds nonces to the page some other way, it has to add
+one to that `<link>` too.
 
 This still turns a component's text into code in the browser, as eval does —
 only through a door that jq79 alone holds the key to. That is only worth
