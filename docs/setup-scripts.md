@@ -266,8 +266,7 @@ component (fetched and parsed); anything else goes to the native `import()`:
 ```
 
 Several at once? `$importAll` takes an array and resolves to what each
-`import()` would, in order — one `await`, every request in flight together,
-where a line of `await import(...)`s waits for each before starting the next:
+`import()` would, in order — one `await`, every request in flight together:
 
 ```html
 <script :setup>
@@ -283,6 +282,31 @@ It's `Promise.all` of the script's own `import()`s — relative to the component
 bundled by the [Vite plugin](vite-plugin.md#imports-inside-component-scripts)
 — so it's the one to reach for in a component. `Component79.importAll` is its
 counterpart for a page, which has no component file to be relative to.
+
+**Downloads start early.** Before a script's first line runs, every download
+its top level is sure to make has already started — a line of `await
+import(...)`s is one round trip, not one per line, and still runs in the order
+it's written:
+
+```html
+<script :setup>
+  const Toc = await import("./Toc.html")         // all three are on their way
+  const Lesson = await import("./Lesson.html")   // before this line runs, and
+  const Header = await C79.fetch("./header.html") // each await takes its own
+</script>
+```
+
+A component lands in the [cache](components.md#the-component-cache) the import
+will read; a module gets a `<link rel="modulepreload">`, which downloads and
+parses it without running it, so modules still evaluate in import order. What
+counts is a top-level statement that starts with the call and a literal —
+`import()`, `$importAll([...])`, `C79.fetch()`, `fetchAll([...])`,
+`importAll([...])`, or a factory script's static `import`. Anything that might
+not run is left alone: an import inside a function, a handler, an `if` or a
+loop still downloads when its line does, so loading on demand stays on demand.
+With `Component79.cache(false)` nothing is preloaded, because there would be
+nowhere to keep it. The difference from `$importAll` is when the script moves
+on: with one `await` per line, each pane appears as soon as its own file is in.
 
 **A relative specifier resolves against the component's own file**, the same as
 in any module — `./` means "next to this `.html`", not next to the page and not

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps } from "../src/transform"
+import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, preloadSpecifiers } from "../src/transform"
 
 // the scanner is not a parser: on malformed input it must still terminate and
 // hand the (broken) source to the JS engine, which reports the real SyntaxError
@@ -723,5 +723,72 @@ describe("setup script scanner on destructuring declarations", () => {
 
     expect(vars).toEqual(["s", "z"])
     expect(code).toBe("s = `a ${ok ? `x` : `y`} c`\nz = 1")
+  })
+})
+
+describe("preloadSpecifiers", () => {
+  const specs = (src: string) => preloadSpecifiers(src).map(({ spec, kind }) => `${kind} ${spec}`)
+
+  it("reads the top-level imports and component fetches, in order", () => {
+    expect(specs([
+      `const Toc = await import("./Toc.html")`,
+      `let { format } = await import('./format.js')`,
+      `const [A, B] = await $importAll([`,
+      `  "./a.html", // a component`,
+      `  /* a module */ "./b.js",`,
+      `])`,
+      `const Header = await C79.fetch("./header.html")`,
+      `export const p = Component79.fetchAll(["./x.html", "./y.html"]);`,
+      `await C79.importAll(["./page.js"])`,
+      `const Lazy = import("./lazy-but-started.html")`,
+    ].join("\n"))).toEqual([
+      "component ./Toc.html", "component ./format.js", "component ./a.html", "component ./b.js",
+      "fetch ./header.html", "fetch ./x.html", "fetch ./y.html", "page ./page.js",
+      "component ./lazy-but-started.html",
+    ])
+  })
+
+  it("reads a factory script's static imports, but not its types", () => {
+    expect(specs([
+      `import Card from "./Card.html"`,
+      `import { a, b as c } from "./util.js"`,
+      `import "./side-effect.js"`,
+      `import type { T } from "./types"`,
+      `export default () => ({ Card })`,
+    ].join("\n"))).toEqual(["component ./Card.html", "component ./util.js", "component ./side-effect.js"])
+  })
+
+  it("leaves alone what might not run", () => {
+    expect(specs([
+      `const open = async () => { Chart = await import("./a.html") }`,
+      `const load = () => import("./b.html")`,
+      `function later() { return import("./c.html") }`,
+      `if (wanted) { await import("./d.html") }`,
+      `if (wanted)`,
+      `  await import("./e.html")`,
+      `else`,
+      `  await import("./f.html")`,
+      `for (const name of names) await import("./g.html")`,
+      `try { await import("./h.html") } catch {}`,
+      `$: Row = await import("./i.html")`,
+      `const maybe = flag && await import("./j.html")`,
+      `const later2 = await C79.fetch(base + "/k.html")`,
+      `const computed = await import(\`./\${name}.html\`)`,
+      `const [x, y, z] = await $importAll(["./l.html", other, "./m.html"])`,
+      `const v = 'await import("./n.html")' // import("./o.html")`,
+      `await import("./p.html")`,
+    ].join("\n"))).toEqual(["component ./l.html", "component ./p.html"])
+  })
+
+  it("leaves a call alone when the script declares its own C79", () => {
+    expect(specs([
+      `const C79 = { fetch: url => url }`,
+      `const one = await C79.fetch("./mine.html")`,
+      `const two = await Component79.fetch("./library.html")`,
+    ].join("\n"))).toEqual(["fetch ./library.html"])
+  })
+
+  it("skips a call with the wrong arity: fetch([...]) and fetchAll(\"x\") throw", () => {
+    expect(specs(`await C79.fetch(["./a.html"])\nawait C79.fetchAll("./b.html")\nawait C79.importAll("./c.js")`)).toEqual([])
   })
 })
