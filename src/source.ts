@@ -369,7 +369,7 @@ export const declaredPropNames = (scripts: TagBlock[], signature: (script: TagBl
 // $emit, $updateModel and $slots. They are positional parameters, so the order is part of what
 // precompile has to reproduce; change one side and precompiled scripts stop
 // matching, which tests/precompile.test.ts and `npm run check:precompile` catch
-export const SETUP_HELPER_NAMES = ["$", "$$", "$create", "$reactive", "$toRaw", "Component79"]
+export const SETUP_HELPER_NAMES = ["$", "$$", "$create", "$reactive", "$toRaw", "Component79", "C79"]
 export const INSTANCE_HELPER_NAMES = ["$mounted", "$destroyed", "$attached", "$detached", "$computed", "$self", "$$self", "$emit", "$updateModel", "$slots"]
 
 // the global a precompiled script leaves its functions on, for the runtime to

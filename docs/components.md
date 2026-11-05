@@ -387,9 +387,26 @@ It's a plain promise, not a chainable handle: mounting a *list* of components
 has no single meaning. Like `Promise.all`, the first failure rejects the whole
 call — fetch the URLs separately if you want one 404 to leave the rest usable.
 
+`importAll` is the same for anything a setup script can `import()` — components
+and modules in one array, one `await`:
+
+```js
+const [Header, { formatDate }] = await C79.importAll([
+  "./header.html",   // a component, as fetchAll gives it
+  "./dates.js",      // a module, as import() gives it
+])
+```
+
+It's `Promise.all([import(…), …])` with jq79's `import()`: an `.html` is the
+component itself (never `{ default }`), anything else the module. A relative
+specifier is resolved against the page, as `fetch` does — not against the file
+that calls it, which a library can't see. A bare one (`lodash-es`) is left for
+the import map. A bundler never sees these specifiers, so under Vite import
+your modules natively.
+
 ### The component cache
 
-A URL is downloaded once. `fetch`, `fetchAll` and a setup script's
+A URL is downloaded once. `fetch`, `fetchAll`, `importAll` and a setup script's
 `import("./row.html")` keep the source of every file they fetched, by its
 absolute URL, and the next request for it is answered from there — ten
 components that import the same `row.html` make one request. Each call still
