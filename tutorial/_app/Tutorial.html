@@ -119,15 +119,18 @@
 
   fromHash()
 
-  // the panes. They are fetched, so they arrive after the template has rendered:
-  // a tag whose component variable is still undefined renders nothing, and the
-  // pane appears where it stands once its import resolves
-  const Toc = await import("./components/Toc.html")
-  const Lesson = await import("./components/Lesson.html")
-  const Editor = await import("./components/Editor.html")
-  const Diff = await import("./components/Diff.html")
-  const Preview = await import("./components/Preview.html")
-  const Output = await import("./components/Output.html")
+  // the panes. They are fetched - all at once, rather than each waiting for the
+  // one before - so they arrive after the template has rendered: a tag whose
+  // component variable is still undefined renders nothing, and the panes appear
+  // where they stand once the imports resolve
+  const [Toc, Lesson, Editor, Diff, Preview, Output] = await $importAll([
+    "./components/Toc.html",
+    "./components/Lesson.html",
+    "./components/Editor.html",
+    "./components/Diff.html",
+    "./components/Preview.html",
+    "./components/Output.html",
+  ])
 </script>
 
 <div

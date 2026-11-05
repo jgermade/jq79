@@ -159,6 +159,33 @@ describe("jq79 vite plugin", () => {
       expect(code).not.toContain('from "https://esm.sh/other"')
     })
 
+    it("hoists the literal entries of $importAll([...]), and not C79.importAll's", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "import-all.html")
+      await writeFile(file, `
+        <script :setup>
+          const [Card, utils] = await $importAll([
+            "./user-card.html", // the component
+            /* a module */ './utils.js',
+          ])
+          const [Page] = await C79.importAll(["./page-relative.html"])
+          const [Tail, dynamic, After] = await $importAll(["./tail.js" + x, other, "./after.js"])
+        </script>
+        <p>{{ x }}</p>
+      `)
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain('import __jq79_0 from "./user-card.html"')
+      expect(code).toContain('import * as __jq79_1 from "./utils.js"')
+      // the static one resolves against the page, so the bundle can't answer
+      // it; and an array is the bundle's only up to its first non-literal
+      expect(code).not.toContain("__jq79_2")
+      expect(code).not.toContain('from "./page-relative.html"')
+      expect(code).not.toContain('from "./tail.js"')
+      expect(code).not.toContain('from "./after.js"')
+    })
+
     it("does not hoist specifiers sitting in comments or strings", async () => {
       const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })

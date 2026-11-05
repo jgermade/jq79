@@ -366,11 +366,11 @@ export const declaredPropNames = (scripts: TagBlock[], signature: (script: TagBl
 // the functions they are) and then the per-instance ones it builds -
 // $mounted, $destroyed, $attached, $detached, $computed, $self and $$self,
 // then the injected
-// $emit, $updateModel and $slots. They are positional parameters, so the order is part of what
+// $emit, $updateModel and $slots, then $importAll. They are positional parameters, so the order is part of what
 // precompile has to reproduce; change one side and precompiled scripts stop
 // matching, which tests/precompile.test.ts and `npm run check:precompile` catch
 export const SETUP_HELPER_NAMES = ["$", "$$", "$create", "$reactive", "$toRaw", "Component79", "C79"]
-export const INSTANCE_HELPER_NAMES = ["$mounted", "$destroyed", "$attached", "$detached", "$computed", "$self", "$$self", "$emit", "$updateModel", "$slots"]
+export const INSTANCE_HELPER_NAMES = ["$mounted", "$destroyed", "$attached", "$detached", "$computed", "$self", "$$self", "$emit", "$updateModel", "$slots", "$importAll"]
 
 // the global a precompiled script leaves its functions on, for the runtime to
 // drain: (self.__jq79precompiled = self.__jq79precompiled || []).push([params,

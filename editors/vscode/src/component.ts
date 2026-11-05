@@ -325,14 +325,14 @@ const assignedNames = (ts: typeof TS, file: TS.SourceFile): Set<string> => {
   return names
 }
 
-// how an `import(spec)` is read. The runtime's $__import answers a `.html`
+// how an `import(spec)` is read, or a string entry of `$importAll([...])`,
+// which is one import() per entry. The runtime's $__import answers a `.html`
 // with the component itself, not a module, so that one keeps its import -
 // TypeScript resolves the file and knows the component's props - and is
 // unwrapped to the module's default export. A URL or a computed specifier is
 // the runtime's to answer ($__import, any). Anything else is a module, left
 // to TypeScript, which then knows its types
-const importKind = (ts: typeof TS, call: TS.CallExpression): "component" | "runtime" | "module" => {
-  const spec = call.arguments[0]
+const importKind = (ts: typeof TS, spec: TS.Expression | undefined): "component" | "runtime" | "module" => {
   if (!spec || !ts.isStringLiteralLike(spec) || /^[a-z][a-z0-9+.-]*:/i.test(spec.text)) return "runtime"
   return /\.html(?:[?#]|$)/i.test(spec.text) ? "component" : "module"
 }
@@ -439,11 +439,14 @@ export type GenerateOptions = { jq79?: boolean }
 const preamble = (typescript: boolean, jq79: boolean): string => {
   const computedType = `typeof import("jq79").$computed`
   const attachedType = "(fn: () => void, options?: { immediate?: boolean }) => () => void"
+  // what's left of $importAll once its literal arrays are rewritten (visit,
+  // below): an array the checker can't read entry by entry
+  const importAllType = "(specifiers: readonly string[]) => Promise<any[]>"
   const ctx = "{ $data: any; $props: any; $effect: (run: () => void) => void; $mounted: () => Promise<void>; " +
     `$destroyed: (fn: () => void) => () => void; $attached: ${attachedType}; $detached: (fn: () => void) => () => void; $computed: ${computedType}; ` +
     `$self: ${QUERY_ONE}; $$self: ${QUERY_ALL}; ` +
     "$emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; " +
-    "$slots: Record<string, true>; [sibling: string]: any }"
+    `$slots: Record<string, true>; $importAll: ${importAllType}; [sibling: string]: any }`
   const types: Record<string, string> = {
     $: `typeof import("jq79").$`,
     $$: `typeof import("jq79").$$`,
@@ -462,6 +465,7 @@ const preamble = (typescript: boolean, jq79: boolean): string => {
     $emit: "(name: string, payload?: any) => boolean",
     $updateModel: "(...args: [value?: any] | [name: string, value: any]) => boolean",
     $slots: "Record<string, true>",
+    $importAll: importAllType,
   }
   const lines = ["// jq79: what a component's scripts are compiled with (src/source.ts, setupParams / factoryParams)"]
   for (const name of HELPERS) {
@@ -806,9 +810,26 @@ const writeBody = (ts: typeof TS, out: Writer, text: string, plan: ScriptPlan, t
 
   const visit = (node: TS.Node) => {
     if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      const kind = importKind(ts, node)
+      const kind = importKind(ts, node.arguments[0])
       if (kind === "runtime") edits.push({ start: node.expression.getStart(file), end: node.expression.end, text: "$__import" })
       else if (kind === "component") edits.push({ start: node.end, end: node.end, text: ".then(__jq79DefaultOf)" })
+    }
+    // $importAll(["./a.html", "./b"]) is Promise.all([import("./a.html"),
+    // import("./b")]), and is checked as that: each component keeps its props,
+    // each module its types. An array with a spread or a hole can't be read
+    // entry by entry, and stays the helper's Promise<any[]>
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "$importAll") {
+      const list = node.arguments[0]
+      if (list && ts.isArrayLiteralExpression(list) &&
+        list.elements.every(entry => !ts.isSpreadElement(entry) && !ts.isOmittedExpression(entry))) {
+        edits.push({ start: node.expression.getStart(file), end: node.expression.end, text: "Promise.all" })
+        for (const entry of list.elements) {
+          const kind = importKind(ts, entry)
+          const start = entry.getStart(file)
+          edits.push({ start, end: start, text: kind === "runtime" ? "$__import(" : "import(" })
+          edits.push({ start: entry.end, end: entry.end, text: kind === "component" ? ").then(__jq79DefaultOf)" : ")" })
+        }
+      }
     }
     ts.forEachChild(node, visit)
   }

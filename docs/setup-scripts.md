@@ -265,6 +265,25 @@ component (fetched and parsed); anything else goes to the native `import()`:
 </script>
 ```
 
+Several at once? `$importAll` takes an array and resolves to what each
+`import()` would, in order — one `await`, every request in flight together,
+where a line of `await import(...)`s waits for each before starting the next:
+
+```html
+<script :setup>
+  const [Badge, { format }, { debounce }] = await $importAll([
+    "./badge.html",
+    "./format.js",
+    "lodash-es",
+  ])
+</script>
+```
+
+It's `Promise.all` of the script's own `import()`s — relative to the component,
+bundled by the [Vite plugin](vite-plugin.md#imports-inside-component-scripts)
+— so it's the one to reach for in a component. `Component79.importAll` is its
+counterpart for a page, which has no component file to be relative to.
+
 **A relative specifier resolves against the component's own file**, the same as
 in any module — `./` means "next to this `.html`", not next to the page and not
 next to the library. It works out of a subdirectory, off a CDN, and with no
@@ -410,7 +429,7 @@ The context is everything the library provides — the `$` is what says so:
   your local binding; read it through `$props` when you need the live value.
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
-- `$emit`, `$updateModel`, `$mounted`, `$destroyed`, `$attached`, `$detached`, `$computed`, `$self`, `$$self` — same as in setup scripts. `$`,
+- `$emit`, `$updateModel`, `$mounted`, `$destroyed`, `$attached`, `$detached`, `$computed`, `$self`, `$$self`, `$importAll` — same as in setup scripts. `$`,
   `$$`, `$create`, `$reactive`, `$toRaw`, `Component79` and `C79` are available lexically in the module body.
 - `$slots` — a static map of the slot names the usage site filled, so a wrapper
   can be dropped when nothing filled it (`<footer :if="$slots.footer">`).

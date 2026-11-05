@@ -1490,6 +1490,44 @@ describe("Component79", () => {
       expect($(host, ".row")?.textContent).toBe("bundled")
       jq79.destroy()
     })
+
+    // the plural of the script's own import(), which C79.importAll - static,
+    // a page's - is not: relative to the component, through its modules map
+    describe("$importAll", () => {
+      it("resolves each entry as the script's import() would, map first", async () => {
+        const row = new Component79(`<i class="row">bundled</i>`)
+        const fetched = vi.fn(async () => ({ ok: true, text: async () => `<b class="card">fetched</b>` }))
+        vi.stubGlobal("fetch", fetched)
+
+        const src = [
+          `<script :setup>`,
+          `const [Row, Card] = await $importAll(["./row.html", "./card.html"])`,
+          `</script>`,
+          `<div><Row></Row><Card></Card></div>`,
+        ].join("\n")
+        const jq79 = new Component79(src, { filename: "/components/app.html", modules: { "./row.html": row } })
+          .render({}).mount(host)
+        await vi.waitFor(() => expect($(host, ".card")).not.toBeNull())
+
+        expect($(host, ".row")?.textContent).toBe("bundled")
+        // next to the component, not the page
+        expect(fetched).toHaveBeenCalledTimes(1)
+        expect(String((fetched.mock.calls[0] as any[])[0])).toBe(onPage("/components/card.html"))
+        jq79.destroy()
+      })
+
+      it("refuses a single specifier, naming import()", async () => {
+        const failed: unknown[] = []
+        const consoleError = vi.spyOn(console, "error").mockImplementation((...args: any[]) => { failed.push(args[1]) })
+
+        const jq79 = new Component79(`<script :setup>await $importAll("./row.html")</script><p>x</p>`).render({}).mount(host)
+        await vi.waitFor(() => expect(failed.length).toBeGreaterThan(0))
+        consoleError.mockRestore()
+
+        expect(String(failed[0])).toContain("import()")
+        jq79.destroy()
+      })
+    })
   })
 
   describe(":model on component tags", () => {
