@@ -208,7 +208,8 @@ Without a type it is `any`, as before: the parent's business.
 - **Two bindings of one prop** (`:user` and `:model.user`): the runtime warns
   (`:model.user` wins); the checker doesn't.
 - **A page's own scripts.** Only the components a page writes as literals
-  (below) are this server's; the rest is the browser's.
+  (below) are this server's; the rest is the browser's - but for one hint
+  ([fetches that wait for each other](#fetches-that-wait-for-each-other)).
 - **A component string built at runtime**: one with `${…}` in it, or one that
   isn't a literal at all (`new Component79(source)`).
 - **Plain `<style>`**, which VS Code already checks as CSS.
@@ -267,7 +268,8 @@ const Counter = new Component79(`
   function) can't be seen, and a closed root that reads it is reported.
 - **In a script, the server answers only inside the literals.** The rest of
   the file is the editor's own TypeScript, which goes on serving it as
-  before, so nothing is reported twice.
+  before, so nothing is reported twice. The one exception is a hint of its
+  own, below.
 
 ### One name, in the script and the template
 
@@ -286,6 +288,29 @@ It doesn't depend on `typescript.preferences.useAliasesForRenames`.
 A prop is the exception: renaming one in `:setup="{ step }"` renames it in this
 component, not in the parents that pass it (`:step="…"`), which are other files'
 business.
+
+### Fetches that wait for each other
+
+In a page's script - a `.js`/`.ts` file, or a `<script>` in an `.html` page -
+awaited `C79.fetch` calls in a row are pointed out, with a quick fix (Ctrl+.)
+that starts them together:
+
+```js
+const Header = await C79.fetch("./header.html")   // ··· these fetches wait for each other
+const Footer = await C79.fetch("./footer.html")
+
+const [Header, Footer] = await C79.fetchAll(["./header.html", "./footer.html"])
+```
+
+jq79 never reads a page's code, so nothing else starts those downloads early.
+A setup script needs no such hint: the runtime already starts its downloads
+before its first line runs.
+
+Only what the rewrite can't change the meaning of is offered: two or more
+declarations side by side in one block, of one kind (`const` or `let`), one
+name each, each awaiting a fetch of a string literal with nothing after it - a
+`.mount()` on the chain, a URL in a variable, or a comment between two of them
+ends the run. It's a hint, not a problem: `jq79-check` doesn't report it.
 
 ## Checking from a terminal
 

@@ -20,7 +20,8 @@ import type {} from "@volar/typescript"
 import type * as TS from "typescript"
 import type { URI } from "vscode-uri"
 import { FULL, attr, generate, splitComponents, type GenerateOptions, type Mapping } from "./component"
-import { findLiterals, toFile, type Literal } from "./literal"
+import { findLiterals, pageScripts, toFile, type Literal } from "./literal"
+import { FETCH_ALL_CODE, fetchRuns } from "./fetchall"
 import { generateTemplate } from "./template"
 
 // <style lang> that this server checks. Plain CSS is left to VS Code's HTML
@@ -73,15 +74,10 @@ const literalCodes = (ts: typeof TS, literal: Literal, n: number, fileName: stri
   return codes
 }
 
-const PAGE_SCRIPT_RE = /<script\b((?:[^>"']|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/script\s*>/gi
-const TS_MARK_RE = /\blang\s*=\s*["']?\s*(?:ts|typescript)\b|\btype\s*=\s*["']?\s*(?:text|application)\/(?:x-)?typescript\b/i
-
 // the component literals in a page's <script>s
 const pageLiterals = (ts: typeof TS, text: string): Literal[] =>
-  [...text.matchAll(PAGE_SCRIPT_RE)].flatMap(match => {
-    const contentStart = match.index! + match[0].indexOf(">") + 1
-    return findLiterals(ts, match[2], TS_MARK_RE.test(match[1]) ? ts.ScriptKind.TS : ts.ScriptKind.JS, contentStart)
-  })
+  pageScripts(text).flatMap(script =>
+    findLiterals(ts, script.content, script.typescript ? ts.ScriptKind.TS : ts.ScriptKind.JS, script.start))
 
 // the component literals of a file, numbered as their codes are
 // (literal<n>_script / _template): a page's, or a script's. An .html
@@ -148,6 +144,14 @@ export const createScriptVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot
   const literals = findLiterals(ts, text, scriptKindOf(ts, languageId))
   // the file's own code, mapped with nothing on: the editor's TypeScript has it
   const none: Mapping = { sourceOffsets: [0], generatedOffsets: [0], lengths: [text.length], data: {} }
+  // but for the fetchAll hint (fetchall.ts) and its quick fix: on where each
+  // run is, and reporting nothing else - every other diagnostic there is the
+  // editor's TypeScript's to give, and server.ts keeps TypeScript's code
+  // actions out of this code
+  const runs = fetchRuns(ts, text, scriptKindOf(ts, languageId)).map(run => ({
+    sourceOffsets: [run.start], generatedOffsets: [run.start], lengths: [run.end - run.start],
+    data: { verification: { shouldReport: (_source: string | undefined, code: string | number | undefined) => code === FETCH_ALL_CODE } },
+  }) as CodeMapping)
   return {
     id: "root",
     languageId,
@@ -157,6 +161,7 @@ export const createScriptVirtualCode = (ts: typeof TS, snapshot: IScriptSnapshot
     // TypeScript service is asked too, and has nothing in a string to offer
     mappings: [
       none as CodeMapping,
+      ...runs,
       ...literals.filter(l => l.at.length).map(literal => {
         const first = literal.at.find(at => at !== -1) ?? 0
         const last = [...literal.at].reverse().find(at => at !== -1) ?? first

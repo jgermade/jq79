@@ -17,3 +17,5 @@ The first release on the Visual Studio Marketplace and Open VSX.
 - **Completes and hovers** in tags: directives (`:each`, `@click.prevent`…),
   the props, events and slots a component declares, and the components in
   scope; and the store's names in every expression.
+- **Points out awaited `C79.fetch` calls in a row** in a page's script, with a
+  quick fix that turns them into one `C79.fetchAll`.
