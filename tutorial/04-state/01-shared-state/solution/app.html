@@ -1,6 +1,5 @@
 <script :setup>
-  const CartLines = await import("./CartLines.html")
-  const CartTotal = await import("./CartTotal.html")
+  const [CartLines, CartTotal] = await $importAll(["./CartLines.html", "./CartTotal.html"])
 
   const cart = $reactive({ items: [] })
 </script>

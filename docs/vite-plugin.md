@@ -276,14 +276,17 @@ route included, is in [Content Security Policy](csp.md).
 
 ## Imports inside component scripts
 
-Imports with a **literal specifier** — dynamic `import(...)` in setup scripts
+Imports with a **literal specifier** — dynamic `import(...)` and the string
+entries of [`$importAll([...])`](setup-scripts.md#imports) in setup scripts,
 and static `import` statements in [factory scripts](setup-scripts.md#factory-scripts-export-default) —
 are hoisted into real module imports and bundled along with the component:
 
 ```html
 <script :setup>
-  const UserCard = await import("./UserCard.html")  // bundled component
-  const { format } = await import("date-fns")       // bundled npm package
+  const [UserCard, { format }] = await $importAll([
+    "./UserCard.html",  // bundled component
+    "date-fns",         // bundled npm package
+  ])
 </script>
 
 <!-- or, factory style -->

@@ -642,6 +642,28 @@ test("a component imported from another file carries its props", async () => {
   assert.deepEqual(errors["Card.html"], [])
 })
 
+test("$importAll([...]) is checked as the import()s it stands for", async () => {
+  const errors = await check({
+    "app.html": [
+      `<script :setup lang="ts">`,
+      `  const [Card, { double }, remote] = await $importAll([`,
+      `    "./Card.html", // a component, with its props`,
+      `    "./math",`,
+      `    "https://esm.sh/x",`,
+      `  ])`,
+      `  const wrong: string = double(2)`,
+      `  const [Crad] = await $importAll(["./Crad.html"])`,
+      `  const list: string[] = []`,
+      `  const anything: number = (await $importAll(list))[0] + remote`,
+      `</script>`,
+      `<Card :title="1" />`,
+    ].join("\n"),
+    "Card.html": `<script :setup="{ title }: { title: string }" lang="ts"></script><h2>{{ title }}</h2>`,
+    "math.ts": `export const double = (n: number) => n * 2`,
+  })
+  assert.deepEqual(errors["app.html"].map(e => e.split(" ").slice(0, 2).join(" ")), ["7:9 TS2322", "8:36 TS2307", "12:8 TS2322"])
+})
+
 test("a factory child's props are the names its first parameter declares", async () => {
   const errors = await one([
     `<script :setup></script>`,

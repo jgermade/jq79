@@ -207,7 +207,7 @@ page around it.
 `Tutorial.html` is only the shell: the state (which exercise, which file, whether a
 solution is being reviewed), the navigation and the layout. The panes are components
 under [`tutorial/_app/components/`](../tutorial/_app/components) — `Toc`, `Lesson`,
-`Editor`, `Diff`, `Preview` — imported at runtime with `await import(...)`, so the
+`Editor`, `Diff`, `Preview` — imported at runtime with one `await $importAll([...])`, so the
 tutorial is itself a multi-component jq79 app. None of them writes to the state it
 renders: props go down, and what the user did comes back up as a `tutorial:*` `$emit`
 the shell's container element listens for. The two panes that need the highlighter get

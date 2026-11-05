@@ -404,6 +404,10 @@ that calls it, which a library can't see. A bare one (`lodash-es`) is left for
 the import map. A bundler never sees these specifiers, so under Vite import
 your modules natively.
 
+Inside a component, use [`$importAll`](setup-scripts.md#imports) instead: the
+same call, relative to the component's own file and bundled by the Vite plugin,
+which a static method on the class can't be.
+
 ### The component cache
 
 A URL is downloaded once. `fetch`, `fetchAll`, `importAll` and a setup script's
