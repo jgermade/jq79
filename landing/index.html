@@ -232,7 +232,7 @@ h2.title { margin: 0 0 1rem; font-size: clamp(1.8rem, 5vw, 2.6rem); line-height:
       <article class="feature">
         <div class="icon" aria-hidden="true">📦</div>
         <h3>Code splitting is the file system</h3>
-        <p>An <code>import()</code> of an <code>.html</code> fetches that component when the line runs. The chunk is the file; there's no chunk graph to configure.</p>
+        <p>An <code>import()</code> of an <code>.html</code> fetches that component when it's needed: the ones a script is sure to need start together, before its first line runs; one in a handler waits for its line. The chunk is the file; there's no chunk graph to configure.</p>
         <x-code lang="js">
           const Chart = await import("./Chart.html")
         </x-code>

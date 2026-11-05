@@ -426,6 +426,18 @@ Component79.cache(true)    // back on, empty
 Component79.clearCache()   // stays on, starts empty
 ```
 
+A setup script's own downloads [start before its first line runs](setup-scripts.md#imports),
+into this cache. A page's script is one jq79 never reads, so there it's up to
+the page: `fetchAll`, or a hint in the HTML that starts the download before any
+script runs —
+
+```html
+<link rel="preload" href="./app.html" as="fetch" crossorigin>
+```
+
+— which the `fetch()` behind `C79.fetch("./app.html")` picks up from the
+browser's cache (the `crossorigin` is what makes the two requests match).
+
 A failed download isn't cached, so the next request tries again. Under the
 [dev server](dev-server.md), an edited file replaces its cached source, so a
 component mounted after the edit gets the edit too.

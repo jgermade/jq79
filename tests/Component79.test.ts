@@ -1516,6 +1516,21 @@ describe("Component79", () => {
         jq79.destroy()
       })
 
+      it("is preloaded like the import()s it stands for", async () => {
+        // answered at once, but asked for in the render's own stack: only a
+        // preload asks for a.html before x.html has arrived
+        const fetched = vi.fn(async () => ({ ok: true, text: async () => `<i></i>` }))
+        vi.stubGlobal("fetch", fetched)
+        const jq79 = new Component79(
+          `<script :setup>const x = await import("./x.html")\nconst [a, b] = await $importAll(["./a.html", "./b.html"])</script><p></p>`,
+          { filename: "/components/app.html" }
+        ).render({}).mount(host)
+
+        expect(fetched.mock.calls.map(call => String((call as any[])[0])))
+          .toEqual(["x", "a", "b"].map(name => onPage(`/components/${name}.html`)))
+        jq79.destroy()
+      })
+
       it("refuses a single specifier, naming import()", async () => {
         const failed: unknown[] = []
         const consoleError = vi.spyOn(console, "error").mockImplementation((...args: any[]) => { failed.push(args[1]) })
@@ -1526,6 +1541,143 @@ describe("Component79", () => {
 
         expect(String(failed[0])).toContain("import()")
         jq79.destroy()
+      })
+    })
+
+    // RECORD/2026-11-05.a-preload-scanner.md: what the top level is sure to
+    // ask for is asked for before the first line runs, and taken in order
+    describe("preloading", () => {
+      // a fetch that answers when the test says so, by URL. Whatever is still
+      // waiting is answered after each test: a script left awaiting forever
+      // holds the runtime's unresolved-name warnings back for every test after
+      const pending = new Map<string, (body: string) => void>()
+      let settling = false
+      const slowFetch = () => {
+        pending.clear()
+        settling = false
+        const fetched = vi.fn((url: string) => new Promise<any>(resolve => {
+          const answer = (body: string) => resolve({ ok: true, text: async () => body })
+          if (settling) answer(`<i></i>`)
+          else pending.set(String(url), answer)
+        }))
+        vi.stubGlobal("fetch", fetched)
+        const urls = () => fetched.mock.calls.map(call => String((call as any[])[0]))
+        // by the URL fetch() was handed: absolute for an import, as written
+        // for C79.fetch (which fetch() resolves against the page itself)
+        const answer = (url: string, body: string) => pending.get(url)!(body)
+        return { urls, answer }
+      }
+      const preloadLinks = () => [...document.head.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')]
+
+      afterEach(async () => {
+        // and from here on, whatever a released script asks for next
+        settling = true
+        pending.forEach(answer => answer(`<i></i>`))
+        await new Promise(resolve => setTimeout(resolve, 0))
+        preloadLinks().forEach(link => link.parentNode?.removeChild(link))
+        Component79.cache(true)
+      })
+
+      it("starts a script's downloads together, and still takes them in order", async () => {
+        const { urls, answer } = slowFetch()
+        const jq79 = new Component79([
+          `<script :setup>`,
+          `const A = await import("./a.html")`,
+          `const B = await import("./b.html")`,
+          `const Header = await C79.fetch("./header.html")`,
+          `</script>`,
+          `<div><A></A><B></B><Header></Header></div>`,
+        ].join("\n"), { filename: "/components/app.html" }).render({}).mount(host)
+
+        // nothing has arrived, and all three are on their way: the imports
+        // resolved against the component, the fetch() left for the page
+        expect(urls()).toEqual([onPage("/components/a.html"), onPage("/components/b.html"), "./header.html"])
+
+        // B arriving first changes nothing: the script is still waiting on A
+        answer(onPage("/components/b.html"), `<i class="b">b</i>`)
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect($(host, ".b")).toBeNull()
+
+        answer(onPage("/components/a.html"), `<i class="a">a</i>`)
+        answer("./header.html", `<i class="h">h</i>`)
+        await vi.waitFor(() => expect($(host, ".h")).not.toBeNull())
+        expect($$(host, "i").map(el => el.className)).toEqual(["a", "b", "h"])
+        // one download each: the script's own requests found the preloaded ones
+        expect(urls()).toHaveLength(3)
+        jq79.destroy()
+      })
+
+      it("leaves what might not run on demand", async () => {
+        const { urls } = slowFetch()
+        const jq79 = new Component79([
+          `<script :setup>`,
+          `let Chart`,
+          `const open = async () => { Chart = await import("./chart.html") }`,
+          `if (false) await import("./never.html")`,
+          `</script>`,
+          `<p></p>`,
+        ].join("\n"), { filename: "/components/app.html" }).render({}).mount(host)
+
+        expect(urls()).toEqual([])
+        jq79.destroy()
+      })
+
+      it("skips what the modules map holds", async () => {
+        const { urls } = slowFetch()
+        const row = new Component79(`<i class="row">bundled</i>`)
+        const jq79 = new Component79(
+          `<script :setup>const Row = await import("./row.html")\nconst Card = await import("./card.html")</script><div><Row></Row></div>`,
+          { filename: "/components/app.html", modules: { "./row.html": row } }
+        ).render({}).mount(host)
+
+        expect(urls()).toEqual([onPage("/components/card.html")])
+        jq79.destroy()
+      })
+
+      it("does nothing with the cache off: the download would happen twice", async () => {
+        Component79.cache(false)
+        const { urls } = slowFetch()
+        const jq79 = new Component79(
+          `<script :setup>const A = await import("./a.html")\nconst B = await import("./b.html")</script><p></p>`,
+          { filename: "/components/app.html" }
+        ).render({}).mount(host)
+
+        // only the line that is running
+        expect(urls()).toEqual([onPage("/components/a.html")])
+        jq79.destroy()
+      })
+
+      it("reads a preloaded child's scripts as it arrives, once per file", async () => {
+        const { urls, answer } = slowFetch()
+        const jq79 = new Component79(
+          `<script :setup>const A = await import("./a.html")\nconst B = await import("./b.html")</script><div><A></A><B></B></div>`,
+          { filename: "/components/app.html" }
+        ).render({}).mount(host)
+
+        // b.html arrives while the script still waits on a.html: its import
+        // starts now, against b's own directory, before b renders
+        answer(onPage("/components/b.html"), `<script :setup>const C = await import("./deep/c.html")</script><C></C>`)
+        await vi.waitFor(() => expect(urls()).toContain(onPage("/components/deep/c.html")))
+        // c imports b back: read once, so that's where it ends
+        answer(onPage("/components/deep/c.html"), `<script :setup>const B = await import("../b.html")</script><i class="c">c</i>`)
+        answer(onPage("/components/a.html"), `<i class="a">a</i>`)
+        await vi.waitFor(() => expect($(host, ".a")).not.toBeNull())
+
+        expect(urls()).toEqual(["a", "b", "deep/c"].map(name => onPage(`/components/${name}.html`)))
+        jq79.destroy()
+      })
+
+      it("preloads a module without evaluating it, once per URL", async () => {
+        slowFetch()
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+        const src = `<script :setup>const { format } = await import("./format.js")</script><p></p>`
+        const a = new Component79(src, { filename: "/components/app.html" }).render({}).mount(host)
+        const b = new Component79(src, { filename: "/components/app.html" }).render({}).mount(host)
+
+        expect(preloadLinks().map(link => link.href)).toEqual([onPage("/components/format.js")])
+        a.destroy()
+        b.destroy()
+        consoleError.mockRestore()
       })
     })
   })

@@ -899,3 +899,103 @@ export const freeIdentifiers = (expr: string): string[] | null => {
   if (shortCircuits && names.size > 1) return null
   return [...names]
 }
+
+// ---------------------------------------------------------------------------
+// the preload scanner (RECORD/2026-11-05.a-preload-scanner.md): the literal
+// specifiers a script asks for in top-level statements that run whatever
+// happens, so the runtime can start every download before the script's first
+// line and let the script take them in its own order. What might not run is
+// left alone - a function's body, a block, a branch, a loop, a handler - and
+// so is anything the scanner can't read whole: a missed preload costs what it
+// costs today, a wrong one an extra download of a file
+// ---------------------------------------------------------------------------
+
+// how a specifier resolves - the way the call that names it does:
+// - "component": import(), $importAll and a static import, against the
+//   component's file and through its modules map; .html is a component,
+//   anything else a module
+// - "page": C79.importAll, the same against the page
+// - "fetch": C79.fetch / fetchAll, always a component, against the page
+// (no kind is spelled "import": dist/jq79.js is held to having no import
+// statement in it, and the test can't tell one from a string that ends so)
+export type Preload = { spec: string; kind: "component" | "page" | "fetch" }
+
+// where a statement or an initializer starts with a call that downloads:
+// an optional await, then the call up to its opening bracket(s)
+const PRELOAD_CALL_RE = /(?:await\s+)?(?:import\s*\(|(\$importAll)\s*\(\s*\[|(C79|Component79)\s*\.\s*(fetch|fetchAll|importAll)\s*\(\s*(\[)?)/y
+const PRELOAD_LITERAL_RE = /(["'])([^"'\n\\]+)\1/y
+// a statement that guards the next one without braces - `if (x)`, a loop's
+// header, `else`, `do` - so that one may not run
+const GUARD_RE = /^(?:(?:if|for|while|with)\b[\s\S]*\)|[\s\S]*\b(?:else|do))$/
+
+// the literal specifiers of the call `text` starts with: an array's entries
+// up to the first that isn't a literal on its own (`"./a" + x` is not one)
+const preloadCall = (text: string, own: Set<string>): Preload[] => {
+  PRELOAD_CALL_RE.lastIndex = 0
+  const call = PRELOAD_CALL_RE.exec(text)
+  if (!call) return []
+  const [, importAll, library, method, bracket] = call
+  if (own.has(importAll ?? library ?? "")) return [] // the script's own, not jq79's
+  const list = importAll !== undefined || bracket !== undefined
+  // fetch takes one URL, its plurals an array: anything else throws
+  if (method !== undefined && (method === "fetch") === list) return []
+  const kind: Preload["kind"] = library === undefined ? "component" : method === "importAll" ? "page" : "fetch"
+
+  const found: Preload[] = []
+  let i = skipToToken(text, PRELOAD_CALL_RE.lastIndex)
+  for (;;) {
+    PRELOAD_LITERAL_RE.lastIndex = i
+    const literal = PRELOAD_LITERAL_RE.exec(text)
+    if (!literal) return found
+    const end = skipToToken(text, PRELOAD_LITERAL_RE.lastIndex)
+    const next = text[end]
+    if (!list) return next === ")" || next === "," ? [{ spec: literal[2], kind }] : []
+    if (next !== "," && next !== "]") return found
+    found.push({ spec: literal[2], kind })
+    if (next === "]") return found
+    i = skipToToken(text, end + 1)
+  }
+}
+
+export const preloadSpecifiers = (src: string): Preload[] => {
+  const statements: string[] = []
+  for (let i = skipToToken(src, 0); i < src.length; i = skipToToken(src, i + 1)) {
+    const end = findStatementEnd(src, i)
+    statements.push(src.slice(i, end).trim().replace(/^export\s+(?!default\b)/, ""))
+    i = end
+  }
+
+  // a declaration's initializers, or null for a statement that isn't one
+  const initializers = (statement: string): { target: string; init: string }[] | null => {
+    DECLARATION_START_RE.lastIndex = 0
+    const declaration = DECLARATION_START_RE.exec(statement)
+    if (!declaration) return null
+    return splitDeclarators(statement.slice(declaration[0].length)).map(({ raw }) => {
+      const body = raw.trim()
+      const assign = defaultAssignIndex(body)
+      return assign === -1 ? { target: body, init: "" } : { target: body.slice(0, assign).trim(), init: body.slice(assign + 1).trim() }
+    })
+  }
+
+  // a script that declares its own C79, Component79 or $importAll calls
+  // that, not the library's
+  const own = new Set<string>()
+  statements.forEach(statement => initializers(statement)?.forEach(({ target }) => patternBindings(target).forEach(name => own.add(name))))
+
+  const found: Preload[] = []
+  let guarded = false
+  for (const statement of statements) {
+    if (!guarded) {
+      STATIC_IMPORT_RE.lastIndex = 0
+      const staticImport = STATIC_IMPORT_RE.exec(statement)
+      if (staticImport) {
+        if (!/^type\s/.test(staticImport[1] ?? "")) found.push({ spec: staticImport[3], kind: "component" })
+      } else {
+        const declared = initializers(statement)
+        for (const text of declared ? declared.map(({ init }) => init) : [statement]) found.push(...preloadCall(text, own))
+      }
+    }
+    guarded = GUARD_RE.test(statement)
+  }
+  return found
+}

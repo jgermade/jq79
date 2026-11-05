@@ -3,7 +3,7 @@ import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl, QueryAll, QueryOne } from "./dom"
 import { $reactive, $toRaw, $computed, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
-import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, type PropDecl } from "./transform"
+import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, preloadSpecifiers, type PropDecl } from "./transform"
 import {
   COMPONENT_NAME_RE, COMPONENT_TAG_ATTR, CONTROL_ATTRS, EACH_PATTERN, EXPR_PARAMS, PRECOMPILED_PARAM, PRECOMPILED_QUEUE,
   componentTagName, functionText,
@@ -3332,8 +3332,10 @@ const componentPartsFrom = (elements: Element[], hashSource: string): ComponentP
 // loads .html URLs as components, delegating anything else to native import().
 // Goes to fetchComponent rather than Component79.fetch because an import wants
 // the component, not the chainable handle the public entry point returns
+const HTML_URL_RE = /\.html?([?#]|$)/
+
 const importResource = (url: string): Promise<any> =>
-  /\.html?([?#]|$)/.test(url) ? fetchComponent(url) : import(url)
+  HTML_URL_RE.test(url) ? fetchComponent(url) : import(url)
 
 // a relative specifier means "next to the file that wrote it", so it is
 // resolved against the component's own URL before importResource sees it -
@@ -3996,6 +3998,74 @@ const fetchComponent = async (rawUrl: string): Promise<Component79> => {
 }
 
 // ---------------------------------------------------------------------------
+// preloading (RECORD/2026-11-05.a-preload-scanner.md)
+//
+// Before a definition's scripts first run, every download their top level is
+// sure to ask for starts at once - so `await import("./a.html")` on one line
+// and `await import("./b.html")` on the next are one round trip, not two, and
+// still run in that order. Each specifier resolves as its call would, and
+// lands where that call will look: a component in the cache, a module in the
+// browser's module map (modulepreload fetches and parses, never evaluates)
+// ---------------------------------------------------------------------------
+
+// the script blocks already preloaded: one scan per definition, however many
+// instances render it
+const preloadedScripts = new WeakSet<TagBlock>()
+const preloadedModules = new Set<string>()
+
+const preloadModule = (url: string) => {
+  if (preloadedModules.has(url)) return
+  preloadedModules.add(url)
+  const link = document.createElement("link")
+  link.rel = "modulepreload"
+  const nonce = pageNonce()
+  if (nonce) link.setAttribute("nonce", nonce)
+  link.href = url
+  document.head.append(link)
+}
+
+// a script block's body, quote-aware in its attributes, for a file that is
+// text and not yet a component: what a preloaded child is when it arrives
+const SCRIPT_BODY_RE = /<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>([\s\S]*?)<\/script\s*>/gi
+// the files whose scripts were read for preloads as they arrived: each once,
+// so two components importing each other end there
+const preloadedFiles = new Set<string>()
+
+// one script's preloads, resolved as its calls will be. A component it
+// preloads is read in turn when it arrives - its imports start before it
+// renders, and so on down - against its own URL, and with no modules map:
+// a fetched component has none
+const preloadSource = (source: string, filename: string | undefined, modules: Record<string, any> | undefined) => {
+  for (const { spec, kind } of preloadSpecifiers(source)) {
+    // the bundle already holds it
+    if (kind === "component" && modules && spec in modules) continue
+    // fetch() goes to the cache as written; the imports resolve first, as
+    // importResource is handed them
+    const url = resolveBare(kind === "fetch" ? spec : resolveSpecifier(spec, kind === "component" ? filename : undefined))
+    if (kind === "fetch" || HTML_URL_RE.test(url)) {
+      // with the cache off there is nowhere to keep it, and the real request
+      // would download it again. A failure is the real request's to report
+      if (componentCache) componentSource(url).then(text => preloadFile(text, url), () => {})
+    } else if (RESOLVABLE_SPECIFIER_RE.test(url)) preloadModule(url)
+  }
+}
+
+const preloadFile = (text: string, url: string) => {
+  const key = cacheKey(url)
+  if (preloadedFiles.has(key)) return
+  preloadedFiles.add(key)
+  for (const [, body] of text.matchAll(SCRIPT_BODY_RE)) preloadSource(body, url, undefined)
+}
+
+const preloadScripts = (scripts: TagBlock[], filename: string | undefined, modules: Record<string, any> | undefined) => {
+  for (const script of scripts) {
+    if (preloadedScripts.has(script)) continue
+    preloadedScripts.add(script)
+    preloadSource(script.content, filename, modules)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // safe eval's worker
 //
 // Without a bundler, a component's functions come from jq79-sw.js (src/sw.ts):
@@ -4339,13 +4409,14 @@ export class Component79 {
   //
   // Returns the setting as it stands after the call
   static cache(enabled?: boolean): boolean {
-    if (enabled === false) componentCache = null
+    if (enabled === false) { componentCache = null; preloadedFiles.clear() }
     else if (enabled === true) componentCache ??= new Map()
     return !!componentCache
   }
 
   static clearCache(): void {
     componentCache?.clear()
+    preloadedFiles.clear()
   }
 
   static fetch(url: string): PendingComponent79 {
@@ -4614,6 +4685,7 @@ export class Component79 {
     const gates: Promise<void>[] = []
     let allSync = true
 
+    preloadScripts(this.scripts, this.filename, this.modules)
     this.scripts.forEach((script, index) => {
       let resolveGate!: () => void
       gates.push(new Promise<void>(resolve => { resolveGate = resolve }))
