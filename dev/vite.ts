@@ -220,6 +220,13 @@ const IMPORT_CALL_RE = /import\s*\(\s*(["'])([^"'\n]+?)\1\s*\)/y
 // specifier. The clause can't contain parens/quotes, so dynamic import()
 // and import.meta never match
 const STATIC_IMPORT_RE = /import\s*(?:[\w$\s,{}*]+?\s*from\s*)?(["'])([^"'\n]+)\1/y
+// the opening of $importAll([...]), the plural of import(): its string
+// entries are import()'s specifiers, one by one (importAllSpecifiers)
+const IMPORT_ALL_RE = /\$importAll\s*\(\s*\[/y
+// what may sit between the entries of that array (whitespace, comments), and
+// an entry the bundle can answer: a string literal
+const ARRAY_GAP_RE = /(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*/y
+const ARRAY_ENTRY_RE = /(["'])([^"'\n]+?)\1/y
 
 const skipString = (src: string, start: number): number => {
   const quote = src[start]
@@ -236,6 +243,26 @@ const skipString = (src: string, start: number): number => {
 // bare matchAll, because a specifier mentioned in a comment or a string is
 // not an import: hoisting a commented-out `import("./old.html")` would pull
 // dead files into the bundle - or break the build once the file is gone
+// the literal entries of a $importAll([...]) whose "[" ends at `at`, and
+// where the scan goes on from. A literal is hoisted until the first entry that
+// isn't one: from there the array is the runtime's, as a computed import() is
+const importAllSpecifiers = (script: string, at: number): { specs: string[]; end: number } => {
+  const specs: string[] = []
+  const gap = (i: number) => { ARRAY_GAP_RE.lastIndex = i; ARRAY_GAP_RE.exec(script); return ARRAY_GAP_RE.lastIndex }
+  let i = gap(at)
+  for (;;) {
+    ARRAY_ENTRY_RE.lastIndex = i
+    const entry = ARRAY_ENTRY_RE.exec(script)
+    if (!entry) return { specs, end: i }
+    const next = gap(ARRAY_ENTRY_RE.lastIndex)
+    // a literal is an entry only when it's all of one: `"./a" + x` isn't
+    if (script[next] !== "," && script[next] !== "]") return { specs, end: i }
+    specs.push(entry[2])
+    if (script[next] === "]") return { specs, end: next + 1 }
+    i = gap(next + 1)
+  }
+}
+
 const importSpecifiers = (script: string): string[] => {
   const specs: string[] = []
   let i = 0
@@ -260,6 +287,17 @@ const importSpecifiers = (script: string): string[] => {
       const staticImport = STATIC_IMPORT_RE.exec(script)
       if (staticImport) { specs.push(staticImport[2]); i = STATIC_IMPORT_RE.lastIndex; continue }
     }
+    // $importAll, not C79.importAll: the static one means the page, so it
+    // stays the runtime's (the "." before it is what the guard skips)
+    if (ch === "$" && (i === 0 || !/[\w$.]/.test(script[i - 1]))) {
+      IMPORT_ALL_RE.lastIndex = i
+      if (IMPORT_ALL_RE.exec(script)) {
+        const { specs: entries, end } = importAllSpecifiers(script, IMPORT_ALL_RE.lastIndex)
+        specs.push(...entries)
+        i = end
+        continue
+      }
+    }
     i++
   }
   return specs
@@ -269,7 +307,8 @@ const isHtmlUrl = (spec: string) => /\.html?([?#]|$)/.test(spec)
 const isExternalUrl = (spec: string) => /^[a-z][a-z0-9+.-]*:/i.test(spec) || spec.startsWith("/")
 
 // literal import specifiers in the component's script blocks - dynamic
-// `import("...")` calls and static factory-script imports - that should
+// `import("...")` calls, the entries of `$importAll([...])` and static
+// factory-script imports - that should
 // resolve from the bundle instead of at runtime. Absolute paths and full
 // URLs are left alone (they point at served files, e.g. public/), and so
 // are .html specifiers the plugin wouldn't claim as components

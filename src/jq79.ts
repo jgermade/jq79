@@ -4558,6 +4558,13 @@ export class Component79 {
       modules && url in modules
         ? Promise.resolve(modules[url])
         : importResource(resolveSpecifier(url, this.filename))
+    // the plural, as Promise.all of the script's own import()s: relative to
+    // this component and through its modules map, which Component79.importAll
+    // - a page's, static - can't know
+    const $importAll = (specifiers: readonly string[]): Promise<any[]> => {
+      if (!Array.isArray(specifiers)) throw new TypeError("$importAll takes an array; use import() for one")
+      return Promise.all(specifiers.map($import))
+    }
 
     // the writeback half of :model, from the child's side: one argument is the
     // value for the default model (the bare :model), two are a name and a
@@ -4627,7 +4634,7 @@ export class Component79 {
       // resolve to nothing at all. In setup mode this composes with `with` -
       // scriptScope's `has` declines any name that is a helper, so the
       // parameter is what the name resolves to
-      const instanceHelpers = { $mounted, $destroyed, $attached, $detached, $computed: $instanceComputed, $self, $$self, ...injected, ...siblingScope }
+      const instanceHelpers = { $mounted, $destroyed, $attached, $detached, $computed: $instanceComputed, $self, $$self, ...injected, $importAll, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
       const deferred = ":mounted" in script.attrs
       const factoryCode = transformFactoryScript(script.content)
