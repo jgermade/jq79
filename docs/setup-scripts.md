@@ -293,7 +293,7 @@ would quietly turn it into a path.
 
 That holds for a bare `.html` too, though `fetch()` knows nothing of import
 maps: jq79 asks the map itself (`import.meta.resolve`) before fetching. The same
-goes for `Component79.fetch()` and `fetchAll()`:
+goes for `Component79.fetch()`, `fetchAll()` and `importAll()`:
 
 ```html
 <script type="importmap">{ "imports": { "@app/": "/components/" } }</script>

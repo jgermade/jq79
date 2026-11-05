@@ -112,7 +112,8 @@ hands back a pending component you can mount right away:
 </script>
 ```
 
-`fetchAll([...])` fetches several at once instead. See
+`fetchAll([...])` fetches several at once instead, and `importAll([...])` takes
+components and modules alike, like a `Promise.all` of `import()`s. See
 [loading remote components](docs/components.md#loading-remote-components).
 
 The library also exports `parseComponent(source)` as a shorthand for
@@ -172,7 +173,7 @@ When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$
 ## Documentation
 
 - [Tutorial](https://jgermade.github.io/jq79/tutorial/) — learn it by doing, in the browser.
-- [Components](docs/components.md) — lifecycle (`mount`, `mountShadow`, `detach`, `destroy`), instance events (`on`/`off`), `<style scoped>`, several components in one file with `<template name>`, loading remote components with `Component79.fetch` (chainable — fetch and mount in one expression) and `fetchAll`, and `Component79.version`.
+- [Components](docs/components.md) — lifecycle (`mount`, `mountShadow`, `detach`, `destroy`), instance events (`on`/`off`), `<style scoped>`, several components in one file with `<template name>`, loading remote components with `Component79.fetch` (chainable — fetch and mount in one expression), `fetchAll` and `importAll`, and `Component79.version`.
 - [Template syntax](docs/template-syntax.md) — `{{ }}` interpolation, `:name` attribute bindings, `:text`/`:html`, `:if`/`:elseif`/`:else`, `:each`/`:key`, `:with`, `@event` listeners and modifiers, nested components.
 - [Setup scripts](docs/setup-scripts.md) — `<script :setup>` reactive scripts, `$:` declarations, `$emit`, `await $mounted()`, `$self`/`$$self`, and `export default` factory scripts (plain-JS alternative).
 - [Reactive data](docs/reactive-data.md) — the standalone `$reactive` store: `$on`, `$onAny`, `$effect`, and `$computed` for derived values.

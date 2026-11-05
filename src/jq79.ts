@@ -4330,7 +4330,7 @@ export class Component79 {
     return Promise.all(steps).then(() => undefined)
   }
 
-  // whether fetch(), fetchAll() and a setup script's import() of an .html
+  // whether fetch(), fetchAll(), importAll() and a setup script's import() of an .html
   // download a file once and reuse its source after that. On by default:
   //
   //   Component79.cache()        // true - is it on?
@@ -4359,6 +4359,16 @@ export class Component79 {
   // of components has no single meaning
   static fetchAll(urls: string[]): Promise<Component79[]> {
     return Promise.all(urls.map(fetchComponent))
+  }
+
+  // a page's Promise.all([import(…), …]), as a setup script's import() reads
+  // each one: an .html is the component (fetchAll's way, cache included),
+  // anything else the module. The page has no file of its own, so a relative
+  // specifier means the page - never jq79.js, which is what the native import()
+  // in here would otherwise resolve it against (see resolveSpecifier)
+  static importAll<const T extends readonly string[]>(specifiers: T): Promise<ImportedAll<T>> {
+    if (!Array.isArray(specifiers)) throw new TypeError("Component79.importAll takes an array; use import() for one")
+    return Promise.all(specifiers.map(spec => importResource(resolveSpecifier(spec, undefined)))) as Promise<ImportedAll<T>>
   }
 
   // subscribes to this instance's $emit events, on top of the DOM CustomEvent
@@ -5071,6 +5081,12 @@ export type Component<P = any, E extends string = never, S extends string = neve
   readonly "~props"?: (props: P) => void
   readonly "~emits"?: (event: E) => void
   readonly "~slots"?: (slot: S) => void
+}
+
+// what importAll resolves to, entry by entry: a literal .html (or .htm) is a
+// component, anything else a module namespace jq79 has no types for
+export type ImportedAll<T extends readonly string[]> = {
+  -readonly [K in keyof T]: T[K] extends `${string}.html` | `${string}.htm` ? Component79 : any
 }
 
 export const parseComponent = (component: string): Component79 => new Component79(component)

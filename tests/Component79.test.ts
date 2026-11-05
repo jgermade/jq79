@@ -330,6 +330,47 @@ describe("Component79", () => {
     await expect(Component79.fetchAll(["/component.html", "/missing.html"])).rejects.toThrow("404")
   })
 
+  describe("importAll()", () => {
+    // a real module, by absolute URL: anything relative is resolved against
+    // the page, which under jsdom is an http origin node's loader refuses
+    const moduleUrl = `data:text/javascript,${encodeURIComponent("export const n = 7; export default 'mod'")}`
+
+    it("resolves an .html to a component and anything else to its module, in order", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, text: async () => `<b class="i">{{ n }}</b>` })))
+
+      const [Row, mod] = await Component79.importAll(["/row.html", moduleUrl])
+
+      expect(Row).toBeInstanceOf(Component79)
+      expect(mod.n).toBe(7)
+      expect(mod.default).toBe("mod")
+      Row.mount(host, { n: mod.n })
+      expect($(host, ".i")?.textContent).toBe("7")
+      Row.destroy()
+    })
+
+    it("resolves a relative specifier against the page, not the library", async () => {
+      const fetched = vi.fn(async () => ({ ok: true, text: async () => `<i></i>` }))
+      vi.stubGlobal("fetch", fetched)
+
+      await Component79.importAll(["./components/row.html"])
+      expect(String((fetched.mock.calls[0] as any[])[0])).toBe(new URL("/components/row.html", document.baseURI).href)
+
+      // absolutized, so node's loader refuses it by protocol rather than
+      // naming the path - which is what a library-relative import() would get
+      await expect(Component79.importAll(["./services/x.js"])).rejects.toThrow("protocol 'http:'")
+    })
+
+    it("rejects if any specifier fails", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, text: async () => "" })))
+
+      await expect(Component79.importAll([moduleUrl, "/missing.html"])).rejects.toThrow("404")
+    })
+
+    it("refuses a single specifier, naming import()", () => {
+      expect(() => Component79.importAll("./x.js" as any)).toThrow("import()")
+    })
+  })
+
   it("fetch() rejects on a non-ok response", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, text: async () => "" })))
 
