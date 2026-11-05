@@ -19,8 +19,12 @@ const RealFunction = globalThis.Function
 globalThis.Function = new Proxy(RealFunction, {
   construct(target, args: string[]) {
     const params = args.slice(0, -1)
-    // the runtime's functions, and nobody else's: an expression's or a script's
-    if (params[0] === "$scope" || params[0] === "$__exports") {
+    // the runtime's functions, and nobody else's: an expression's or a script's.
+    // The Vite plugin compiles precompile()'s own output too, only to check it
+    // parses (componentFunctions) - from a source it never handed DOMParser, so
+    // counting those would report precompile() missing what it just produced
+    const ours = params[0] === "$scope" || params[0] === "$__exports"
+    if (ours && !/[\\/]dev[\\/]vite\.ts/.test(new Error().stack ?? "")) {
       const body = String(args[args.length - 1]).replace(/\n\/\/# sourceURL=[^\n]*$/, "")
       compiled.set(keyOf(params, body), [params, body])
     }
