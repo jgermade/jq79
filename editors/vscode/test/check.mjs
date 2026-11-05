@@ -984,3 +984,17 @@ test("without jq79 installed, an imported component's props are still checked", 
   }, { ...INFERRED_OPTIONS, strict: true })
   assert.deepEqual(errors["app.html"], ["4:8 TS2322 Type 'number' is not assignable to type 'string'."])
 })
+
+test("a script's fetchAll hint turns nothing else on: its own errors stay the editor's", async () => {
+  // C79 is declared nowhere: TypeScript's error, inside the run the hint maps,
+  // and the editor's TypeScript's to report - not this checker's
+  const errors = await check({
+    "page.ts": [
+      `const A = await C79.fetch("./a.html")`,
+      `const B = await C79.fetch("./b.html")`,
+      `new Component79(\`<script :setup></script><p>{{ nope }}</p>\`)`,
+      `export {}`,
+    ].join("\n"),
+  })
+  assert.deepEqual((errors["page.ts"] ?? []).map(e => e.split(" ").slice(0, 2).join(" ")), ["3:48 TS2304"])
+})

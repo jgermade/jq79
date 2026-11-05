@@ -41,7 +41,7 @@ const ready = (async () => {
     processId: process.pid,
     rootUri: pathToFileURL(dir).href,
     workspaceFolders: [{ uri: pathToFileURL(dir).href, name: "test" }],
-    capabilities: { textDocument: { diagnostic: {}, hover: { contentFormat: ["markdown", "plaintext"] }, completion: {} }, workspace: { configuration: true } },
+    capabilities: { textDocument: { diagnostic: {}, hover: { contentFormat: ["markdown", "plaintext"] }, completion: {}, codeAction: { codeActionLiteralSupport: { codeActionKind: { valueSet: ["quickfix"] } } } }, workspace: { configuration: true } },
     initializationOptions: {},
   })
   // the server asks for settings; an editor with none answers null for each
@@ -340,3 +340,31 @@ test("completion: the props of a component that arrives as a prop, declared with
   assert.ok((await at(4, "<Button @")).includes("@pressed"))
   assert.ok((await at(5, "<template :")).includes(":slot.icon"))
 })
+
+// a page's awaited fetches, one after another: a hint, and the quick fix that
+// turns them into one fetchAll (src/fetchall.ts) - in an .html page's script
+// and in a plain module, which has no component literal for the jq79 plugin
+for (const [name, languageId, text] of [
+  ["index.html", "html", [`<!doctype html>`, `<script type="module">`, `  const A = await C79.fetch("./a.html")`, `  const B = await C79.fetch("./b.html")`, `</script>`].join("\n")],
+  ["main.js", "javascript", [`import { C79 } from "jq79"`, `const A = await C79.fetch("./a.html")`, `const B = await C79.fetch("./b.html")`].join("\n")],
+]) {
+  test(`fetchAll: the hint and its quick fix, in ${name}`, async () => {
+    await ready
+    const pageUri = pathToFileURL(join(dir, name)).href
+    writeFileSync(join(dir, name), text)
+    connection.sendNotification("textDocument/didOpen", { textDocument: { uri: pageUri, languageId, version: 1, text } })
+    const report = await connection.sendRequest("textDocument/diagnostic", { textDocument: { uri: pageUri } })
+    const hint = report.items.find(d => d.code === "fetch-all")
+    assert.ok(hint, JSON.stringify(report.items, null, 1))
+    assert.equal(hint.severity, 4)
+
+    const actions = await connection.sendRequest("textDocument/codeAction", {
+      textDocument: { uri: pageUri }, range: hint.range, context: { diagnostics: [hint], only: ["quickfix"] },
+    })
+    const fix = actions.find(a => a.title.includes("fetchAll"))
+    assert.ok(fix, JSON.stringify(actions, null, 1))
+    const [edit] = fix.edit.changes[pageUri]
+    assert.equal(edit.newText, `const [A, B] = await C79.fetchAll(["./a.html", "./b.html"])`)
+    assert.deepEqual(edit.range, hint.range)
+  })
+}

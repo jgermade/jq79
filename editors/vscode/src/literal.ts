@@ -129,3 +129,15 @@ export const toFile = (mappings: Mapping[], literal: Literal): Mapping[] => {
   }
   return out
 }
+
+// a page's <script>s: each one's code, where it starts, and whether it's TypeScript
+const PAGE_SCRIPT_RE = /<script\b((?:[^>"']|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/script\s*>/gi
+const TS_MARK_RE = /\blang\s*=\s*["']?\s*(?:ts|typescript)\b|\btype\s*=\s*["']?\s*(?:text|application)\/(?:x-)?typescript\b/i
+
+export const pageScripts = (text: string): { content: string; start: number; typescript: boolean }[] =>
+  [...text.matchAll(PAGE_SCRIPT_RE)].map(match => ({
+    content: match[2],
+    start: match.index! + match[0].indexOf(">") + 1,
+    typescript: TS_MARK_RE.test(match[1]),
+  }))
+

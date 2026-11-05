@@ -153,7 +153,7 @@
     "vscode:prepublish": "node build.mjs",
     "typecheck": "node node_modules/typescript/bin/tsc -p .",
     "pretest": "node test/fetch-grammars.mjs && node build.mjs && node node_modules/typescript/bin/tsc -p .",
-    "test": "node --test test/grammars.mjs test/check.mjs test/server.mjs test/cli.mjs && JQ79_CHECKER=ts7 node --test test/check.mjs",
+    "test": "node --test test/grammars.mjs test/check.mjs test/fetchall.mjs test/server.mjs test/cli.mjs && JQ79_CHECKER=ts7 node --test test/check.mjs",
     "check": "node dist/check.mjs",
     "package": "npx --yes @vscode/vsce@4.0.0 package --baseContentUrl https://github.com/jgermade/jq79/blob/main/editors/vscode --baseImagesUrl https://github.com/jgermade/jq79/raw/main/editors/vscode"
   },
