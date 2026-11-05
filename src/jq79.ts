@@ -5120,7 +5120,7 @@ let settleQueued = false
 // declaration) shadows them. Their names, in this order, are also
 // SETUP_HELPER_NAMES (source.ts) - what precompile compiles scripts with, so
 // the two change together
-const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, Component79 }
+const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, Component79, C79: Component79 }
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
 // below; classic scripts run before deferred module ones, so the flag is always

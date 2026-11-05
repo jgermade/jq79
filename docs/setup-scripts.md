@@ -21,12 +21,12 @@
 ```
 
 - The `:setup` attribute's value is the component's **prop signature**: `:setup="{ fname, lname = 'Lovelace' }"` declares the props the parent passes, with optional defaults, and the defaults are on the store before the first render. It's a declaration, not a comment — a prop it doesn't name is dropped, and the usage site that wrote it is warned. A bare `:setup` is a *closed* signature (no props); write `:setup="_"` for a component that takes whatever it's handed. A value that isn't an object pattern — a typo like `:setup="{ a, b"`, or a factory's `(props, ctx)` signature written here by mistake — reads as *no* signature and warns, because quietly accepting anything is the one thing it must not mean. See [props](components.md#props).
-- It's a **props** signature, not an injection list. The library's own helpers (`$emit`, `$reactive`, `Component79`, …) are always in scope and are never declared: what carries a `$` comes from the library, what doesn't comes from the parent — the same rule everywhere in jq79, with `Component79` the one exception that predates it.
+- It's a **props** signature, not an injection list. The library's own helpers (`$emit`, `$reactive`, `Component79`, …) are always in scope and are never declared: what carries a `$` comes from the library, what doesn't comes from the parent — the same rule everywhere in jq79, with `Component79` (and its short name, `C79`) the one exception that predates it.
 - Top-level `let` / `var` / `const` declarations become properties of the reactive store (also reachable from outside via `jq79.data`). **`function` declarations do not** — a `function save() {}` stays an ordinary local binding the template can't see, so write handlers as `const save = () => …`. Bind one anyway and the console says so.
 - `$: x = expr` is a reactive declaration: it re-runs whenever anything it reads changes.
 - Assignments — including from `.then()` callbacks, timers, and event handlers — go through the reactive proxy and update the DOM.
 - Globals (`fetch`, `console`, `Promise`, …) resolve normally; assignments to names you never declared stay on the component scope instead of leaking to `globalThis`.
-- The [DOM helpers](dom-helpers.md) `$`, `$$` and `$create`, plus [`$reactive`](reactive-data.md), [`$computed`](reactive-data.md#derived-values-computed) and [`$toRaw`](reactive-data.md#getting-the-plain-object-back), are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
+- The [DOM helpers](dom-helpers.md) `$`, `$$` and `$create`, plus [`$reactive`](reactive-data.md), [`$computed`](reactive-data.md#derived-values-computed) and [`$toRaw`](reactive-data.md#getting-the-plain-object-back), and `Component79` / `C79`, are automatically available in every setup script — no import or declaration needed, same as `$emit` and `$mounted`. Like globals, they are shadowed by same-named scope properties.
 - `$emit(eventName, payload)` dispatches a native bubbling, cancelable `CustomEvent` (with `payload` as `event.detail`) from the component's position in the DOM, and returns `false` when any listener called `preventDefault()` — the "parent vetoed" signal (e.g. `@saved.prevent` on the component's tag). It's also visible to template expressions (`@click="$emit('saved', id)"` needs no setup function), shadowed by a same-named scope property like any global. Listen from a parent component with [`@event-name` on the component's own tag](template-syntax.md#event-on-a-component-tag), on any wrapping element, or with plain `addEventListener` on the mount target:
 
 ```html
@@ -411,7 +411,7 @@ The context is everything the library provides — the `$` is what says so:
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
 - `$emit`, `$updateModel`, `$mounted`, `$destroyed`, `$attached`, `$detached`, `$computed`, `$self`, `$$self` — same as in setup scripts. `$`,
-  `$$`, `$create`, `$reactive` and `$toRaw` are available lexically in the module body.
+  `$$`, `$create`, `$reactive`, `$toRaw`, `Component79` and `C79` are available lexically in the module body.
 - `$slots` — a static map of the slot names the usage site filled, so a wrapper
   can be dropped when nothing filled it (`<footer :if="$slots.footer">`).
 - The **returned object is merged into the store**, making its entries

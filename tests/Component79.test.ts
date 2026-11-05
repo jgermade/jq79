@@ -572,6 +572,29 @@ describe("Component79", () => {
       jq79.destroy()
     })
 
+    it("exposes Component79 to setup scripts, and C79 as the same class", () => {
+      const jq79 = new Component79(
+        `<script :setup>` +
+        `const Inline = new C79("<b class='in'>{{ n }}</b>")\n` +
+        `const same = C79 === Component79\n` +
+        `</script>` +
+        `<div class="c79">{{ same }}</div><Inline :n="2"></Inline>`
+      ).render().mount(host)
+
+      expect($(host, ".c79")?.textContent).toBe("true")
+      expect($(host, ".in")?.textContent).toBe("2")
+      jq79.destroy()
+    })
+
+    it("lets a script's own C79 shadow the helper", () => {
+      const jq79 = new Component79(
+        `<script :setup>const C79 = "mine"</script><i class="own">{{ C79 }}</i>`
+      ).render().mount(host)
+
+      expect($(host, ".own")?.textContent).toBe("mine")
+      jq79.destroy()
+    })
+
     it("exposes $emit, dispatching a bubbling CustomEvent with the payload as detail", () => {
       const src =
         `<script :setup>const fire = payload => $emit("child-event", payload)</script>` +

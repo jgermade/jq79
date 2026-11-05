@@ -233,11 +233,15 @@ test("the helpers are in scope, typed", async () => {
     `  const d: number = double.value`,
     `  const stop: () => void = $attached(() => {}, { immediate: false })`,
     `  $detached(stop)`,
+    `  const [Row] = await C79.importAll(["./row.html"])`,
+    `  const notAString: string = Row`,
     `  $emit()`,
     `</script>`,
   ].join("\n"))
-  assert.equal(errors.length, 1, errors.join("\n"))
-  assert.match(errors[0], /^15:3 TS2554 /)
+  // C79 is typed, not any: an .html entry is a Component79, and no string
+  assert.equal(errors.length, 2, errors.join("\n"))
+  assert.match(errors[0], /^16:9 TS2322 /)
+  assert.match(errors[1], /^17:3 TS2554 /)
 })
 
 test("a sibling component is in scope, unless a prop takes its name", async () => {
