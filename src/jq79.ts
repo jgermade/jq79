@@ -4024,22 +4024,44 @@ const preloadModule = (url: string) => {
   document.head.append(link)
 }
 
+// a script block's body, quote-aware in its attributes, for a file that is
+// text and not yet a component: what a preloaded child is when it arrives
+const SCRIPT_BODY_RE = /<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>([\s\S]*?)<\/script\s*>/gi
+// the files whose scripts were read for preloads as they arrived: each once,
+// so two components importing each other end there
+const preloadedFiles = new Set<string>()
+
+// one script's preloads, resolved as its calls will be. A component it
+// preloads is read in turn when it arrives - its imports start before it
+// renders, and so on down - against its own URL, and with no modules map:
+// a fetched component has none
+const preloadSource = (source: string, filename: string | undefined, modules: Record<string, any> | undefined) => {
+  for (const { spec, kind } of preloadSpecifiers(source)) {
+    // the bundle already holds it
+    if (kind === "component" && modules && spec in modules) continue
+    // fetch() goes to the cache as written; the imports resolve first, as
+    // importResource is handed them
+    const url = resolveBare(kind === "fetch" ? spec : resolveSpecifier(spec, kind === "component" ? filename : undefined))
+    if (kind === "fetch" || HTML_URL_RE.test(url)) {
+      // with the cache off there is nowhere to keep it, and the real request
+      // would download it again. A failure is the real request's to report
+      if (componentCache) componentSource(url).then(text => preloadFile(text, url), () => {})
+    } else if (RESOLVABLE_SPECIFIER_RE.test(url)) preloadModule(url)
+  }
+}
+
+const preloadFile = (text: string, url: string) => {
+  const key = cacheKey(url)
+  if (preloadedFiles.has(key)) return
+  preloadedFiles.add(key)
+  for (const [, body] of text.matchAll(SCRIPT_BODY_RE)) preloadSource(body, url, undefined)
+}
+
 const preloadScripts = (scripts: TagBlock[], filename: string | undefined, modules: Record<string, any> | undefined) => {
   for (const script of scripts) {
     if (preloadedScripts.has(script)) continue
     preloadedScripts.add(script)
-    for (const { spec, kind } of preloadSpecifiers(script.content)) {
-      // the bundle already holds it
-      if (kind === "component" && modules && spec in modules) continue
-      // fetch() goes to the cache as written; the imports resolve first, as
-      // importResource is handed them
-      const url = resolveBare(kind === "fetch" ? spec : resolveSpecifier(spec, kind === "component" ? filename : undefined))
-      if (kind === "fetch" || HTML_URL_RE.test(url)) {
-        // with the cache off there is nowhere to keep it, and the real request
-        // would download it again. A failure is the real request's to report
-        if (componentCache) componentSource(url).catch(() => {})
-      } else if (RESOLVABLE_SPECIFIER_RE.test(url)) preloadModule(url)
-    }
+    preloadSource(script.content, filename, modules)
   }
 }
 
@@ -4387,13 +4409,14 @@ export class Component79 {
   //
   // Returns the setting as it stands after the call
   static cache(enabled?: boolean): boolean {
-    if (enabled === false) componentCache = null
+    if (enabled === false) { componentCache = null; preloadedFiles.clear() }
     else if (enabled === true) componentCache ??= new Map()
     return !!componentCache
   }
 
   static clearCache(): void {
     componentCache?.clear()
+    preloadedFiles.clear()
   }
 
   static fetch(url: string): PendingComponent79 {

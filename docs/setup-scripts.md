@@ -281,7 +281,10 @@ Several at once? `$importAll` takes an array and resolves to what each
 It's `Promise.all` of the script's own `import()`s — relative to the component,
 bundled by the [Vite plugin](vite-plugin.md#imports-inside-component-scripts)
 — so it's the one to reach for in a component. `Component79.importAll` is its
-counterpart for a page, which has no component file to be relative to.
+counterpart for a page, which has no component file to be relative to. The same
+goes for `C79.fetch()` and `fetchAll()` in a script: they resolve against the
+page, as they do on one, so a component that wants a file next to itself
+imports it.
 
 **Downloads start early.** Before a script's first line runs, every download
 its top level is sure to make has already started — a line of `await
@@ -304,6 +307,8 @@ counts is a top-level statement that starts with the call and a literal —
 `importAll([...])`, or a factory script's static `import`. Anything that might
 not run is left alone: an import inside a function, a handler, an `if` or a
 loop still downloads when its line does, so loading on demand stays on demand.
+A component that arrives this way has its own scripts read as it lands, so
+its imports start before it renders, and theirs before them, all the way down.
 With `Component79.cache(false)` nothing is preloaded, because there would be
 nowhere to keep it. The difference from `$importAll` is when the script moves
 on: with one `await` per line, each pane appears as soon as its own file is in.

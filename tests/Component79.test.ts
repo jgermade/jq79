@@ -1647,6 +1647,26 @@ describe("Component79", () => {
         jq79.destroy()
       })
 
+      it("reads a preloaded child's scripts as it arrives, once per file", async () => {
+        const { urls, answer } = slowFetch()
+        const jq79 = new Component79(
+          `<script :setup>const A = await import("./a.html")\nconst B = await import("./b.html")</script><div><A></A><B></B></div>`,
+          { filename: "/components/app.html" }
+        ).render({}).mount(host)
+
+        // b.html arrives while the script still waits on a.html: its import
+        // starts now, against b's own directory, before b renders
+        answer(onPage("/components/b.html"), `<script :setup>const C = await import("./deep/c.html")</script><C></C>`)
+        await vi.waitFor(() => expect(urls()).toContain(onPage("/components/deep/c.html")))
+        // c imports b back: read once, so that's where it ends
+        answer(onPage("/components/deep/c.html"), `<script :setup>const B = await import("../b.html")</script><i class="c">c</i>`)
+        answer(onPage("/components/a.html"), `<i class="a">a</i>`)
+        await vi.waitFor(() => expect($(host, ".a")).not.toBeNull())
+
+        expect(urls()).toEqual(["a", "b", "deep/c"].map(name => onPage(`/components/${name}.html`)))
+        jq79.destroy()
+      })
+
       it("preloads a module without evaluating it, once per URL", async () => {
         slowFetch()
         const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
