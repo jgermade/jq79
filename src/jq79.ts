@@ -1135,6 +1135,9 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // marks a spread: the whole object's properties, not one binding
   const sources: Array<{ name?: string; expr: string }> = []
   let hasSpread = false
+  // directives written on the tag whose names a prop could have (see
+  // warnDirectiveProps) - allocated only when there is one
+  let directiveNamed: string[] | undefined
   Object.entries(node.attrs).forEach(([attr, value]) => {
     // the parent's scope stamp is stamped on every template element, this tag
     // included - it's not a prop, and the child renders under its own scope
@@ -1147,7 +1150,10 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       sources.push({ expr: value })
       return
     }
-    if (isControlAttr(attr)) return
+    if (isControlAttr(attr)) {
+      if (DIRECTIVE_PROP_NAMES.has(attr)) (directiveNamed ??= []).push(attr.slice(1))
+      return
+    }
     if (attr.startsWith("@")) {
       events.push([attr, value])
     } else if (attr === ":model" || attr.startsWith(":model.")) {
@@ -1318,6 +1324,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // on the next update
     const declared = declaredPropSet(instance.scripts)
     warnUndeclared(node, key, Object.keys(props), declared)
+    if (directiveNamed) warnDirectiveProps(node, key, directiveNamed, declared)
     const seed = pickDeclared(untracked(resolveProps), declared)
     // mounting into a fragment attaches no shadow root of its own: a
     // shadow-rendered child keeps its <style> elements inline, next to the DOM
@@ -3963,6 +3970,26 @@ const warnUndeclared = (node: TemplateNode, name: string, written: string[], dec
     said.add(prop)
     console.warn(`jq79: :${prop} is not declared by <${name}> - add it to the :setup signature, or drop it`)
   })
+}
+
+// `:checked` on a component tag is the directive, not a prop: the prop
+// collection skips every control attribute, so a child that declares
+// `checked` gets nothing and says nothing. Said here, once per usage site, for
+// the case where the author can only have meant the prop - the child declares
+// one of that name. See RECORD/2026-11-12.a-prop-named-like-a-directive.md
+const DIRECTIVE_PROP_NAMES = new Set([":value", ":checked", ":selected", ":text", ":html", ":class"])
+const directivePropsWarned = new WeakSet<TemplateNode>()
+
+const warnDirectiveProps = (node: TemplateNode, name: string, written: string[], declared: Set<string> | null) => {
+  if (declared === null || directivePropsWarned.has(node)) return
+  const clashing = written.filter(prop => declared.has(prop))
+  if (!clashing.length) return
+  directivePropsWarned.add(node)
+  clashing.forEach(prop => console.warn(
+    `jq79: :${prop} on <${name}> is a directive, not a prop - <${name}> never receives its "${prop}". ` +
+    `Rename the prop (${clashing.map(p => `:${p}`).join(", ")} are reserved on a component tag), ` +
+    `or use :model for a value that goes both ways`
+  ))
 }
 
 // the sibling components this one resolves by name, or null when there are

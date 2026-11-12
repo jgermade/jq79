@@ -64,6 +64,14 @@ The signature declares the prop names, pre-declares them on the store (so the te
 
 A default fills a prop that is `undefined` — the parent's value always wins — and it is applied **once, at setup**. If the parent later sets the prop to `undefined`, the default does not come back.
 
+**Some names can't be props.** `value`, `checked`, `selected`, `text`, `html` and `class` are directives, and `:checked="on"` on a component tag is the directive, so the child never receives it. jq79 warns when the child declares a prop of one of those names. Pick another name (`on`, `chosen`), or use [`:model`](template-syntax.md#model--two-way-component-binding) for a value that goes both ways:
+
+```html
+<Toggle :checked="on" />   <!-- ✗ Toggle's `checked` is undefined (and jq79 warns) -->
+<Toggle :on="on" />        <!-- ✓ -->
+<Toggle :model="on" />     <!-- ✓ two-way: Toggle reads `model` and calls $updateModel -->
+```
+
 ### A signature is a contract both ways
 
 A component that declares a signature takes **only** what it declared. A prop it never named is dropped at the usage site rather than added to its store:
