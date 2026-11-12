@@ -34,6 +34,7 @@ const DIRECTIVES: Directive[] = [
   { name: ":else", snippet: ":else", doc: "The branch of the `:if` chain that renders when no other did. Closes the chain." },
   { name: ":each", snippet: ':each="${1:item} in ${2:items}"', doc: "Renders the element once per item: `item in items`, `item, i in items`, `(value, key) in object`. `$index` is in scope inside." },
   { name: ":key", snippet: ':key="$1"', doc: "What identifies an item of the `:each` on this element, so a reorder keeps its DOM." },
+  { name: ":window", snippet: ':window="${1:28}"', doc: "Renders only the rows of the `:each` on this element that are in its scroll container's viewport. The value is the row height in pixels; the rows' parent gets `$scrollTo(index)`." },
   { name: ":with", snippet: ':with="$1"', doc: "Puts the object's properties in scope for this element and everything inside it." },
   { name: ":class", snippet: ':class="$1"', doc: "Classes on top of the static `class`: a string, an object of `class: condition`, or an array of both." },
   { name: ":text", snippet: ':text="$1"', doc: "Sets the element's `textContent`." },

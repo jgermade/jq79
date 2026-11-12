@@ -2374,6 +2374,8 @@ type EachPlan = {
   // can a row render anything into an effect scope of its own? Only then does
   // a keyed row need the OWNER mark that lets its re-run reach them
   nestsScopes: boolean
+  // `:window="rowHeight"`: render only the rows in view (see openWindow)
+  windowExpr: string | undefined
 }
 
 const eachPlans = new WeakMap<TemplateNode, EachPlan | null>()
@@ -2404,7 +2406,7 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
   const keyProp = keyExpr !== undefined && !keyIsItem && KEY_MEMBER.test(keyExpr) && keyExpr.startsWith(`${itemName}.`)
     ? keyExpr.slice(itemName.length + 1)
     : undefined
-  const { [":each"]: _each, [":key"]: _key, ...itemAttrs } = node.attrs
+  const { [":each"]: _each, [":key"]: _key, [":window"]: windowExpr, ...itemAttrs } = node.attrs
   const itemNode: TemplateNode = { ...node, attrs: itemAttrs }
 
   // An entry that changed position needs its position-only bindings re-run -
@@ -2421,16 +2423,187 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
 
   const namesComponent = /^[A-Z]/.test(itemName) || (atName !== undefined && /^[A-Z]/.test(atName))
   const nestsScopes = keyExpr !== undefined && rendersScopes(itemNode)
-  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes }
+  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes, windowExpr }
   eachPlans.set(node, plan)
   return plan
+}
+
+// :window - a :each that renders only the rows in its scroll container's
+// viewport, plus OVERSCAN on either side, between two spacers whose heights
+// stand in for the rows that are not there. Rows are a fixed height (the
+// attribute's value, in pixels), which is what makes index <-> offset plain
+// arithmetic and $scrollTo exact. See RECORD/2026-11-12.a-windowed-each.md
+//
+// The window lives in a private store the list effect reads, so a scroll is an
+// ordinary wake of that effect - the same keyed diff, over list[start..end)
+const OVERSCAN = 8
+const SCROLLABLE_RE = /^(auto|scroll|overlay)$/
+
+// the nearest ancestor that scrolls vertically, or null for the page. Crosses
+// a shadow root to its host, which is where a mountShadow'd list scrolls
+const scrollParentOf = (from: Node | null): HTMLElement | null => {
+  for (let node = from; node; node = node instanceof ShadowRoot ? node.host : node.parentNode) {
+    if (!(node instanceof HTMLElement) || node === document.body || node === document.documentElement) continue
+    if (SCROLLABLE_RE.test(getComputedStyle(node).overflowY)) return node
+  }
+  return null
+}
+
+type ListWindow = {
+  top: Element
+  bottom: Element
+  // the slice of a list this long to render, spacers sized to match
+  range: (length: number) => [number, number]
+  // the pass is done: connect to the scroll container once the list is in the
+  // document (it is not, on the pass that builds it)
+  settled: () => void
+}
+
+type ScrollToOptions79 = { block?: "nearest" | "start" | "center" | "end" }
+
+const openWindow = (
+  itemNode: TemplateNode,
+  windowExpr: string,
+  scope: Record<string, any>,
+  fx: EffectScope,
+  entries: () => EachEntry[]
+): ListWindow => {
+  // the spacers are the rows' own tag, so they are valid wherever rows are (a
+  // <tr> in a <tbody>, an <li> in a <ul>); a component row gets a <div>
+  const spacer = () => {
+    const el = itemNode.component !== undefined || itemNode.tag.includes("-") ? document.createElement("div") : createFor(itemNode)
+    el.setAttribute("aria-hidden", "true")
+    el.setAttribute("style", "height: 0px; margin: 0; padding: 0; border: 0; list-style: none; visibility: hidden")
+    return el
+  }
+  const top = spacer()
+  const bottom = spacer()
+  // count -1: not measured yet - a screenful of the window's height is assumed
+  const view = $reactive({ start: 0, count: -1 })
+  let rowHeight = 0
+  let length = 0
+  let scroller: HTMLElement | null = null
+  let connected = false
+  let frame = 0
+  let observer: ResizeObserver | null = null
+  let holder: Element | null = null
+
+  const rowsFor = (viewport: number) => Math.ceil(viewport / rowHeight) + 1 + 2 * OVERSCAN
+  const setWindow = (start: number, count: number) => {
+    start = Math.max(0, Math.min(start, Math.max(0, length - count)))
+    if (view.start !== start || view.count !== count) $batch(() => { view.start = start; view.count = count })
+  }
+
+  // where the rows begin and the viewport is, in the container's content
+  // coordinates (the page's, when the page scrolls)
+  const metrics = () => {
+    const at = top.getBoundingClientRect().top
+    if (scroller) {
+      const box = scroller.getBoundingClientRect()
+      const scrollTop = scroller.scrollTop
+      return { listTop: at - box.top - scroller.clientTop + scrollTop, scrollTop, height: scroller.clientHeight || window.innerHeight }
+    }
+    return { listTop: at + window.scrollY, scrollTop: window.scrollY, height: window.innerHeight }
+  }
+
+  const measure = () => {
+    frame = 0
+    if (!(rowHeight > 0) || !top.isConnected) return
+    const { listTop, scrollTop, height } = metrics()
+    setWindow(Math.floor((scrollTop - listTop) / rowHeight) - OVERSCAN, rowsFor(height))
+  }
+  const schedule = () => {
+    if (frame) return
+    frame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(measure) : (setTimeout(measure, 16) as any)
+  }
+
+  // scrolls the container so row `index` is in view and renders it before
+  // returning - an aria-activedescendant has to point at a row that exists
+  const scrollTo = (index: number, { block = "nearest" }: ScrollToOptions79 = {}): Node | null => {
+    connect()
+    if (rowHeight > 0 && top.isConnected) {
+      const { listTop, scrollTop, height } = metrics()
+      const rowTop = listTop + index * rowHeight
+      const rowBottom = rowTop + rowHeight
+      let next = scrollTop
+      if (block === "start") next = rowTop
+      else if (block === "end") next = rowBottom - height
+      else if (block === "center") next = rowTop - (height - rowHeight) / 2
+      else if (rowTop < scrollTop) next = rowTop
+      else if (rowBottom > scrollTop + height) next = rowBottom - height
+      if (next !== scrollTop) {
+        if (scroller) scroller.scrollTop = next
+        else window.scrollTo(window.scrollX, next)
+      }
+      measure()
+    }
+    // whatever layout said (or could not say, before there is one), the row
+    // is in the window when this returns
+    const count = view.count > 0 ? view.count : rowsFor(window.innerHeight || 800)
+    if (index < view.start || index >= view.start + count) setWindow(index - OVERSCAN, count)
+    const entry = entries().find(row => row.scope.$index === index)
+    return entry ? entry.range.first : null
+  }
+
+  const connect = () => {
+    if (connected || !top.isConnected) return
+    connected = true
+    holder = top.parentElement
+    scroller = scrollParentOf(top.parentNode)
+    ;(scroller ?? window).addEventListener("scroll", schedule, { passive: true })
+    window.addEventListener("resize", schedule)
+    if (scroller && typeof ResizeObserver === "function") {
+      observer = new ResizeObserver(schedule)
+      observer.observe(scroller)
+    }
+    if (holder) Object.defineProperty(holder, "$scrollTo", { value: scrollTo, configurable: true, writable: true })
+    measure()
+  }
+
+  fx.onDispose(() => {
+    if (frame) (typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout)(frame)
+    if (!connected) return
+    ;(scroller ?? window).removeEventListener("scroll", schedule)
+    window.removeEventListener("resize", schedule)
+    observer?.disconnect()
+    if (holder && (holder as any).$scrollTo === scrollTo) delete (holder as any).$scrollTo
+  })
+
+  let queued = false
+  return {
+    top,
+    bottom,
+    range: listLength => {
+      length = listLength
+      const height = Number(evalExpr(windowExpr, scope))
+      rowHeight = height > 0 ? height : 0
+      if (!rowHeight) {
+        ;(top as HTMLElement).style.height = (bottom as HTMLElement).style.height = "0px"
+        return [0, listLength]
+      }
+      const count = view.count > 0 ? view.count : rowsFor(window.innerHeight || 800)
+      const start = Math.max(0, Math.min(view.start, listLength - count))
+      const end = Math.min(listLength, start + count)
+      ;(top as HTMLElement).style.height = `${start * rowHeight}px`
+      ;(bottom as HTMLElement).style.height = `${(listLength - end) * rowHeight}px`
+      return [start, end]
+    },
+    settled: () => {
+      if (connected || queued) return
+      queued = true
+      queueMicrotask(() => {
+        queued = false
+        connect()
+      })
+    },
+  }
 }
 
 const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const plan = eachPlanOf(node)
   if (!plan) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
 
-  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes } = plan
+  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes, windowExpr } = plan
 
   // `:key="row.id"`, or the loop variable itself, is what a key almost always
   // is - and reading one needs neither a scope to resolve names against nor a
@@ -2445,6 +2618,8 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const anchor = document.createComment("each")
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
+  const win = windowExpr === undefined ? null : openWindow(itemNode, windowExpr, scope, fx, () => entries)
+  if (win) wrapper.append(win.top, win.bottom)
 
   // :if on the same element is not per-item filtering, and rendering
   // everything in silence reads like a broken filter - say it out loud
@@ -2472,6 +2647,9 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       const array = Array.isArray(list)
       const keys: string[] | null = array ? null : isPlainObject(list) ? Object.keys(list) : []
       const length = array ? list.length : keys!.length
+      // a windowed list walks only the rows in view; the spacers stand in for
+      // the rest, so `index` stays the row's real position
+      const [from, to] = win ? win.range(length) : [0, length]
       // buckets rather than a key->entry map: duplicate keys (a user error, but
       // one that must degrade instead of corrupt) consume entries in order of
       // appearance, so no entry is ever matched twice - matching one twice is
@@ -2504,7 +2682,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       // scope of its own, below
       let scratch: Record<string, any> | undefined
 
-      for (let index = 0; index < length; index++) {
+      for (let index = from; index < to; index++) {
         const at = array ? index : keys![index]
         const item = array ? list[index] : list[at]
 
@@ -2607,7 +2785,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         removeRuns(contiguousRuns(entries, entry => entry.dead === true))
       }
 
-      let prevNode: Node = anchor
+      let prevNode: Node = win ? win.top : anchor
       // rows already in order relative to each other stay where they are; the
       // rest are placed after the row that precedes them in the new order,
       // which is where the pass has just left `prevNode`
@@ -2631,6 +2809,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
     } finally {
       closeRenderPass(pass)
     }
+    win?.settled()
   })
   // the rows live inside whatever holds this list, as a :if branch does (see
   // renderConditional): torn down with it, not left subscribed to the store
