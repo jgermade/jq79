@@ -453,6 +453,7 @@ const preamble = (typescript: boolean, jq79: boolean): string => {
     $create: `typeof import("jq79").$create`,
     $reactive: `typeof import("jq79").$reactive`,
     $toRaw: `typeof import("jq79").$toRaw`,
+    $batch: `typeof import("jq79").$batch`,
     Component79: `typeof import("jq79").Component79`,
     C79: `typeof import("jq79").C79`,
     $mounted: "() => Promise<void>",

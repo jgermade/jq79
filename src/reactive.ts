@@ -249,6 +249,56 @@ const releaseAll = (effect: Effect) => {
 // than left to whatever the index happens to yield
 let effectsCreated = 0
 
+// $batch: while it is above 0, a woken effect is queued here instead of run -
+// once, however many writes woke it - against the effect set of the store that
+// woke it, which is how the flush still skips one disposed in the meantime.
+// Module-level because one change often spans two stores (a store and the one
+// it is bridged into), and only one queue can order them.
+// See RECORD/2026-11-12.batch.md
+let batchDepth = 0
+let batched: Map<Effect, Set<Effect>> | null = null
+
+const queueBatched = (matched: Iterable<Effect>, effects: Set<Effect>) => {
+  for (const effect of matched) if (!batched!.has(effect)) batched!.set(effect, effects)
+}
+
+// oldest first, like runMatched. Runs with the batch still open, so what a
+// flushed effect writes queues into the next round of this same flush rather
+// than running mid-round - the batch settles before $batch returns
+const flushBatched = () => {
+  for (let rounds = 0; batched!.size; rounds++) {
+    if (rounds === 100) {
+      console.error("jq79: a $batch kept waking effects for 100 rounds (an effect writes what it reads); giving up on it settling")
+      batched!.clear()
+      return
+    }
+    const woken = batched!
+    batched = new Map()
+    const ordered = Array.from(woken.keys()).sort((a, b) => a.order - b.order)
+    ordered.forEach(effect => { if (woken.get(effect)!.has(effect)) effect.run() })
+  }
+}
+
+// runs `fn`, letting its writes land and notify listeners as they happen, and
+// runs every effect they woke once, after it returns, against the final state.
+// Nested batches flush at the outermost. A throw still flushes - the writes it
+// made did land - and is rethrown
+export const $batch = <T>(fn: () => T): T => {
+  if (batchDepth++ === 0) batched = new Map()
+  try {
+    return fn()
+  } finally {
+    if (batchDepth === 1) {
+      try {
+        flushBatched()
+      } finally {
+        batchDepth = 0
+        batched = null
+      }
+    } else batchDepth--
+  }
+}
+
 // the deps an effect has before its first run, and what indexEffect compares
 // its first run against. Never written to - every run installs a fresh set -
 // so one frozen instance stands in for the two empty sets each effect used to
@@ -589,6 +639,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // an earlier one in this same pass (a list diff tearing down the rows it just
   // woke) must not run
   const runMatched = (matched: Set<Effect>) => {
+    if (batchDepth) return queueBatched(matched, effects)
     const ordered = Array.from(matched)
     // effects are usually collected in creation order already - one node's set
     // is filled as its effects are made, and a subtree sweep of a freshly-built
@@ -606,7 +657,10 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // a newly-created key re-runs every effect: an effect that read the
     // name while it didn't exist couldn't track it (`with` skipped the
     // store entirely), so dep matching would never wake it up
-    if (isNewKey) effects.forEach(effect => effect.run())
+    if (isNewKey) {
+      if (batchDepth) queueBatched(effects, effects)
+      else effects.forEach(effect => effect.run())
+    }
     // `effects.has` stands in for the membership check `effects.forEach` used
     // to give for free: an effect disposed by an earlier effect in this same
     // notify (a list diff tearing down the rows it just woke) must not run

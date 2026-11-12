@@ -1,7 +1,7 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl, QueryAll, QueryOne } from "./dom"
-import { $reactive, $toRaw, $computed, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
+import { $reactive, $toRaw, $computed, $batch, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, preloadSpecifiers, type PropDecl } from "./transform"
 import {
@@ -14,7 +14,7 @@ import {
 
 export { $, $$, $create } from "./dom"
 export type { QueryOne, QueryAll } from "./dom"
-export { $reactive, $toRaw, $computed } from "./reactive"
+export { $reactive, $toRaw, $computed, $batch } from "./reactive"
 export type { Computed } from "./reactive"
 
 // the package version, substituted at build time (tsup/vitest `define`, read
@@ -5301,7 +5301,7 @@ let settleQueued = false
 // declaration) shadows them. Their names, in this order, are also
 // SETUP_HELPER_NAMES (source.ts) - what precompile compiles scripts with, so
 // the two change together
-const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, Component79, C79: Component79 }
+const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, $batch, Component79, C79: Component79 }
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
 // below; classic scripts run before deferred module ones, so the flag is always
