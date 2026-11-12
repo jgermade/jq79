@@ -164,6 +164,10 @@ hash. The rename of `Chip` to `c79-chip` happens on the CSS **source**, in
 `renameComponentSelectors`, never on `rule.selectorText`: a type selector is
 matched case-insensitively in HTML and an engine may hand it back lowercased, so
 a rewrite made after parsing would work in jsdom and do nothing in a browser.
+Scoping itself (`scopeCss`) reads the source too, and for the same reason: it
+used to round-trip the block through `CSSStyleSheet`, and Chromium serialises a
+`var()` shorthand followed by one of its longhands as empty longhands. See
+[RECORD/2026-11-12.scope-the-source-not-the-cssom.md](../RECORD/2026-11-12.scope-the-source-not-the-cssom.md).
 Two more things that look arbitrary and are not: the default
 `display: contents` rule is wrapped in `:where()` so any author rule outranks it,
 and a component inside `<svg>` or `<math>` gets **no** box, because SVG renders

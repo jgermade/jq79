@@ -3029,27 +3029,81 @@ const stampScope = (nodes: (TemplateNode | string)[], scope: string) => {
 
 // the scope attribute goes on the selector's last compound - the element the
 // rule actually targets - but *before* a pseudo-element, which must stay last
-// (".a::before" scopes to ".a[data-jq79='x']::before", not "::before[...]")
-const scopeSelector = (selectorText: string, scope: string): string =>
-  selectorText
-    .split(",")
-    .map(part => {
-      const selector = part.trim()
-      const pseudoAt = selector.indexOf("::")
-      const target = pseudoAt === -1 ? selector : selector.slice(0, pseudoAt)
-      const pseudoElement = pseudoAt === -1 ? "" : selector.slice(pseudoAt)
-      return `${target}[${SCOPE_ATTR}="${scope}"]${pseudoElement}`
-    })
-    .join(", ")
+// (".a::before" scopes to ".a[data-jq79='x']::before", not "::before[...]").
+// This reads the author's text, not an engine's serialisation, so the CSS2
+// single-colon pseudo-elements are recognised by name: nothing has rewritten
+// ":before" to "::before" for us (see scopeCss)
+const LEGACY_PSEUDO_ELEMENT_RE = /^:(before|after|first-line|first-letter)(?![\w-])/i
 
-// CSSStyleRule is scoped in place; CSSGroupingRule (@media, @supports,
-// @container) is recursed into; everything else - notably @keyframes, whose
-// "selectors" are percentages - is left alone
-const scopeRules = (rules: CSSRuleList, scope: string) => {
-  Array.from(rules).forEach(rule => {
-    if (rule instanceof CSSStyleRule) rule.selectorText = scopeSelector(rule.selectorText, scope)
-    else if (rule instanceof CSSGroupingRule) scopeRules(rule.cssRules, scope)
+// walks `text` at nesting depth 0 - outside (), [], strings and escapes -
+// calling `at(i)` on each such index; `at` returning true stops the walk
+const atTopLevel = (text: string, at: (i: number) => boolean | void) => {
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+    if (char === "\\") i++
+    else if (char === '"' || char === "'") {
+      i++
+      while (i < text.length && text[i] !== char) i += text[i] === "\\" ? 2 : 1
+    } else if (char === "(" || char === "[") depth++
+    else if (char === ")" || char === "]") depth--
+    else if (depth === 0 && at(i)) return
+  }
+}
+
+const scopeSelector = (selector: string, scope: string): string => {
+  let pseudoAt = selector.length
+  atTopLevel(selector, i => {
+    if (selector[i] !== ":") return false
+    if (selector[i + 1] !== ":" && !LEGACY_PSEUDO_ELEMENT_RE.test(selector.slice(i))) return false
+    pseudoAt = i
+    return true
   })
+  return `${selector.slice(0, pseudoAt)}[${SCOPE_ATTR}="${scope}"]${selector.slice(pseudoAt)}`
+}
+
+// a selector list is split on its top-level commas only: `.a:is(.b, .c)` is
+// one selector. A comment in a selector is removed - CSS reads it as nothing,
+// so `.a/**/.b` is `.a.b` - since the attribute must never land inside one
+const scopeSelectorList = (prelude: string, scope: string): string => {
+  const text = stripCssComments(prelude)
+  const lead = text.match(/^\s*/)![0]
+  const trail = text.match(/\s*$/)![0]
+  const body = text.slice(lead.length, text.length - trail.length)
+  if (!body) return prelude
+  const parts: string[] = []
+  let from = 0
+  atTopLevel(body, i => {
+    if (body[i] === ",") {
+      parts.push(body.slice(from, i))
+      from = i + 1
+    }
+  })
+  parts.push(body.slice(from))
+  return lead + parts.map(part => part.trim() && scopeSelector(part.trim(), scope)).join(", ") + trail
+}
+
+const stripCssComments = (text: string): string => {
+  let out = ""
+  for (let i = 0; i < text.length; ) {
+    const char = text[i]
+    if (char === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2)
+      i = end === -1 ? text.length : end + 2
+    } else if (char === '"' || char === "'") {
+      let j = i + 1
+      while (j < text.length && text[j] !== char) j += text[j] === "\\" ? 2 : 1
+      out += text.slice(i, j + 1)
+      i = j + 1
+    } else if (char === "\\") {
+      out += text.slice(i, i + 2)
+      i += 2
+    } else {
+      out += char
+      i++
+    }
+  }
+  return out
 }
 
 // A component's name in a selector - `Circle { color: red }` - names the box
@@ -3146,18 +3200,66 @@ const renameComponentSelectors = (css: string): string => {
   return out
 }
 
-// the CSS parser is the browser's own (no dependency, no hand-rolled parser).
-// Note browsers *silently drop* rules whose selector they can't parse, which
-// is what Vue's :deep()/::v-deep/>>> escape hatches are - unsupported here,
-// and warned about rather than left to vanish
+// Scoping rewrites selectors and nothing else, on the SOURCE. It used to parse
+// the block into a CSSStyleSheet and write it back from rule.cssText, which
+// round-trips every declaration through the engine's serialiser - and Chromium
+// serialises `border: var(--w) solid red; border-bottom-width: 0` as a row of
+// empty longhands (`border-top-style: ;` …), so the border vanished once
+// scoped. See RECORD/2026-11-12.scope-the-source-not-the-cssom.md
+//
+// The scan tracks strings, comments and nesting the way renameComponentSelectors
+// does. In rule position (top level, or inside @media and the other at-rules
+// that hold rules) a prelude that is not an at-rule is a selector list and gets
+// scoped; a declaration block is copied whole, nested blocks included - CSS
+// nesting is relative to the parent, which is already scoped. @keyframes holds
+// frames, not rules, so it is copied whole too.
+//
+// Vue's :deep()/::v-deep/>>> escape hatches are not CSS: the browser drops a
+// rule it can't parse when the block is injected, so they are warned about
+// rather than left to vanish
 const scopeCss = (css: string, scope: string): string => {
   if (/:deep\(|::v-deep|>>>/.test(css)) {
     console.warn("jq79: :deep()/::v-deep/>>> are not supported in <style scoped>; the rule will be dropped by the browser")
   }
-  const sheet = new CSSStyleSheet()
-  sheet.replaceSync(css)
-  scopeRules(sheet.cssRules, scope)
-  return Array.from(sheet.cssRules).map(rule => rule.cssText).join("\n")
+  let out = ""
+  let prelude = "" // rule position: the text since the last delimiter
+  const stack: boolean[] = [] // true = the block holds rules, not declarations
+  const holdsRules = () => stack.length === 0 || stack[stack.length - 1]
+
+  for (let i = 0; i < css.length; ) {
+    const char = css[i]
+    let token = char
+    if (char === "/" && css[i + 1] === "*") {
+      const end = css.indexOf("*/", i + 2)
+      token = css.slice(i, end === -1 ? css.length : end + 2)
+    } else if (char === '"' || char === "'") {
+      let j = i + 1
+      while (j < css.length && css[j] !== char) j += css[j] === "\\" ? 2 : 1
+      token = css.slice(i, j + 1)
+    } else if (char === "\\") {
+      token = css.slice(i, i + 2)
+    }
+    i += token.length
+
+    if (!holdsRules()) {
+      out += token
+      if (token === "{") stack.push(false)
+      else if (token === "}") stack.pop()
+    } else if (token === "{") {
+      const bare = stripCssComments(prelude)
+      const atRule = AT_RULE_RE.test(bare)
+      out += (atRule ? prelude : scopeSelectorList(prelude, scope)) + "{"
+      stack.push(atRule && NESTED_AT_RULE_RE.test(bare))
+      prelude = ""
+    } else if (token === "}" || token === ";") {
+      out += prelude + token
+      prelude = ""
+      if (token === "}") stack.pop()
+    } else {
+      prelude += token
+    }
+  }
+  return out + prelude
 }
 
 // converts a string of HTML into an AST representation of the component:
