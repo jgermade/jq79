@@ -400,4 +400,44 @@ describe("component signature: a :setup value that isn't a props pattern", () =>
     expect(warn).toHaveBeenCalledTimes(1)
     app.destroy()
   })
+
+  // RECORD/2026-11-12.a-prop-named-like-a-directive.md
+  describe("a prop named like a directive", () => {
+    it("warns, once per usage site, when the child declares a prop the directive shadows", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const child = new Component79(`<script :setup="{ checked, label }"></script><p class="out">[{{ checked }}]</p>`)
+      const app = new Component79(`<div><Toggle :each="n in rows" :checked="on" :label="'x'" /></div>`)
+      const container = mount(app, { Toggle: child, rows: [1, 2], on: true })
+
+      // the directive still wins: the prop is not passed
+      expect(container.querySelector(".out")?.textContent).toBe("[]")
+      const said = warn.mock.calls.map(([message]) => String(message)).filter(m => m.includes("is a directive, not a prop"))
+      expect(said).toHaveLength(1)
+      expect(said[0]).toContain(":checked on <Toggle>")
+      expect(said[0]).toContain(":model")
+      app.destroy()
+    })
+
+    it("names every clashing directive", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const child = new Component79(`<script :setup="{ value, selected, text }"></script><p></p>`)
+      const app = new Component79(`<div><Picker :value="1" :selected="2" :text="'t'" /></div>`)
+      mount(app, { Picker: child })
+
+      const said = warn.mock.calls.map(([message]) => String(message)).filter(m => m.includes("is a directive, not a prop"))
+      expect(said.map(m => m.split(" ")[1])).toEqual([":value", ":selected", ":text"])
+      app.destroy()
+    })
+
+    it("stays silent when the child declares no such prop, or no signature at all", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const declared = new Component79(`<script :setup="{ label }"></script><p>{{ label }}</p>`)
+      const open = new Component79(`<p>{{ label }}</p>`)
+      const app = new Component79(`<div><A :class="'c'" :label="'x'" /><B :checked="true" /></div>`)
+      mount(app, { A: declared, B: open })
+
+      expect(warn.mock.calls.some(([message]) => String(message).includes("is a directive"))).toBe(false)
+      app.destroy()
+    })
+  })
 })

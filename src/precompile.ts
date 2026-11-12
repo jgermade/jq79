@@ -81,6 +81,7 @@ const collectExpressions = (nodes: (TemplateNode | string)[], known: string[], a
       const match = attrs[":each"].match(EACH_PATTERN)
       if (match) add(match[3])
       if (":key" in attrs) add(attrs[":key"])
+      if (":window" in attrs) add(attrs[":window"])
     }
     if (":with" in attrs) add(attrs[":with"])
     // bindSlotProps: a :slot binder's defaults, on a component tag or its <template>

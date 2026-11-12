@@ -64,6 +64,14 @@ The signature declares the prop names, pre-declares them on the store (so the te
 
 A default fills a prop that is `undefined` — the parent's value always wins — and it is applied **once, at setup**. If the parent later sets the prop to `undefined`, the default does not come back.
 
+**Some names can't be props.** `value`, `checked`, `selected`, `text`, `html` and `class` are directives, and `:checked="on"` on a component tag is the directive, so the child never receives it. jq79 warns when the child declares a prop of one of those names. Pick another name (`on`, `chosen`), or use [`:model`](template-syntax.md#model--two-way-component-binding) for a value that goes both ways:
+
+```html
+<Toggle :checked="on" />   <!-- ✗ Toggle's `checked` is undefined (and jq79 warns) -->
+<Toggle :on="on" />        <!-- ✓ -->
+<Toggle :model="on" />     <!-- ✓ two-way: Toggle reads `model` and calls $updateModel -->
+```
+
 ### A signature is a contract both ways
 
 A component that declares a signature takes **only** what it declared. A prop it never named is dropped at the usage site rather than added to its store:
@@ -206,6 +214,7 @@ Notes:
 - **Slot content is stamped where it was written**, not where it lands: content the parent passed into a child keeps the parent's stamp, so the parent's rules style it and the child's don't — even though it renders inside the child. Which is the same rule, read from the other side: the stamp follows the file the markup is in.
 - `@keyframes` are left untouched, so animation names are still global: prefix them if two components might collide.
 - Pseudo-elements stay last (`.a::before` → `.a[data-jq79="…"]::before`), and `@media`/`@supports`/`@container` blocks are scoped inside.
+- **Only selectors are rewritten.** Declarations, comments and nested rules are injected exactly as written, so anything that works in a plain `<style>` works scoped (a selector's own comments are the one thing removed).
 - **`mountShadow` ignores `scoped`.** A shadow root already scopes, so it gets the CSS as written — which is also what lets `:host { … }` keep working (the host element is outside the template, so it never carries the stamp, and a scoped `:host[data-jq79="…"]` would match nothing). The same component can be mounted both ways: head-mounted instances get the scoped rewrite, shadow-mounted ones get the source.
 - **`mountShadow` covers the whole tree.** Nested components render inside their parent's shadow root, so their `<style>` goes in there with them (inline, next to the DOM it styles) rather than into `document.head` — which couldn't style them anyway, and would leak their CSS onto the page around the host. The trade-off is that a shadow tree's styles aren't refcounted: N instances of the same child inject N `<style>` tags inside the root, and they go away with them.
 - `mountShadow` remains the stronger option overall: a shadow root also blocks outside CSS from coming *in*, which `scoped` deliberately doesn't.

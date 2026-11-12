@@ -176,7 +176,7 @@ When the fetch resolves, the assignments to `firstName`/`lastName` re-run the `$
 - [Components](docs/components.md) — lifecycle (`mount`, `mountShadow`, `detach`, `destroy`), instance events (`on`/`off`), `<style scoped>`, several components in one file with `<template name>`, loading remote components with `Component79.fetch` (chainable — fetch and mount in one expression), `fetchAll` and `importAll`, and `Component79.version`.
 - [Template syntax](docs/template-syntax.md) — `{{ }}` interpolation, `:name` attribute bindings, `:text`/`:html`, `:if`/`:elseif`/`:else`, `:each`/`:key`, `:with`, `@event` listeners and modifiers, nested components.
 - [Setup scripts](docs/setup-scripts.md) — `<script :setup>` reactive scripts, `$:` declarations, `$emit`, `await $mounted()`, `$self`/`$$self`, and `export default` factory scripts (plain-JS alternative).
-- [Reactive data](docs/reactive-data.md) — the standalone `$reactive` store: `$on`, `$onAny`, `$effect`, and `$computed` for derived values.
+- [Reactive data](docs/reactive-data.md) — the standalone `$reactive` store: `$on`, `$onAny`, `$effect`, `$computed` for derived values, and `$batch` to group writes.
 - [DOM helpers](docs/dom-helpers.md) — `$`, `$$` and `$create`.
 - [Vite plugin](docs/vite-plugin.md) — importing `.html` components as bundled modules, HMR, options.
 - [Content Security Policy](docs/csp.md) — `safeEval`: running without `'unsafe-eval'`, with Vite or with no bundler at all.

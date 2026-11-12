@@ -1,7 +1,7 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl, QueryAll, QueryOne } from "./dom"
-import { $reactive, $toRaw, $computed, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
+import { $reactive, $toRaw, $computed, $batch, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, preloadSpecifiers, type PropDecl } from "./transform"
 import {
@@ -14,7 +14,7 @@ import {
 
 export { $, $$, $create } from "./dom"
 export type { QueryOne, QueryAll } from "./dom"
-export { $reactive, $toRaw, $computed } from "./reactive"
+export { $reactive, $toRaw, $computed, $batch } from "./reactive"
 export type { Computed } from "./reactive"
 
 // the package version, substituted at build time (tsup/vitest `define`, read
@@ -1135,6 +1135,9 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
   // marks a spread: the whole object's properties, not one binding
   const sources: Array<{ name?: string; expr: string }> = []
   let hasSpread = false
+  // directives written on the tag whose names a prop could have (see
+  // warnDirectiveProps) - allocated only when there is one
+  let directiveNamed: string[] | undefined
   Object.entries(node.attrs).forEach(([attr, value]) => {
     // the parent's scope stamp is stamped on every template element, this tag
     // included - it's not a prop, and the child renders under its own scope
@@ -1147,7 +1150,10 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
       sources.push({ expr: value })
       return
     }
-    if (isControlAttr(attr)) return
+    if (isControlAttr(attr)) {
+      if (DIRECTIVE_PROP_NAMES.has(attr)) (directiveNamed ??= []).push(attr.slice(1))
+      return
+    }
     if (attr.startsWith("@")) {
       events.push([attr, value])
     } else if (attr === ":model" || attr.startsWith(":model.")) {
@@ -1318,6 +1324,7 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // on the next update
     const declared = declaredPropSet(instance.scripts)
     warnUndeclared(node, key, Object.keys(props), declared)
+    if (directiveNamed) warnDirectiveProps(node, key, directiveNamed, declared)
     const seed = pickDeclared(untracked(resolveProps), declared)
     // mounting into a fragment attaches no shadow root of its own: a
     // shadow-rendered child keeps its <style> elements inline, next to the DOM
@@ -2374,6 +2381,8 @@ type EachPlan = {
   // can a row render anything into an effect scope of its own? Only then does
   // a keyed row need the OWNER mark that lets its re-run reach them
   nestsScopes: boolean
+  // `:window="rowHeight"`: render only the rows in view (see openWindow)
+  windowExpr: string | undefined
 }
 
 const eachPlans = new WeakMap<TemplateNode, EachPlan | null>()
@@ -2404,7 +2413,7 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
   const keyProp = keyExpr !== undefined && !keyIsItem && KEY_MEMBER.test(keyExpr) && keyExpr.startsWith(`${itemName}.`)
     ? keyExpr.slice(itemName.length + 1)
     : undefined
-  const { [":each"]: _each, [":key"]: _key, ...itemAttrs } = node.attrs
+  const { [":each"]: _each, [":key"]: _key, [":window"]: windowExpr, ...itemAttrs } = node.attrs
   const itemNode: TemplateNode = { ...node, attrs: itemAttrs }
 
   // An entry that changed position needs its position-only bindings re-run -
@@ -2421,16 +2430,187 @@ const eachPlanOf = (node: TemplateNode): EachPlan | null => {
 
   const namesComponent = /^[A-Z]/.test(itemName) || (atName !== undefined && /^[A-Z]/.test(atName))
   const nestsScopes = keyExpr !== undefined && rendersScopes(itemNode)
-  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes }
+  const plan: EachPlan = { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes, windowExpr }
   eachPlans.set(node, plan)
   return plan
+}
+
+// :window - a :each that renders only the rows in its scroll container's
+// viewport, plus OVERSCAN on either side, between two spacers whose heights
+// stand in for the rows that are not there. Rows are a fixed height (the
+// attribute's value, in pixels), which is what makes index <-> offset plain
+// arithmetic and $scrollTo exact. See RECORD/2026-11-12.a-windowed-each.md
+//
+// The window lives in a private store the list effect reads, so a scroll is an
+// ordinary wake of that effect - the same keyed diff, over list[start..end)
+const OVERSCAN = 8
+const SCROLLABLE_RE = /^(auto|scroll|overlay)$/
+
+// the nearest ancestor that scrolls vertically, or null for the page. Crosses
+// a shadow root to its host, which is where a mountShadow'd list scrolls
+const scrollParentOf = (from: Node | null): HTMLElement | null => {
+  for (let node = from; node; node = node instanceof ShadowRoot ? node.host : node.parentNode) {
+    if (!(node instanceof HTMLElement) || node === document.body || node === document.documentElement) continue
+    if (SCROLLABLE_RE.test(getComputedStyle(node).overflowY)) return node
+  }
+  return null
+}
+
+type ListWindow = {
+  top: Element
+  bottom: Element
+  // the slice of a list this long to render, spacers sized to match
+  range: (length: number) => [number, number]
+  // the pass is done: connect to the scroll container once the list is in the
+  // document (it is not, on the pass that builds it)
+  settled: () => void
+}
+
+type ScrollToOptions79 = { block?: "nearest" | "start" | "center" | "end" }
+
+const openWindow = (
+  itemNode: TemplateNode,
+  windowExpr: string,
+  scope: Record<string, any>,
+  fx: EffectScope,
+  entries: () => EachEntry[]
+): ListWindow => {
+  // the spacers are the rows' own tag, so they are valid wherever rows are (a
+  // <tr> in a <tbody>, an <li> in a <ul>); a component row gets a <div>
+  const spacer = () => {
+    const el = itemNode.component !== undefined || itemNode.tag.includes("-") ? document.createElement("div") : createFor(itemNode)
+    el.setAttribute("aria-hidden", "true")
+    el.setAttribute("style", "height: 0px; margin: 0; padding: 0; border: 0; list-style: none; visibility: hidden")
+    return el
+  }
+  const top = spacer()
+  const bottom = spacer()
+  // count -1: not measured yet - a screenful of the window's height is assumed
+  const view = $reactive({ start: 0, count: -1 })
+  let rowHeight = 0
+  let length = 0
+  let scroller: HTMLElement | null = null
+  let connected = false
+  let frame = 0
+  let observer: ResizeObserver | null = null
+  let holder: Element | null = null
+
+  const rowsFor = (viewport: number) => Math.ceil(viewport / rowHeight) + 1 + 2 * OVERSCAN
+  const setWindow = (start: number, count: number) => {
+    start = Math.max(0, Math.min(start, Math.max(0, length - count)))
+    if (view.start !== start || view.count !== count) $batch(() => { view.start = start; view.count = count })
+  }
+
+  // where the rows begin and the viewport is, in the container's content
+  // coordinates (the page's, when the page scrolls)
+  const metrics = () => {
+    const at = top.getBoundingClientRect().top
+    if (scroller) {
+      const box = scroller.getBoundingClientRect()
+      const scrollTop = scroller.scrollTop
+      return { listTop: at - box.top - scroller.clientTop + scrollTop, scrollTop, height: scroller.clientHeight || window.innerHeight }
+    }
+    return { listTop: at + window.scrollY, scrollTop: window.scrollY, height: window.innerHeight }
+  }
+
+  const measure = () => {
+    frame = 0
+    if (!(rowHeight > 0) || !top.isConnected) return
+    const { listTop, scrollTop, height } = metrics()
+    setWindow(Math.floor((scrollTop - listTop) / rowHeight) - OVERSCAN, rowsFor(height))
+  }
+  const schedule = () => {
+    if (frame) return
+    frame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(measure) : (setTimeout(measure, 16) as any)
+  }
+
+  // scrolls the container so row `index` is in view and renders it before
+  // returning - an aria-activedescendant has to point at a row that exists
+  const scrollTo = (index: number, { block = "nearest" }: ScrollToOptions79 = {}): Node | null => {
+    connect()
+    if (rowHeight > 0 && top.isConnected) {
+      const { listTop, scrollTop, height } = metrics()
+      const rowTop = listTop + index * rowHeight
+      const rowBottom = rowTop + rowHeight
+      let next = scrollTop
+      if (block === "start") next = rowTop
+      else if (block === "end") next = rowBottom - height
+      else if (block === "center") next = rowTop - (height - rowHeight) / 2
+      else if (rowTop < scrollTop) next = rowTop
+      else if (rowBottom > scrollTop + height) next = rowBottom - height
+      if (next !== scrollTop) {
+        if (scroller) scroller.scrollTop = next
+        else window.scrollTo(window.scrollX, next)
+      }
+      measure()
+    }
+    // whatever layout said (or could not say, before there is one), the row
+    // is in the window when this returns
+    const count = view.count > 0 ? view.count : rowsFor(window.innerHeight || 800)
+    if (index < view.start || index >= view.start + count) setWindow(index - OVERSCAN, count)
+    const entry = entries().find(row => row.scope.$index === index)
+    return entry ? entry.range.first : null
+  }
+
+  const connect = () => {
+    if (connected || !top.isConnected) return
+    connected = true
+    holder = top.parentElement
+    scroller = scrollParentOf(top.parentNode)
+    ;(scroller ?? window).addEventListener("scroll", schedule, { passive: true })
+    window.addEventListener("resize", schedule)
+    if (scroller && typeof ResizeObserver === "function") {
+      observer = new ResizeObserver(schedule)
+      observer.observe(scroller)
+    }
+    if (holder) Object.defineProperty(holder, "$scrollTo", { value: scrollTo, configurable: true, writable: true })
+    measure()
+  }
+
+  fx.onDispose(() => {
+    if (frame) (typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout)(frame)
+    if (!connected) return
+    ;(scroller ?? window).removeEventListener("scroll", schedule)
+    window.removeEventListener("resize", schedule)
+    observer?.disconnect()
+    if (holder && (holder as any).$scrollTo === scrollTo) delete (holder as any).$scrollTo
+  })
+
+  let queued = false
+  return {
+    top,
+    bottom,
+    range: listLength => {
+      length = listLength
+      const height = Number(evalExpr(windowExpr, scope))
+      rowHeight = height > 0 ? height : 0
+      if (!rowHeight) {
+        ;(top as HTMLElement).style.height = (bottom as HTMLElement).style.height = "0px"
+        return [0, listLength]
+      }
+      const count = view.count > 0 ? view.count : rowsFor(window.innerHeight || 800)
+      const start = Math.max(0, Math.min(view.start, listLength - count))
+      const end = Math.min(listLength, start + count)
+      ;(top as HTMLElement).style.height = `${start * rowHeight}px`
+      ;(bottom as HTMLElement).style.height = `${(listLength - end) * rowHeight}px`
+      return [start, end]
+    },
+    settled: () => {
+      if (connected || queued) return
+      queued = true
+      queueMicrotask(() => {
+        queued = false
+        connect()
+      })
+    },
+  }
 }
 
 const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectScope, shadow: boolean): Node => {
   const plan = eachPlanOf(node)
   if (!plan) return document.createComment(`invalid :each expression "${node.attrs[":each"]}"`)
 
-  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes } = plan
+  const { itemName, atName, listExpr, keyExpr, keyIsItem, keyProp, itemNode, readsPosition, namesComponent, nestsScopes, windowExpr } = plan
 
   // `:key="row.id"`, or the loop variable itself, is what a key almost always
   // is - and reading one needs neither a scope to resolve names against nor a
@@ -2445,6 +2625,8 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
   const anchor = document.createComment("each")
   const wrapper = document.createDocumentFragment()
   wrapper.appendChild(anchor)
+  const win = windowExpr === undefined ? null : openWindow(itemNode, windowExpr, scope, fx, () => entries)
+  if (win) wrapper.append(win.top, win.bottom)
 
   // :if on the same element is not per-item filtering, and rendering
   // everything in silence reads like a broken filter - say it out loud
@@ -2472,6 +2654,9 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       const array = Array.isArray(list)
       const keys: string[] | null = array ? null : isPlainObject(list) ? Object.keys(list) : []
       const length = array ? list.length : keys!.length
+      // a windowed list walks only the rows in view; the spacers stand in for
+      // the rest, so `index` stays the row's real position
+      const [from, to] = win ? win.range(length) : [0, length]
       // buckets rather than a key->entry map: duplicate keys (a user error, but
       // one that must degrade instead of corrupt) consume entries in order of
       // appearance, so no entry is ever matched twice - matching one twice is
@@ -2504,7 +2689,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
       // scope of its own, below
       let scratch: Record<string, any> | undefined
 
-      for (let index = 0; index < length; index++) {
+      for (let index = from; index < to; index++) {
         const at = array ? index : keys![index]
         const item = array ? list[index] : list[at]
 
@@ -2607,7 +2792,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
         removeRuns(contiguousRuns(entries, entry => entry.dead === true))
       }
 
-      let prevNode: Node = anchor
+      let prevNode: Node = win ? win.top : anchor
       // rows already in order relative to each other stay where they are; the
       // rest are placed after the row that precedes them in the new order,
       // which is where the pass has just left `prevNode`
@@ -2631,6 +2816,7 @@ const renderEach = (node: TemplateNode, scope: Record<string, any>, fx: EffectSc
     } finally {
       closeRenderPass(pass)
     }
+    win?.settled()
   })
   // the rows live inside whatever holds this list, as a :if branch does (see
   // renderConditional): torn down with it, not left subscribed to the store
@@ -3029,27 +3215,81 @@ const stampScope = (nodes: (TemplateNode | string)[], scope: string) => {
 
 // the scope attribute goes on the selector's last compound - the element the
 // rule actually targets - but *before* a pseudo-element, which must stay last
-// (".a::before" scopes to ".a[data-jq79='x']::before", not "::before[...]")
-const scopeSelector = (selectorText: string, scope: string): string =>
-  selectorText
-    .split(",")
-    .map(part => {
-      const selector = part.trim()
-      const pseudoAt = selector.indexOf("::")
-      const target = pseudoAt === -1 ? selector : selector.slice(0, pseudoAt)
-      const pseudoElement = pseudoAt === -1 ? "" : selector.slice(pseudoAt)
-      return `${target}[${SCOPE_ATTR}="${scope}"]${pseudoElement}`
-    })
-    .join(", ")
+// (".a::before" scopes to ".a[data-jq79='x']::before", not "::before[...]").
+// This reads the author's text, not an engine's serialisation, so the CSS2
+// single-colon pseudo-elements are recognised by name: nothing has rewritten
+// ":before" to "::before" for us (see scopeCss)
+const LEGACY_PSEUDO_ELEMENT_RE = /^:(before|after|first-line|first-letter)(?![\w-])/i
 
-// CSSStyleRule is scoped in place; CSSGroupingRule (@media, @supports,
-// @container) is recursed into; everything else - notably @keyframes, whose
-// "selectors" are percentages - is left alone
-const scopeRules = (rules: CSSRuleList, scope: string) => {
-  Array.from(rules).forEach(rule => {
-    if (rule instanceof CSSStyleRule) rule.selectorText = scopeSelector(rule.selectorText, scope)
-    else if (rule instanceof CSSGroupingRule) scopeRules(rule.cssRules, scope)
+// walks `text` at nesting depth 0 - outside (), [], strings and escapes -
+// calling `at(i)` on each such index; `at` returning true stops the walk
+const atTopLevel = (text: string, at: (i: number) => boolean | void) => {
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+    if (char === "\\") i++
+    else if (char === '"' || char === "'") {
+      i++
+      while (i < text.length && text[i] !== char) i += text[i] === "\\" ? 2 : 1
+    } else if (char === "(" || char === "[") depth++
+    else if (char === ")" || char === "]") depth--
+    else if (depth === 0 && at(i)) return
+  }
+}
+
+const scopeSelector = (selector: string, scope: string): string => {
+  let pseudoAt = selector.length
+  atTopLevel(selector, i => {
+    if (selector[i] !== ":") return false
+    if (selector[i + 1] !== ":" && !LEGACY_PSEUDO_ELEMENT_RE.test(selector.slice(i))) return false
+    pseudoAt = i
+    return true
   })
+  return `${selector.slice(0, pseudoAt)}[${SCOPE_ATTR}="${scope}"]${selector.slice(pseudoAt)}`
+}
+
+// a selector list is split on its top-level commas only: `.a:is(.b, .c)` is
+// one selector. A comment in a selector is removed - CSS reads it as nothing,
+// so `.a/**/.b` is `.a.b` - since the attribute must never land inside one
+const scopeSelectorList = (prelude: string, scope: string): string => {
+  const text = stripCssComments(prelude)
+  const lead = text.match(/^\s*/)![0]
+  const trail = text.match(/\s*$/)![0]
+  const body = text.slice(lead.length, text.length - trail.length)
+  if (!body) return prelude
+  const parts: string[] = []
+  let from = 0
+  atTopLevel(body, i => {
+    if (body[i] === ",") {
+      parts.push(body.slice(from, i))
+      from = i + 1
+    }
+  })
+  parts.push(body.slice(from))
+  return lead + parts.map(part => part.trim() && scopeSelector(part.trim(), scope)).join(", ") + trail
+}
+
+const stripCssComments = (text: string): string => {
+  let out = ""
+  for (let i = 0; i < text.length; ) {
+    const char = text[i]
+    if (char === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2)
+      i = end === -1 ? text.length : end + 2
+    } else if (char === '"' || char === "'") {
+      let j = i + 1
+      while (j < text.length && text[j] !== char) j += text[j] === "\\" ? 2 : 1
+      out += text.slice(i, j + 1)
+      i = j + 1
+    } else if (char === "\\") {
+      out += text.slice(i, i + 2)
+      i += 2
+    } else {
+      out += char
+      i++
+    }
+  }
+  return out
 }
 
 // A component's name in a selector - `Circle { color: red }` - names the box
@@ -3146,18 +3386,66 @@ const renameComponentSelectors = (css: string): string => {
   return out
 }
 
-// the CSS parser is the browser's own (no dependency, no hand-rolled parser).
-// Note browsers *silently drop* rules whose selector they can't parse, which
-// is what Vue's :deep()/::v-deep/>>> escape hatches are - unsupported here,
-// and warned about rather than left to vanish
+// Scoping rewrites selectors and nothing else, on the SOURCE. It used to parse
+// the block into a CSSStyleSheet and write it back from rule.cssText, which
+// round-trips every declaration through the engine's serialiser - and Chromium
+// serialises `border: var(--w) solid red; border-bottom-width: 0` as a row of
+// empty longhands (`border-top-style: ;` …), so the border vanished once
+// scoped. See RECORD/2026-11-12.scope-the-source-not-the-cssom.md
+//
+// The scan tracks strings, comments and nesting the way renameComponentSelectors
+// does. In rule position (top level, or inside @media and the other at-rules
+// that hold rules) a prelude that is not an at-rule is a selector list and gets
+// scoped; a declaration block is copied whole, nested blocks included - CSS
+// nesting is relative to the parent, which is already scoped. @keyframes holds
+// frames, not rules, so it is copied whole too.
+//
+// Vue's :deep()/::v-deep/>>> escape hatches are not CSS: the browser drops a
+// rule it can't parse when the block is injected, so they are warned about
+// rather than left to vanish
 const scopeCss = (css: string, scope: string): string => {
   if (/:deep\(|::v-deep|>>>/.test(css)) {
     console.warn("jq79: :deep()/::v-deep/>>> are not supported in <style scoped>; the rule will be dropped by the browser")
   }
-  const sheet = new CSSStyleSheet()
-  sheet.replaceSync(css)
-  scopeRules(sheet.cssRules, scope)
-  return Array.from(sheet.cssRules).map(rule => rule.cssText).join("\n")
+  let out = ""
+  let prelude = "" // rule position: the text since the last delimiter
+  const stack: boolean[] = [] // true = the block holds rules, not declarations
+  const holdsRules = () => stack.length === 0 || stack[stack.length - 1]
+
+  for (let i = 0; i < css.length; ) {
+    const char = css[i]
+    let token = char
+    if (char === "/" && css[i + 1] === "*") {
+      const end = css.indexOf("*/", i + 2)
+      token = css.slice(i, end === -1 ? css.length : end + 2)
+    } else if (char === '"' || char === "'") {
+      let j = i + 1
+      while (j < css.length && css[j] !== char) j += css[j] === "\\" ? 2 : 1
+      token = css.slice(i, j + 1)
+    } else if (char === "\\") {
+      token = css.slice(i, i + 2)
+    }
+    i += token.length
+
+    if (!holdsRules()) {
+      out += token
+      if (token === "{") stack.push(false)
+      else if (token === "}") stack.pop()
+    } else if (token === "{") {
+      const bare = stripCssComments(prelude)
+      const atRule = AT_RULE_RE.test(bare)
+      out += (atRule ? prelude : scopeSelectorList(prelude, scope)) + "{"
+      stack.push(atRule && NESTED_AT_RULE_RE.test(bare))
+      prelude = ""
+    } else if (token === "}" || token === ";") {
+      out += prelude + token
+      prelude = ""
+      if (token === "}") stack.pop()
+    } else {
+      prelude += token
+    }
+  }
+  return out + prelude
 }
 
 // converts a string of HTML into an AST representation of the component:
@@ -3682,6 +3970,26 @@ const warnUndeclared = (node: TemplateNode, name: string, written: string[], dec
     said.add(prop)
     console.warn(`jq79: :${prop} is not declared by <${name}> - add it to the :setup signature, or drop it`)
   })
+}
+
+// `:checked` on a component tag is the directive, not a prop: the prop
+// collection skips every control attribute, so a child that declares
+// `checked` gets nothing and says nothing. Said here, once per usage site, for
+// the case where the author can only have meant the prop - the child declares
+// one of that name. See RECORD/2026-11-12.a-prop-named-like-a-directive.md
+const DIRECTIVE_PROP_NAMES = new Set([":value", ":checked", ":selected", ":text", ":html", ":class"])
+const directivePropsWarned = new WeakSet<TemplateNode>()
+
+const warnDirectiveProps = (node: TemplateNode, name: string, written: string[], declared: Set<string> | null) => {
+  if (declared === null || directivePropsWarned.has(node)) return
+  const clashing = written.filter(prop => declared.has(prop))
+  if (!clashing.length) return
+  directivePropsWarned.add(node)
+  clashing.forEach(prop => console.warn(
+    `jq79: :${prop} on <${name}> is a directive, not a prop - <${name}> never receives its "${prop}". ` +
+    `Rename the prop (${clashing.map(p => `:${p}`).join(", ")} are reserved on a component tag), ` +
+    `or use :model for a value that goes both ways`
+  ))
 }
 
 // the sibling components this one resolves by name, or null when there are
@@ -5199,7 +5507,7 @@ let settleQueued = false
 // declaration) shadows them. Their names, in this order, are also
 // SETUP_HELPER_NAMES (source.ts) - what precompile compiles scripts with, so
 // the two change together
-const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, Component79, C79: Component79 }
+const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, $batch, Component79, C79: Component79 }
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
 // below; classic scripts run before deferred module ones, so the flag is always

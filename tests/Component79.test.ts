@@ -2633,9 +2633,63 @@ describe("Component79", () => {
       expect(css).toContain(`.a:hover[data-jq79="${scope}"]`)
       expect(css).toContain(`.b > .c[data-jq79="${scope}"]`)
       expect(css).toContain(`.a[data-jq79="${scope}"] { color: blue; }`) // inside @media
-      expect(css).toMatch(/@keyframes spin \{[^}]*0%/) // keyframe selectors left alone
+      expect(css).toContain("@keyframes spin { from { opacity: 0; } to { opacity: 1; } }") // left alone
 
       jq79.destroy()
+    })
+
+    // the scoped rewrite reads the source, and only ever touches selectors: it
+    // used to round-trip the block through the CSSOM, and Chromium serialises a
+    // var() shorthand followed by one of its longhands as empty longhands
+    // (`border-top-style: ;` …), so the border vanished once scoped. jsdom never
+    // did that, which is why these pin the declarations byte for byte
+    // (RECORD/2026-11-12.scope-the-source-not-the-cssom.md)
+    describe("rewrites selectors on the source, and nothing else", () => {
+      const scoped = (css: string) => {
+        const jq79 = new Component79(`<div class="a">x</div><style scoped>${css}</style>`)
+        const scope = jq79.template[0].attrs["data-jq79"]
+        return jq79.styles[0].scoped!.split(`[data-jq79="${scope}"]`).join("[s]")
+      }
+
+      it("leaves a var() shorthand and the longhand after it as written", () => {
+        expect(scoped(".tab { border: var(--w) solid var(--c); border-bottom-width: 0; }"))
+          .toBe(".tab[s] { border: var(--w) solid var(--c); border-bottom-width: 0; }")
+      })
+
+      it("keeps the CSS2 single-colon pseudo-elements last, which nothing normalises any more", () => {
+        expect(scoped(".a:before, .b:AFTER, .c:first-line, .d:first-letter, .e:hover { x: y }"))
+          .toBe(".a[s]:before, .b[s]:AFTER, .c[s]:first-line, .d[s]:first-letter, .e:hover[s] { x: y }")
+        expect(scoped(".a:hover::after, .b:not(.c)::marker { x: y }"))
+          .toBe(".a:hover[s]::after, .b:not(.c)[s]::marker { x: y }")
+      })
+
+      it("splits a selector list on its top-level commas only", () => {
+        // the old split on every comma broke this into halves the CSSOM
+        // rejected, and the rule stayed unscoped
+        expect(scoped(`.a:is(.b, .c), [title="x, y"], .d\\,e { x: y }`))
+          .toBe(`.a:is(.b, .c)[s], [title="x, y"][s], .d\\,e[s] { x: y }`)
+        expect(scoped(".a:where(::before, .b) { x: y }")).toBe(".a:where(::before, .b)[s] { x: y }")
+      })
+
+      it("copies declaration blocks whole: strings, url()s, nested rules, @font-face", () => {
+        expect(scoped(`.a { content: "} .b {"; background: url(data:x;y) }`))
+          .toBe(`.a[s] { content: "} .b {"; background: url(data:x;y) }`)
+        expect(scoped(".a { color: red; .b { color: blue } &:hover { color: green } }"))
+          .toBe(".a[s] { color: red; .b { color: blue } &:hover { color: green } }")
+        expect(scoped(`@font-face { font-family: "F"; src: url(f.woff2) }`))
+          .toBe(`@font-face { font-family: "F"; src: url(f.woff2) }`)
+      })
+
+      it("scopes inside the at-rules that hold rules, and passes statements through", () => {
+        expect(scoped(`@import url("x.css"); @layer base, ui; @layer ui { @supports (display: grid) { .a { x: y } } }`))
+          .toBe(`@import url("x.css"); @layer base, ui; @layer ui { @supports (display: grid) { .a[s] { x: y } } }`)
+        expect(scoped("/* lead */ @media print { .a { x: y } }")).toBe("/* lead */ @media print { .a[s] { x: y } }")
+      })
+
+      it("keeps comments, except inside a selector, where CSS reads them as nothing", () => {
+        expect(scoped("/* card */\n.a { color: red; /* why */ }\n.b/**/.c, .d /* x */ { x: y }"))
+          .toBe("\n.a[s] { color: red; /* why */ }\n.b.c[s], .d[s]  { x: y }")
+      })
     })
 
     it("scopes elements added later by :if and :each", async () => {

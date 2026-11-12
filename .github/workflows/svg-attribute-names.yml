@@ -62,11 +62,19 @@ jobs:
 
       - run: npm install
 
+      # the browsers Playwright downloads are built per OS release (ubuntu24.04,
+      # ubuntu26.04, ...), so the key names the runner image too. Without it,
+      # ubuntu-latest moving to 26.04 restored the 24.04 WebKit, `playwright
+      # install` saw it already there, and WebKit failed to launch on every run
+      - name: Runner image
+        id: image
+        run: echo "os=$ImageOS" >> "$GITHUB_OUTPUT"
+
       - name: Cache browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ matrix.engine }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-${{ matrix.engine }}-${{ steps.image.outputs.os }}-${{ hashFiles('package-lock.json') }}
 
       - run: npx playwright install --with-deps ${{ matrix.engine }}
 

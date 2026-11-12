@@ -191,6 +191,27 @@ A second binding names the array index — handy where nested loops would shadow
 
 Objects diff by property key out of the box: adding, changing or deleting a key touches only that entry. Anything that is neither an array nor a plain object renders nothing.
 
+### `:window` — long lists
+
+A list of thousands of rows is thousands of nodes to build and lay out. `:window="rowHeight"` renders only the rows in the scroll container's viewport (plus a few on either side), and two spacers stand in for the rest:
+
+```html
+<div class="tracks" style="overflow-y: auto; height: 400px">
+  <div :each="track in tracks" :key="track.id" :window="28" class="row">{{ track.title }}</div>
+</div>
+```
+
+- The value is the **row height in pixels**, and every row must be that tall. It is an expression, so `:window="rowHeight"` works too. A value that isn't a positive number renders every row.
+- The **scroll container** is the nearest ancestor with `overflow-y: auto` (or `scroll`), otherwise the page.
+- `:key` identity holds as rows scroll in and out, and `$index` is the row's real position. A write to a row that isn't rendered wakes nothing.
+- The rows' parent element gets **`$scrollTo(index, { block })`**: it scrolls the row into view (`block`: `"nearest"` by default, or `"start"`, `"center"`, `"end"`) and renders it before returning, so `aria-activedescendant` can point at it. It returns the row's element:
+
+  ```js
+  const row = $self(".tracks > div").$scrollTo(activeIndex)
+  ```
+
+- The trade: rows that aren't rendered aren't in the DOM, so find-in-page and the browser's own `scrollIntoView` can't reach them. Use `$scrollTo`.
+
 ## `:with` — narrowed scope
 
 Evaluates to an object whose properties become directly addressable inside the element; anything else still resolves from the outer scope:

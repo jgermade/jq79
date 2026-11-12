@@ -1,6 +1,6 @@
 
 import { describe, it, expect, vi } from "vitest"
-import { $reactive, $toRaw } from "../src/jq79"
+import { $reactive, $toRaw, $batch, $computed, Component79 } from "../src/jq79"
 // the trie node's effect slot, from the module rather than the package: these
 // are internals, and nothing re-exports them from src/jq79.ts
 import { addOwn, addDeep, removeOwn, removeDeep, eachOwn, eachDeep } from "../src/reactive"
@@ -953,5 +953,130 @@ describe("a trie node's effect slots", () => {
     removeDeep(n as any, b)
     expect(owners(n)).toEqual([a])
     expect(deepOwners(n)).toEqual([])
+  })
+})
+
+// RECORD/2026-11-12.batch.md
+describe("$batch", () => {
+  it("runs an effect once, after the writes, against the final state", () => {
+    const playback = $reactive({ queue: ["a", "b"], index: 1 })
+    const seen: string[] = []
+    playback.$effect(() => { seen.push(`${playback.queue.join("")}@${playback.index}`) })
+    seen.length = 0
+
+    $batch(() => {
+      playback.queue = ["x", "y", "z"]
+      playback.index = 0
+    })
+
+    expect(seen).toEqual(["xyz@0"]) // never {new queue, old index}
+  })
+
+  it("still tells listeners about every write as it lands", () => {
+    const store = $reactive({ a: 1, b: 1 })
+    const heard: string[] = []
+    store.$onAny(key => heard.push(key))
+    $batch(() => {
+      store.a = 2
+      store.b = 2
+      expect(heard).toEqual(["a", "b"])
+    })
+  })
+
+  it("orders the flush oldest first, across stores, and flushes nested batches at the outermost", () => {
+    const one = $reactive({ v: 0 })
+    const two = $reactive({ v: 0 })
+    const order: string[] = []
+    two.$effect(() => { order.push(`two:${two.v}`) })
+    one.$effect(() => { order.push(`one:${one.v}`) })
+    order.length = 0
+
+    $batch(() => {
+      one.v = 1
+      $batch(() => { two.v = 1 })
+      expect(order).toEqual([]) // the inner batch did not flush
+      one.v = 2
+    })
+
+    expect(order).toEqual(["two:1", "one:2"])
+  })
+
+  it("settles what a flushed effect writes in the same flush, and returns fn's value", () => {
+    const store = $reactive({ a: 0, double: 0 })
+    const seen: number[] = []
+    store.$effect(() => { store.double = store.a * 2 })
+    store.$effect(() => { seen.push(store.double) })
+    seen.length = 0
+
+    const out = $batch(() => {
+      store.a = 1
+      store.a = 2
+      return "done"
+    })
+
+    expect(out).toBe("done")
+    expect(seen).toEqual([4])
+  })
+
+  it("settles a $computed once", () => {
+    const cart = $reactive({ items: [] as number[] })
+    let runs = 0
+    const total = $computed(() => { runs++; return cart.items.reduce((sum, n) => sum + n, 0) })
+    runs = 0
+    $batch(() => {
+      cart.items.push(1)
+      cart.items.push(2)
+      cart.items.push(3)
+    })
+    expect(runs).toBe(1)
+    expect(total.value).toBe(6)
+  })
+
+  it("skips an effect disposed before the flush", () => {
+    const store = $reactive({ a: 0 })
+    const run = vi.fn(() => store.a)
+    const stop = store.$effect(run)
+    run.mockClear()
+    $batch(() => {
+      store.a = 1
+      stop()
+    })
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it("flushes and rethrows when fn throws", () => {
+    const store = $reactive({ a: 0 })
+    const seen: number[] = []
+    store.$effect(() => { seen.push(store.a) })
+    expect(() => $batch(() => {
+      store.a = 1
+      throw new Error("boom")
+    })).toThrow("boom")
+    expect(seen).toEqual([0, 1])
+    // and the batch is closed: the next write runs synchronously again
+    store.a = 2
+    expect(seen).toEqual([0, 1, 2])
+  })
+
+  it("renders a component once per batch, and is in scope in setup scripts", () => {
+    const host = document.createElement("div")
+    const jq79 = new Component79(`
+      <script :setup>
+        let queue = ["a"]
+        let index = 0
+        let renders = 0
+        const swap = () => $batch(() => { queue = ["x", "y"]; index = 1 })
+      </script>
+      <p>{{ queue[index] }}</p>
+    `).render().mount(host)
+    const seen: string[] = []
+    const p = host.querySelector("p")!
+    const store = jq79.data!
+    store.$effect(() => { seen.push(`${store.queue[store.index]}`) })
+    seen.length = 0
+    store.swap()
+    expect(seen).toEqual(["y"])
+    expect(p.textContent).toBe("y")
+    jq79.destroy()
   })
 })
