@@ -352,10 +352,15 @@ export const readSetupSignature = (script: TagBlock): PropDecl[] | null => {
 // says it comes from the parent, so the file's own definition of that name is
 // deliberately not in this component's scope. The runtime reads the setup
 // signatures with setupSignature, which warns; precompile, with readSetupSignature
-export const declaredPropNames = (scripts: TagBlock[], signature: (script: TagBlock) => PropDecl[] | null): Set<string> => {
+// `factoryProps` lets the runtime pass its memoized reader (see factoryPropsOf)
+export const declaredPropNames = (
+  scripts: TagBlock[],
+  signature: (script: TagBlock) => PropDecl[] | null,
+  factoryProps: (src: string) => PropDecl[] | null = parseFactoryProps,
+): Set<string> => {
   const names = new Set<string>()
   scripts.forEach(script => {
-    const declarations = parseFactoryProps(script.content) ?? signature(script)
+    const declarations = factoryProps(script.content) ?? signature(script)
     declarations?.forEach(({ name }) => names.add(name))
   })
   return names
