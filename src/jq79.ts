@@ -3887,8 +3887,40 @@ const declareProps = (store: Record<string, any>, props: PropDecl[] | null) => {
 // Only the empty *value* is closed. An absent attribute (a factory <script>
 // with no :setup at all) stays `null`, so its signature is still read from the
 // factory's first parameter
+// What a script's text compiles to, memoized by that text. Every instance of a
+// definition runs the same scripts, and these passes are pure functions of the
+// string - re-running them per instance was most of a list's render time. The
+// values are shared, so the arrays are frozen on the way in. A throw (the
+// pre-0.4 factory signature) is not cached: it rethrows on every render, as it
+// always did. Kept here, not in transform.ts, because the editor's language
+// server re-reads a script on every keystroke and would grow a map per edit.
+// See RECORD/2026-11-15.cache-script-transforms.md
+const memoByText = <T>(fn: (src: string) => T): ((src: string) => T) => {
+  const cache = new Map<string, T>()
+  return src => {
+    if (cache.has(src)) return cache.get(src)!
+    const value = fn(src)
+    cache.set(src, value)
+    return value
+  }
+}
+const freezeProps = (props: PropDecl[] | null): PropDecl[] | null => {
+  props?.forEach(prop => Object.freeze(prop))
+  if (props) Object.freeze(props)
+  return props
+}
+const factoryCodeOf = memoByText(transformFactoryScript)
+const factoryPropsOf = memoByText(src => freezeProps(parseFactoryProps(src)))
+const setupTransformOf = memoByText(src => {
+  const transform = transformSetupScript(src)
+  Object.freeze(transform.vars)
+  return Object.freeze(transform)
+})
+const signatureOf = memoByText(src => freezeProps(readSetupSignature({ attrs: { ":setup": src }, content: "" })))
+
 const setupSignature = (script: TagBlock): PropDecl[] | null => {
-  const props = readSetupSignature(script)
+  const pattern = script.attrs[":setup"]
+  const props = pattern === undefined ? null : signatureOf(pattern)
   if (!props && script.attrs[":setup"] !== undefined) warnUnreadableSignature(script, script.attrs[":setup"])
   return props
 }
@@ -3926,7 +3958,7 @@ const warnUnreadableSignature = (script: TagBlock, pattern: string) => {
 const declaredPropSet = (scripts: TagBlock[]): Set<string> | null => {
   let names: Set<string> | null = null
   scripts.forEach(script => {
-    const declarations = parseFactoryProps(script.content) ?? setupSignature(script)
+    const declarations = factoryPropsOf(script.content) ?? setupSignature(script)
     if (!declarations) return
     const into = (names ??= new Set())
     declarations.forEach(({ name }) => into.add(name))
@@ -4781,7 +4813,7 @@ export class Component79 {
     // what this component can see of its file's other components, and which of
     // its declared props arrived empty - both decided by the signature, before
     // the store exists (see siblingsInScope / UNFILLED_PROPS)
-    const declared = declaredPropNames(this.scripts, setupSignature)
+    const declared = declaredPropNames(this.scripts, setupSignature, factoryPropsOf)
     const siblingScope = siblingsInScope(this.siblings, declared)
     const raw: Record<string, any> = siblingScope
       ? Object.assign(Object.create(siblingScope), data)
@@ -5017,7 +5049,7 @@ export class Component79 {
       const instanceHelpers = { $mounted, $destroyed, $attached, $detached, $computed: $instanceComputed, $self, $$self, ...injected, $importAll, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
       const deferred = ":mounted" in script.attrs
-      const factoryCode = transformFactoryScript(script.content)
+      const factoryCode = factoryCodeOf(script.content)
       const run = ((): ScriptRun => {
         if (factoryCode !== null) {
           // a factory publishes its names by returning them, so one that yields
@@ -5032,11 +5064,11 @@ export class Component79 {
               "so none of its bindings exist yet - await $mounted() inside the factory instead."
             )
           }
-          declareProps(store, parseFactoryProps(script.content))
+          declareProps(store, factoryPropsOf(script.content))
           const body = deferred ? defer(factoryCode) : factoryCode
           return runFactoryScript(body, store, run => fx.effect(run), instanceHelpers, $import, at)
         }
-        const { vars, code } = transformSetupScript(script.content)
+        const { vars, code } = setupTransformOf(script.content)
         declareProps(store, setupSignature(script))
         // pre-declare script vars on the store so `with` resolves assignments
         // to them (and reads of them) through the reactive proxy
