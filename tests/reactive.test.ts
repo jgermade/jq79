@@ -1080,3 +1080,42 @@ describe("$batch", () => {
     jq79.destroy()
   })
 })
+
+// RECORD/2026-11-15.glitch-free-propagation.md
+describe("a write's propagation", () => {
+  it("runs a binding that reads two $computed of one write once, against both new values", () => {
+    const lib = $reactive({ view: "songs" })
+    const height = $computed(() => (lib.view === "songs" ? 20 : 0))
+    const rows = $computed(() => (lib.view === "songs" ? 1759 : 129))
+    const seen: string[] = []
+    lib.$effect(() => { seen.push(`${rows.value}@${height.value}`) })
+    seen.length = 0
+
+    lib.view = "albums"
+
+    expect(seen).toEqual(["129@0"]) // never "1759@0", the old rows at the new height
+  })
+
+  it("has run every effect by the time the write returns", () => {
+    const store = $reactive({ n: 1 })
+    const double = $computed(() => store.n * 2)
+    let read = 0
+    store.$effect(() => { read = double.value })
+    store.n = 5
+    expect(read).toBe(10)
+  })
+
+  // the effect reads `derived` for the first time in the run that writes its
+  // source: it used to miss that update (it was not subscribed yet) and stop
+  // at n = 1, a state it never saw through. Now it sees it, and the cycle it is
+  // gets cut off and named
+  it("cuts off an effect that wakes itself through a $computed, and names it", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    const store = $reactive({ n: 0, go: false })
+    const derived = $computed(() => store.n)
+    store.$effect(() => { if (store.go) store.n = derived.value + 1 })
+    store.go = true
+    expect(error).toHaveBeenCalledWith(expect.stringMatching(/^jq79: a write kept waking effects for 100 rounds/))
+    error.mockRestore()
+  })
+})

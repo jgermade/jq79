@@ -29,6 +29,30 @@
   let componentData = []
   const runComponents = () => { componentData = buildData(1000) }
   const clearComponents = () => { componentData = [] }
+
+  // a windowed list that switches views, the way an app's library pane does:
+  // what is listed and how tall a row is come from two $computed over one
+  // store, so one write recomputes both - and a binding reading both used to
+  // run in between, against the new height and the OLD rows, rendering every
+  // row of the 1,759-row view unwindowed (WINDOW_OPERATIONS in
+  // scripts/lib/benchmark-ops.mjs, RECORD/2026-11-15.glitch-free-propagation.md).
+  // Built in a closure, so the stores and the boxes stay out of this one
+  class Box { constructor(data) { this.data = data } }
+  const { view, listed, setView } = (() => {
+    const lib = $reactive({ view: "none" })
+    let songs = []
+    let albums = []
+    const activeRoot = $computed(() => new Box({ view: lib.view }))
+    const treeRows = $computed(() => new Box(lib.view === "songs" ? songs : lib.view === "albums" ? albums : []))
+    return {
+      view: () => activeRoot.value.data.view,
+      listed: () => treeRows.value.data,
+      setView: name => {
+        if (!songs.length) { songs = buildData(1759); albums = buildData(129) }
+        lib.view = name
+      },
+    }
+  })()
 </script>
 
 <div class="container">
@@ -63,6 +87,12 @@
           <div class="col-sm-6 smallpad">
             <button type="button" class="btn btn-primary btn-block" id="clearcomponents" @click="clearComponents">Clear component rows</button>
           </div>
+          <div class="col-sm-6 smallpad">
+            <button type="button" class="btn btn-primary btn-block" id="viewsongs" @click="setView('songs')">Windowed view</button>
+          </div>
+          <div class="col-sm-6 smallpad">
+            <button type="button" class="btn btn-primary btn-block" id="viewalbums" @click="setView('albums')">Full view</button>
+          </div>
         </div>
       </div>
     </div>
@@ -81,6 +111,9 @@
        parser moves it out (docs/template-syntax.md) -->
   <div id="ctbody">
     <Row :each="row in componentData" :key="row.id" :row />
+  </div>
+  <div id="wtbody" style="height: 400px; overflow-y: auto">
+    <Row :each="row in listed()" :key="row.id" :row :window="view() === 'songs' ? 24 : 0" />
   </div>
   <span class="preloadicon glyphicon glyphicon-remove" aria-hidden="true"></span>
 </div>
