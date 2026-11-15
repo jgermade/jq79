@@ -257,7 +257,7 @@ let effectsCreated = 0
 // See RECORD/2026-11-12.batch.md
 let batchDepth = 0
 let batched: Map<Effect, Set<Effect>> | null = null
-// the batch is dispatch's, not an explicit $batch (see dispatch)
+// the batch is dispatch's, not an explicit $batch (see openDispatch)
 let implicitBatch = false
 
 const queueBatched = (matched: Iterable<Effect>, effects: Set<Effect>) => {
@@ -318,19 +318,20 @@ export const $batch = <T>(fn: () => T): T => {
 // it has run before the write returns. `batched` is allocated only when
 // something is actually queued, so a write that wakes plain bindings pays a
 // counter and nothing else
-const dispatch = (run: () => void) => {
+//
+// Open and close rather than a wrapper taking a callback: this is every write's
+// path, and a closure per write was measurable on update10k_x16
+const openDispatch = () => {
   batchDepth = 1
   implicitBatch = true
+}
+const closeDispatch = () => {
   try {
-    run()
+    if (batched) flushBatched()
   } finally {
-    try {
-      flushBatched()
-    } finally {
-      batchDepth = 0
-      batched = null
-      implicitBatch = false
-    }
+    batchDepth = 0
+    batched = null
+    implicitBatch = false
   }
 }
 
@@ -675,9 +676,6 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // woke) must not run
   const runMatched = (matched: Set<Effect>) => {
     if (batchDepth) return queueBatched(matched, effects)
-    dispatch(() => runOrdered(matched))
-  }
-  const runOrdered = (matched: Set<Effect>) => {
     const ordered = Array.from(matched)
     // effects are usually collected in creation order already - one node's set
     // is filled as its effects are made, and a subtree sweep of a freshly-built
@@ -686,7 +684,12 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     let sorted = true
     for (let i = 1; sorted && i < ordered.length; i++) sorted = ordered[i - 1].order < ordered[i].order
     if (!sorted) ordered.sort((a, b) => a.order - b.order)
-    ordered.forEach(effect => { if (effects.has(effect)) effect.run() })
+    openDispatch()
+    try {
+      for (const effect of ordered) if (effects.has(effect)) effect.run()
+    } finally {
+      closeDispatch()
+    }
   }
 
   const notify = (dotKey: string, value: any, isNewKey = false) => {
@@ -697,7 +700,14 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // store entirely), so dep matching would never wake it up
     if (isNewKey) {
       if (batchDepth) queueBatched(effects, effects)
-      else dispatch(() => effects.forEach(effect => effect.run()))
+      else {
+        openDispatch()
+        try {
+          effects.forEach(effect => effect.run())
+        } finally {
+          closeDispatch()
+        }
+      }
     }
     // `effects.has` stands in for the membership check `effects.forEach` used
     // to give for free: an effect disposed by an earlier effect in this same
