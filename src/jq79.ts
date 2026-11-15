@@ -2583,7 +2583,20 @@ const openWindow = (
     range: listLength => {
       length = listLength
       const height = Number(evalExpr(windowExpr, scope))
+      const previous = rowHeight
       rowHeight = height > 0 ? height : 0
+      // a new row height (or a window opening again after 0) moves every
+      // offset: the window kept from before names rows for a geometry that is
+      // gone - the old scroll position, or the old height's row count - and
+      // would render them until the next scroll. Measured here, in this pass,
+      // and written past the store: this effect is the one reading it, and a
+      // tracked write would only wake it for a second pass over the same rows
+      if (rowHeight && rowHeight !== previous && connected && top.isConnected) {
+        const { listTop, scrollTop, height: viewport } = metrics()
+        const raw = $toRaw(view)
+        raw.count = rowsFor(viewport)
+        raw.start = Math.max(0, Math.floor((scrollTop - listTop) / rowHeight) - OVERSCAN)
+      }
       if (!rowHeight) {
         ;(top as HTMLElement).style.height = (bottom as HTMLElement).style.height = "0px"
         return [0, listLength]

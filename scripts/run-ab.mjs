@@ -29,11 +29,11 @@ import { cpus, tmpdir } from "node:os"
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { OPERATIONS as SHARED_OPERATIONS, COMPONENT_OPERATIONS, installAndBuild, measureApp, median } from "./lib/benchmark-ops.mjs"
+import { OPERATIONS as SHARED_OPERATIONS, COMPONENT_OPERATIONS, WINDOW_OPERATIONS, installAndBuild, measureApp, median } from "./lib/benchmark-ops.mjs"
 
 // the shared suite, plus the operations only jq79's app has: this script only
 // ever measures jq79, so it can reach what a framework comparison can't
-const OPERATIONS = [...SHARED_OPERATIONS, ...COMPONENT_OPERATIONS]
+const OPERATIONS = [...SHARED_OPERATIONS, ...COMPONENT_OPERATIONS, ...WINDOW_OPERATIONS]
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url))
 const APP_DIR = join(ROOT, "frameworks/keyed/jq79/")

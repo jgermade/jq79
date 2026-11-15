@@ -257,18 +257,26 @@ let effectsCreated = 0
 // See RECORD/2026-11-12.batch.md
 let batchDepth = 0
 let batched: Map<Effect, Set<Effect>> | null = null
+// the batch is dispatch's, not an explicit $batch (see dispatch)
+let implicitBatch = false
 
 const queueBatched = (matched: Iterable<Effect>, effects: Set<Effect>) => {
-  for (const effect of matched) if (!batched!.has(effect)) batched!.set(effect, effects)
+  const queue = (batched ??= new Map())
+  for (const effect of matched) {
+    // an effect writing what it reads re-runs inside its own loop, as it does
+    // outside a batch, and is cut off there with its own message
+    if (implicitBatch && effect === activeEffect) effect.run()
+    else if (!queue.has(effect)) queue.set(effect, effects)
+  }
 }
 
 // oldest first, like runMatched. Runs with the batch still open, so what a
 // flushed effect writes queues into the next round of this same flush rather
 // than running mid-round - the batch settles before $batch returns
 const flushBatched = () => {
-  for (let rounds = 0; batched!.size; rounds++) {
+  for (let rounds = 0; batched?.size; rounds++) {
     if (rounds === 100) {
-      console.error("jq79: a $batch kept waking effects for 100 rounds (an effect writes what it reads); giving up on it settling")
+      console.error(`jq79: ${implicitBatch ? "a write" : "a $batch"} kept waking effects for 100 rounds (an effect writes what it reads); giving up on it settling`)
       batched!.clear()
       return
     }
@@ -284,7 +292,7 @@ const flushBatched = () => {
 // Nested batches flush at the outermost. A throw still flushes - the writes it
 // made did land - and is rethrown
 export const $batch = <T>(fn: () => T): T => {
-  if (batchDepth++ === 0) batched = new Map()
+  if (batchDepth++ === 0) batched = null
   try {
     return fn()
   } finally {
@@ -296,6 +304,33 @@ export const $batch = <T>(fn: () => T): T => {
         batched = null
       }
     } else batchDepth--
+  }
+}
+
+// A write outside any $batch runs the effects it woke right away, as it always
+// has - but what *their* writes wake waits until all of them have run, and then
+// runs once, as a $batch would. Without it a write that two $computed derive
+// from is a glitch: the first one's new value wakes a binding that reads both,
+// which runs against the second one's OLD value before that one recomputes. A
+// windowed list whose row height came from one and its items from the other
+// rendered every row of the old list, unwindowed, for one pass
+// (RECORD/2026-11-15.glitch-free-propagation.md). Still synchronous: all of
+// it has run before the write returns. `batched` is allocated only when
+// something is actually queued, so a write that wakes plain bindings pays a
+// counter and nothing else
+const dispatch = (run: () => void) => {
+  batchDepth = 1
+  implicitBatch = true
+  try {
+    run()
+  } finally {
+    try {
+      flushBatched()
+    } finally {
+      batchDepth = 0
+      batched = null
+      implicitBatch = false
+    }
   }
 }
 
@@ -640,6 +675,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // woke) must not run
   const runMatched = (matched: Set<Effect>) => {
     if (batchDepth) return queueBatched(matched, effects)
+    dispatch(() => runOrdered(matched))
+  }
+  const runOrdered = (matched: Set<Effect>) => {
     const ordered = Array.from(matched)
     // effects are usually collected in creation order already - one node's set
     // is filled as its effects are made, and a subtree sweep of a freshly-built
@@ -659,7 +697,7 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
     // store entirely), so dep matching would never wake it up
     if (isNewKey) {
       if (batchDepth) queueBatched(effects, effects)
-      else effects.forEach(effect => effect.run())
+      else dispatch(() => effects.forEach(effect => effect.run()))
     }
     // `effects.has` stands in for the membership check `effects.forEach` used
     // to give for free: an effect disposed by an earlier effect in this same

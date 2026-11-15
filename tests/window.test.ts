@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { Component79 } from "../src/jq79"
+import { Component79, $reactive, $computed } from "../src/jq79"
 
 // :window - a :each that renders only the rows in view
 // (RECORD/2026-11-12.a-windowed-each.md). jsdom has no layout, so the scroll
@@ -21,11 +21,11 @@ const setup = (count = 1000) => {
   const jq79 = new Component79(`
     <div class="scroller" style="overflow-y: auto; height: ${VIEWPORT}px">
       <div class="list">
-        <p :each="item in items" :key="item.id" :window="${ROW}" class="row">{{ item.label }}</p>
+        <p :each="item in items" :key="item.id" :window="height" class="row">{{ item.label }}</p>
       </div>
     </div>
   `)
-  jq79.render({ items }).mount(host)
+  jq79.render({ items, height: ROW }).mount(host)
   const scroller = host.querySelector(".scroller") as HTMLElement
   let scrollTop = 0
   Object.defineProperty(scroller, "clientHeight", { value: VIEWPORT, configurable: true })
@@ -128,5 +128,91 @@ describe(":window", () => {
     done()
     expect(removed).toHaveBeenCalledWith("scroll", expect.any(Function))
     expect((list as any).$scrollTo).toBeUndefined()
+  })
+})
+
+// a view switch that changes the list, its keys and the row height at once -
+// an app's library pane, where Songs is windowed and Albums is not, and the
+// rows and the height each come from a $computed of their own over one store.
+// The binding used to run between the two, against the new height and the old
+// rows: 1,759 rows rendered unwindowed and torn down again in the same switch.
+// See RECORD/2026-11-15.glitch-free-propagation.md
+describe(":window, switching views", () => {
+  const library = () => {
+    const counts = { mounted: 0, destroyed: 0 }
+    const songs = Array.from({ length: 1759 }, (_, i) => ({ key: `track:${i}` }))
+    const albums = Array.from({ length: 129 }, (_, i) => ({ key: `@album:${i}` }))
+    const lib = $reactive({ view: "songs" })
+    const activeRoot = $computed(() => ({ data: { view: lib.view } }))
+    const treeRows = $computed(() => ({ data: lib.view === "songs" ? songs : albums }))
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    const jq79 = new Component79(`
+      <script :setup="{ ws, counts }">
+        const rowPx = () => ws.activeRoot.value.data.view === "songs" ? ${ROW} : 0
+        const listed = () => ws.treeRows.value.data
+      </script>
+      <div class="scroller" style="overflow-y: auto; height: ${VIEWPORT}px">
+        <div class="list"><Row :each="row in listed()" :key="row.key" :row="row" :counts="counts" :window="rowPx()" /></div>
+      </div>
+      <template name="Row">
+        <script :setup="{ row, counts }">counts.mounted++; $destroyed(() => counts.destroyed++)</script>
+        <p class="row">{{ row.key }}</p>
+      </template>
+    `)
+    jq79.render({ ws: { activeRoot, treeRows }, counts }).mount(host)
+    const rows = () => host.querySelectorAll(".row").length
+    const reset = () => { counts.mounted = 0; counts.destroyed = 0 }
+    return { lib, counts, rows, reset, done: () => { jq79.destroy(); host.remove() } }
+  }
+
+  it("windowed to whole: mounts each new row once and unmounts each old one once", async () => {
+    const { lib, counts, rows, reset, done } = library()
+    await settle()
+    const windowed = rows()
+    reset()
+    lib.view = "albums"
+    expect(rows()).toBe(129)
+    expect(counts).toEqual({ mounted: 129, destroyed: windowed })
+    done()
+  })
+
+  it("whole to windowed: mounts only the window", async () => {
+    const { lib, counts, rows, reset, done } = library()
+    await settle()
+    lib.view = "albums"
+    reset()
+    lib.view = "songs"
+    expect(counts).toEqual({ mounted: rows(), destroyed: 129 })
+    expect(rows()).toBeLessThan(129)
+    done()
+  })
+})
+
+describe(":window, a new row height", () => {
+  it("opening again after 0 renders the rows at the scroll position now, not the one it closed at", async () => {
+    const { jq79, labels, scroll, done } = setup()
+    await settle()
+    await scroll(900 * ROW)
+    jq79.data!.height = 0
+    await scroll(0)
+    jq79.data!.height = ROW
+    // in the same pass: no frame of rows 892.. over an empty viewport
+    expect(labels()[0]).toBe("row 0")
+    expect(labels().length).toBe(windowSize)
+    done()
+  })
+
+  it("a different height re-measures the window in the same pass", async () => {
+    const { jq79, labels, spacers, scroll, done } = setup()
+    await settle()
+    await scroll(400 * ROW)
+    jq79.data!.height = ROW / 2
+    // the same scrollTop is row 800 at half the height
+    const first = 800 - OVERSCAN
+    expect(labels()[0]).toBe(`row ${first}`)
+    expect(labels().length).toBe(Math.ceil(VIEWPORT / (ROW / 2)) + 1 + 2 * OVERSCAN)
+    expect(spacers()[0].style.height).toBe(`${first * (ROW / 2)}px`)
+    done()
   })
 })

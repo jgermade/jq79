@@ -162,6 +162,42 @@ export const COMPONENT_OPERATIONS = [
   },
 ]
 
+// a windowed list of components switching views: 1,759 rows drawn a window at a
+// time (a 400px container of 24px rows) and 129 drawn whole, the row height and
+// the rows each from a $computed of their own over one store (#wtbody, see
+// frameworks/keyed/jq79/src/App.html). The switch to the full view used to
+// render the 1,759-row list unwindowed for one pass in between.
+// See RECORD/2026-11-15.glitch-free-propagation.md
+const windowedRows = page =>
+  page.waitForFunction(() => {
+    const rows = document.querySelectorAll("#wtbody .crow").length
+    return rows > 0 && rows < 129
+  }, null, { timeout: 15000 })
+export const WINDOW_OPERATIONS = [
+  {
+    id: "windowToFull",
+    label: "Switch a windowed list to a full one",
+    prepare: async page => {
+      await page.click("#viewsongs")
+      await windowedRows(page)
+    },
+    clicks: ["#viewalbums"],
+    expect: { windowRows: 129 },
+  },
+  {
+    id: "fullToWindow",
+    label: "Switch a full list to a windowed one",
+    prepare: async page => {
+      await page.click("#viewsongs")
+      await windowedRows(page)
+      await page.click("#viewalbums")
+      await waitForRows(page, 129, "#wtbody .crow")
+    },
+    clicks: ["#viewsongs"],
+    expect: { windowed: true },
+  },
+]
+
 export const waitForRows = (page, n, selector = "#tbody tr") =>
   page.waitForFunction(([count, selector]) => document.querySelectorAll(selector).length === count, [n, selector], { timeout: 15000 })
 
@@ -195,6 +231,11 @@ export const clickAndTime = (page, clicks, expect) =>
       check("rows", document.querySelectorAll("#tbody tr").length, expect.rows)
       check("selected rows", document.querySelectorAll("#tbody tr.danger").length, expect.selectedRows)
       check("component rows", document.querySelectorAll("#ctbody .crow").length, expect.componentRows)
+      check("windowed list rows", document.querySelectorAll("#wtbody .crow").length, expect.windowRows)
+      if (expect.windowed) {
+        const rows = document.querySelectorAll("#wtbody .crow").length
+        if (!(rows > 0 && rows < 129)) throw new Error(`expected a window of the 1,759 rows, found ${rows} rows`)
+      }
       if (expect.updateMarks != null) {
         // the update walks every 10th row, so row 1 carries one " !!!" per click
         const label = document.querySelector("#tbody tr:nth-child(1) td:nth-child(2) a")?.textContent ?? ""
