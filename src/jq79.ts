@@ -475,6 +475,33 @@ const runExpr = (expr: string, scope: Record<string, any>, extras?: Record<strin
   }
 }
 
+const NO_PARAMS: string[] = []
+
+// evalExpr for an expression with no extras whose key was built once, ahead of
+// time - by a compiled skeleton, which knows every expression it will evaluate
+// when the plan is made. The key is the same string exprKey builds; building it
+// per evaluation is a concatenation, and a fresh string whose hash the Map
+// lookup then has to compute. Holding the key rather than the entry keeps a
+// demotion (which replaces the entry) visible on the next evaluation
+const evalKeyed = (key: string, expr: string, scope: Record<string, any>): any => {
+  try {
+    const { fn, scoped } = entryFor(key, expr, NO_PARAMS)
+    if (!fn) return undefined
+    if (!scoped) return fn(scope, resolveName)
+    try {
+      return fn(scope, resolveName)
+    } catch (error) {
+      if (!(error instanceof ReferenceError)) throw error
+      const fallback = demoteToWith(key, expr, NO_PARAMS)
+      if (!fallback) throw error
+      return fallback(scope, resolveName)
+    }
+  } catch (error) {
+    reportExprError(expr, scope, error)
+    return undefined
+  }
+}
+
 const evalExpr = (expr: string, scope: Record<string, any>, extras?: Record<string, any>): any => {
   try {
     return runExpr(expr, scope, extras)
@@ -1735,7 +1762,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // rebuild: a page that renders wrong is a bug report either way, but one whose
 // reporter can say "it goes away with cloning off" is a bug report that names
 // the file
-const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true, cachedSetters: true }
+const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true, cachedSetters: true, compileSkeletons: true }
 
 // What `Component79.debug()` can switch. One flag today; the shape is an object
 // so the next one does not change the call
@@ -1762,6 +1789,13 @@ export type DebugFlags = {
   // Off means every re-run diffs classList and reads textContent back, as
   // before (RECORD/2026-11-17.closing-the-gap-with-svelte.md, B)
   cachedSetters: boolean
+
+  // turn a skeleton plan into a function, built once per plan shape, instead
+  // of interpreting its ops for every instance. Needs cloneSkeletons (there is
+  // no plan without it) and cachedSetters (the setters it writes out are that
+  // flag's). Off means renderFromSkeleton walks the ops, as before
+  // (RECORD/2026-11-17.closing-the-gap-with-svelte.md, E1)
+  compileSkeletons: boolean
 }
 
 // the control attributes a skeleton knows how to fill. The rest of
@@ -1832,7 +1866,17 @@ type SkeletonOp =
   | { kind: "checked"; path: number[]; expr: string }
   | { kind: "selected"; path: number[]; expr: string }
 
-type SkeletonPlan = { skeleton: Element; ops: SkeletonOp[] }
+type SkeletonPlan = {
+  skeleton: Element
+  ops: SkeletonOp[]
+  // the plan compiled into a function (compileSkeletons): undefined until the
+  // first render that wants it, null where it could not be built (safe mode
+  // with nothing precompiled for it), and the interpreter takes over
+  factory?: SkeletonFactory | null
+  // what the factory is handed beside the ops: the exprKey of each op's
+  // single expression, built once per plan rather than once per evaluation
+  keys?: string[]
+}
 
 // mirrors renderNode's own order: the attribute walk (events and attribute
 // bindings as they appear), then :class, then the children. Effects run in
@@ -1961,8 +2005,166 @@ const atPath = (root: Node, path: number[]): Node => {
   return at
 }
 
+// ---------------------------------------------------------------------------
+// compiled skeletons (compileSkeletons)
+//
+// renderFromSkeleton interprets a plan: for every op of every instance it
+// walks childNodes down the op's path and dispatches on its kind. Both are
+// known the moment the plan exists, so this turns the plan into a function
+// that does neither - the paths become firstChild/nextSibling chains that
+// share their prefixes, the dispatch is gone, and the bindings a row is made
+// of (text, :class) are written out inline with their keys built once. One
+// effect per binding, exactly as interpreted: same effects, same order, same
+// writes. RECORD/2026-11-17.closing-the-gap-with-svelte.md, E1
+//
+// The text holds no user code. Every expression, attribute name and class is
+// read off the ops array it is handed (`o`), so the body is a function of the
+// plan's *shape*: two definitions with the same shape share one function, and
+// the body is the kind of [params, body] pair precompile could emit for safe
+// mode. Today it does not, so under safe mode makeFunction throws, the plan is
+// marked uncompilable, and the interpreter renders it - as it always has.
+// ---------------------------------------------------------------------------
+
+type SkeletonFactory = (
+  root: Element, scope: Record<string, any>, fx: EffectScope,
+  ops: SkeletonOp[], keys: string[], h: typeof SKELETON_HELPERS,
+) => void
+
+const SKELETON_PARAMS = ["r", "s", "fx", "o", "K", "h"]
+
+// what a compiled skeleton calls for everything it does not write out itself
+const SKELETON_HELPERS = {
+  ev: evalKeyed,
+  evalExpr,
+  bindText,
+  bindEvent,
+  bindClassNames: (el: Element, bound: string[], next: string[], statics: Set<string>) => {
+    for (const name of bound) if (!next.includes(name) && !statics.has(name)) el.classList.remove(name)
+    for (const name of next) if (!bound.includes(name)) el.classList.add(name)
+  },
+  collectClassNames: (value: any, out: string[]) => collectClassNames(value, out),
+  sameNames: (a: string[], b: string[]) => sameNames(a, b),
+  applyAttr: (el: Element, name: string, value: any) => applyAttr(el, name, value),
+  sanitizeHTML: (html: string) => sanitizeHTML(html),
+}
+
+const skeletonFactories = new Map<string, SkeletonFactory | null>()
+
+const skeletonBody = (ops: SkeletonOp[]): string => {
+  const lines: string[] = []
+  // path -> the variable holding that node. Siblings are reached from the
+  // nearest earlier sibling already resolved, so a row's cells cost one
+  // nextSibling each rather than a walk from their parent's first child
+  const vars = new Map<string, string>([["", "r"]])
+  let count = 0
+  const nodeAt = (path: number[]): string => {
+    const key = path.join(".")
+    const known = vars.get(key)
+    if (known) return known
+    const parent = path.slice(0, -1)
+    const index = path[path.length - 1]
+    // from the nearest earlier sibling already held, else from the parent's
+    // first child: either way, one nextSibling per node in between
+    let expr = `${nodeAt(parent)}.firstChild`
+    let hops = index
+    for (let j = index - 1; j >= 0; j--) {
+      const sibling = vars.get([...parent, j].join("."))
+      if (sibling) { expr = sibling; hops = index - j; break }
+    }
+    for (let k = 0; k < hops; k++) expr += ".nextSibling"
+    const name = `n${count++}`
+    lines.push(`const ${name} = ${expr}`)
+    vars.set(key, name)
+    return name
+  }
+
+  ops.forEach((op, i) => {
+    const node = nodeAt(op.path)
+    const o = `o[${i}]`
+    if (op.kind === "text") {
+      const [only] = op.parts
+      if (op.parts.length === 1 && typeof only !== "string") {
+        // bindText's cachedSetters arm, with the key held and renderText's
+        // one-part case written out
+        lines.push(
+          `{ const t = ${node}, e = ${o}.parts[0].expr, k = K[${i}]; let last = t.data; ` +
+          `fx.effect(() => { const v = h.ev(k, e, s); const x = v == null ? "" : String(v); ` +
+          `if (x !== last) t.data = last = x }) }`
+        )
+      } else lines.push(`h.bindText(${node}, ${o}.parts, s, fx)`)
+    } else if (op.kind === "event") {
+      lines.push(`h.bindEvent(${node}, ${o}.attr, ${o}.expr, s)`)
+    } else if (op.kind === "attr") {
+      lines.push(`{ const el = ${node}, c = ${o}; fx.effect(() => h.applyAttr(el, c.name, h.ev(K[${i}], c.expr, s))) }`)
+    } else if (op.kind === "class") {
+      // bindClass's cachedSetters arm
+      lines.push(
+        `{ const el = ${node}, c = ${o}, k = K[${i}]; let bound = []; fx.effect(() => { const next = []; ` +
+        `if (c.classExpr !== undefined) h.collectClassNames(h.ev(k, c.classExpr, s), next); ` +
+        `if (c.toggles) for (const [n, e] of c.toggles) if (h.evalExpr(e, s)) h.collectClassNames(n, next); ` +
+        `if (!h.sameNames(bound, next)) h.bindClassNames(el, bound, next, c.staticClasses); bound = next }) }`
+      )
+    } else if (op.kind === "textContent") {
+      lines.push(
+        `{ const el = ${node}, c = ${o}; fx.effect(() => { const v = h.ev(K[${i}], c.expr, s); ` +
+        `const x = String(v ?? ""); if (el.textContent !== x) el.textContent = x }) }`
+      )
+    } else if (op.kind === "html") {
+      lines.push(`{ const el = ${node}, c = ${o}; fx.effect(() => { el.innerHTML = h.sanitizeHTML(String(h.ev(K[${i}], c.expr, s) ?? "")) }) }`)
+    } else if (op.kind === "value") {
+      lines.push(`{ const el = ${node}, c = ${o}; fx.effect(() => { const x = String(h.ev(K[${i}], c.expr, s) ?? ""); if (el.value !== x) el.value = x }) }`)
+    } else if (op.kind === "checked") {
+      lines.push(`{ const el = ${node}, c = ${o}; fx.effect(() => { const x = !!h.ev(K[${i}], c.expr, s); if (el.checked !== x) el.checked = x }) }`)
+    } else if (op.kind === "selected") {
+      lines.push(`{ const el = ${node}, c = ${o}; fx.effect(() => { const x = !!h.ev(K[${i}], c.expr, s); if (el.selected !== x) el.selected = x }) }`)
+    } else {
+      const unhandled: never = op
+      void unhandled
+    }
+  })
+  return `"use strict"\n${lines.join("\n")}`
+}
+
+// the expression each op evaluates through a held key (h.ev), or "" for the
+// ones that go through a helper with their own lookup
+const skeletonKeys = (ops: SkeletonOp[]): string[] => ops.map(op => {
+  if (op.kind === "text") {
+    const [only] = op.parts
+    return op.parts.length === 1 && typeof only !== "string" ? exprKey(only.expr, NO_PARAMS) : ""
+  }
+  if (op.kind === "class") return op.classExpr !== undefined ? exprKey(op.classExpr, NO_PARAMS) : ""
+  if (op.kind === "event") return ""
+  return exprKey(op.expr, NO_PARAMS)
+})
+
+const compileSkeleton = (plan: SkeletonPlan): SkeletonFactory | null => {
+  const body = skeletonBody(plan.ops)
+  let factory = skeletonFactories.get(body)
+  if (factory === undefined) {
+    try {
+      factory = makeFunction(SKELETON_PARAMS, body) as SkeletonFactory
+    } catch {
+      // safe mode, and nothing precompiled for this shape: the interpreter
+      // renders this plan from now on. Not cached by shape, so another plan of
+      // the same shape asks again - a precompiled script may have arrived
+      return null
+    }
+    skeletonFactories.set(body, factory)
+  }
+  plan.keys = skeletonKeys(plan.ops)
+  return factory
+}
+
 const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: EffectScope): Node => {
   const root = plan.skeleton.cloneNode(true) as Element
+
+  if (debugFlags.compileSkeletons && debugFlags.cachedSetters) {
+    if (plan.factory === undefined) plan.factory = compileSkeleton(plan)
+    if (plan.factory) {
+      plan.factory(root, scope, fx, plan.ops, plan.keys!, SKELETON_HELPERS)
+      return root
+    }
+  }
 
   // ordered by how often a row actually carries the kind, not by when it was
   // added: this chain runs once per op per instance, so the four holes a
