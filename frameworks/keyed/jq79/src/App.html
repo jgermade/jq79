@@ -2,23 +2,39 @@
   const { createDataBuilder } = await import("../../_shared/data.js")
   const buildData = createDataBuilder()
 
-  let data = []
+  // ?raw=1 holds the list with $raw and writes it immutably - the way the
+  // Svelte app here writes its $state.raw list - so the A/B harness can price
+  // it against the default: `npm run benchmark:ab -- --flags raw`. Absent, this
+  // is the js-framework-benchmark app as it always was, and the comparison
+  // page measures that (RECORD/2026-11-17.closing-the-gap-with-svelte.md, D)
+  const RAW = new URLSearchParams(location.search).get("raw") === "1"
+  let data = RAW ? $raw([]) : []
   let selected = null
 
   const run = () => { data = buildData(1000); selected = null }
   const runLots = () => { data = buildData(10000); selected = null }
   const add = () => { data = [...data, ...buildData(1000)] }
-  const update = () => {
-    for (let i = 0; i < data.length; i += 10) data[i].label += " !!!"
-  }
+  const update = RAW
+    ? () => { data = data.map((row, i) => i % 10 ? row : { ...row, label: row.label + " !!!" }) }
+    : () => { for (let i = 0; i < data.length; i += 10) data[i].label += " !!!" }
   const clear = () => { data = []; selected = null }
-  const swapRows = () => {
-    if (data.length > 998) {
-      const a = data[1]
-      data[1] = data[998]
-      data[998] = a
+  const swapRows = RAW
+    ? () => {
+      if (data.length > 998) {
+        const next = data.slice()
+        const a = next[1]
+        next[1] = next[998]
+        next[998] = a
+        data = next
+      }
     }
-  }
+    : () => {
+      if (data.length > 998) {
+        const a = data[1]
+        data[1] = data[998]
+        data[998] = a
+      }
+    }
   const select = id => { selected = id }
   const remove = id => { data = data.filter(row => row.id !== id) }
 
