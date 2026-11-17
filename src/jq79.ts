@@ -1762,7 +1762,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // rebuild: a page that renders wrong is a bug report either way, but one whose
 // reporter can say "it goes away with cloning off" is a bug report that names
 // the file
-const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true, cachedSetters: true, compileSkeletons: true, rowEffects: true }
+const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true, cachedSetters: true, compileSkeletons: true, rowEffects: false }
 
 // What `Component79.debug()` can switch. One flag today; the shape is an object
 // so the next one does not change the call
@@ -1801,7 +1801,10 @@ export type DebugFlags = {
   // every binding that compares before it writes (text, :class, :text,
   // :value, :checked, :selected), instead of one effect each. A change to any
   // of them re-evaluates all of them, and only what changed is written.
-  // Attribute bindings and :html write unconditionally and keep their own
+  // Attribute bindings and :html write unconditionally and keep their own.
+  // OFF by default: it measured 43% slower on select1k and 23% on update10k,
+  // above the noise, every round - each woken row re-evaluates every binding
+  // in it, not the one whose input changed
   // (RECORD/2026-11-17.closing-the-gap-with-svelte.md, E2)
   rowEffects: boolean
 }
