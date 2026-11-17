@@ -167,6 +167,48 @@ $toRaw(store).count = 5   // the value changes, nothing re-renders
 store.count = 5           // ✅
 ```
 
+## Big lists you replace rather than edit: `$raw`
+
+Every read through a store is tracked: `row.label` in a template records a
+dependency, so writing `row.label` later updates exactly that cell. That
+bookkeeping is per read, and on a list of thousands of rows it is most of what
+rendering costs. A list you only ever *replace* — the way you would with
+immutable data — doesn't need it.
+
+`$raw(value)` hands the store a value it will never wrap:
+
+```js
+// also injected into setup scripts
+import { $raw } from "jq79"
+
+let rows = $raw([])
+
+const load = async () => { rows = await fetch("/api/rows").then(r => r.json()) }
+const rename = (id, label) => {
+  rows = rows.map(row => row.id === id ? { ...row, label } : row)   // ✅ a new array
+}
+```
+
+- **The variable stays reactive**: assigning `rows` re-renders what reads it.
+  A keyed `:each` keeps every row whose item is the same object, and re-runs
+  the one handed a new object under its old key.
+- **What's inside is plain data**: no proxy, no dependency, and **no update
+  when it changes in place**:
+
+  ```js
+  rows[0].label = "x"   // the data changes, nothing re-renders
+  rows.push(row)        // same
+  rows = [...rows, row] // ✅
+  ```
+
+- The mark sticks to the variable: assigning `rows` another array keeps it
+  raw, so `rows = rows.filter(...)` doesn't need `$raw` again.
+- It sticks to the value too: hand a raw list to a child component and the
+  child's store doesn't wrap it either.
+
+Reach for it when a list is large and replaced, not edited. Anything you edit
+field by field is what the default is for.
+
 ## Shared state: pass a store, not an object
 
 A plain object handed to two components is shared *data*, not shared state: each

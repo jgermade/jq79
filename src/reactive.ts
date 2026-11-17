@@ -37,10 +37,28 @@ export type ReactiveDeepData<T> = T & {
 const getByPath = (obj: Record<string, any>, dotKey: string): any =>
   dotKey.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj)
 
+// what $raw marked: plain data the store holds as it is, unwrapped - so the
+// same as a class instance, below. Keyed by the object itself, so the mark
+// travels with it into every store it is handed to (a prop, a child's store)
+const RAW_VALUES = new WeakSet<object>()
+
+// holds `value` as plain data no store will ever wrap: reading it, or anything
+// inside it, records no dependency and goes through no proxy, and changing it
+// in place notifies nobody. What stays reactive is the variable or key holding
+// it - assigning a new value there notifies, and the new value is held raw too
+// when it replaces a raw one, so `data = data.map(...)` keeps the list raw.
+// Svelte's $state.raw (RECORD/2026-11-17.closing-the-gap-with-svelte.md, D)
+export const $raw = <T>(value: T): T => {
+  const raw = $toRaw(value)
+  if (raw !== null && typeof raw === "object" && !isStore(raw)) RAW_VALUES.add(raw as object)
+  return raw
+}
+
 // only plain objects and arrays get deep-wrapped by the reactive store;
 // class instances (Component79, Date, DOM nodes, ...) pass through untouched
 // so their identity, prototypes and internals stay intact
 const isPlainData = (value: object): boolean => {
+  if (RAW_VALUES.has(value)) return false
   if (Array.isArray(value)) return true
   const proto = Object.getPrototypeOf(value)
   return proto === Object.prototype || proto === null
@@ -1001,6 +1019,10 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         // always announces itself - the sweep is its whole point
         if (!isNewKey && Object.is(target[key], stored) && (stored === null || typeof stored !== "object")) return true
         const previous = target[key]
+        // a raw value's replacement is raw: the mark is on the key's contents,
+        // the way the author wrote it (`let data = $raw([])`), not on one array
+        if (previous !== null && typeof previous === "object" && RAW_VALUES.has(previous) &&
+            stored !== null && typeof stored === "object" && !isStore(stored)) RAW_VALUES.add(stored)
         target[key] = stored
         tombstones?.delete(key) // the key exists again: no claim needed
         if (isStore(stored)) bridge(stored, dotKey)
