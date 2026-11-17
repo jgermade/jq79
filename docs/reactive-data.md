@@ -167,6 +167,48 @@ $toRaw(store).count = 5   // the value changes, nothing re-renders
 store.count = 5           // ✅
 ```
 
+## Big lists you replace rather than edit: `$raw`
+
+Every read through a store is tracked: `row.label` in a template records a
+dependency, so writing `row.label` later updates exactly that cell. That
+bookkeeping is per read, and on a list of thousands of rows it is most of what
+rendering costs. A list you only ever *replace* — the way you would with
+immutable data — doesn't need it.
+
+`$raw(value)` hands the store a value it will never wrap:
+
+```js
+// also injected into setup scripts
+import { $raw } from "jq79"
+
+let rows = $raw([])
+
+const load = async () => { rows = await fetch("/api/rows").then(r => r.json()) }
+const rename = (id, label) => {
+  rows = rows.map(row => row.id === id ? { ...row, label } : row)   // ✅ a new array
+}
+```
+
+- **The variable stays reactive**: assigning `rows` re-renders what reads it.
+  A keyed `:each` keeps every row whose item is the same object, and re-runs
+  the one handed a new object under its old key.
+- **What's inside is plain data**: no proxy, no dependency, and **no update
+  when it changes in place**:
+
+  ```js
+  rows[0].label = "x"   // the data changes, nothing re-renders
+  rows.push(row)        // same
+  rows = [...rows, row] // ✅
+  ```
+
+- The mark sticks to the variable: assigning `rows` another array keeps it
+  raw, so `rows = rows.filter(...)` doesn't need `$raw` again.
+- It sticks to the value too: hand a raw list to a child component and the
+  child's store doesn't wrap it either.
+
+Reach for it when a list is large and replaced, not edited. Anything you edit
+field by field is what the default is for.
+
 ## Shared state: pass a store, not an object
 
 A plain object handed to two components is shared *data*, not shared state: each
@@ -218,7 +260,7 @@ playback.index = 0      // and again
 returns, against the final state:
 
 ```js
-import { $batch } from "jq79"   // also in scope in every setup script
+import { $batch, $tick } from "jq79"   // also in scope in every setup script
 
 $batch(() => {
   playback.queue = next
@@ -229,7 +271,13 @@ $batch(() => {
 - Writes still land immediately: `fn` reads its own writes, and `$on` /
   `$onAny` listeners hear every one as it happens. Only effects (template
   bindings, `$:`, `$effect`, `$computed`) wait.
-- A `$computed` read *inside* the batch still holds its value from before it.
+- A `$computed` read *inside* the batch is current: if a write in the batch
+  left it pending, it recomputes on that read (and not again at the end).
+- Every `@event` handler already runs as a batch — see
+  [`@event`](template-syntax.md#event--listeners).
+- `await $tick()` resolves once the pending updates have run — after the
+  batch it was called in, or at once outside one. Use it where code needs the
+  DOM the batch is about to produce.
 - Batches nest; the outermost one runs the effects. Whatever those effects
   write is settled before `$batch` returns, so it is still synchronous.
 - It returns what `fn` returns. If `fn` throws, the effects still run (the
