@@ -1762,7 +1762,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // rebuild: a page that renders wrong is a bug report either way, but one whose
 // reporter can say "it goes away with cloning off" is a bug report that names
 // the file
-const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true, cachedSetters: true, compileSkeletons: true, rowEffects: false }
+const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true, cachedSetters: true, compileSkeletons: true }
 
 // What `Component79.debug()` can switch. One flag today; the shape is an object
 // so the next one does not change the call
@@ -1797,16 +1797,6 @@ export type DebugFlags = {
   // (RECORD/2026-11-17.closing-the-gap-with-svelte.md, E1)
   compileSkeletons: boolean
 
-  // with compileSkeletons: one effect per cloned instance - a :each row - for
-  // every binding that compares before it writes (text, :class, :text,
-  // :value, :checked, :selected), instead of one effect each. A change to any
-  // of them re-evaluates all of them, and only what changed is written.
-  // Attribute bindings and :html write unconditionally and keep their own.
-  // OFF by default: it measured 43% slower on select1k and 23% on update10k,
-  // above the noise, every round - each woken row re-evaluates every binding
-  // in it, not the one whose input changed
-  // (RECORD/2026-11-17.closing-the-gap-with-svelte.md, E2)
-  rowEffects: boolean
 }
 
 // the control attributes a skeleton knows how to fill. The rest of
@@ -1884,8 +1874,6 @@ type SkeletonPlan = {
   // first render that wants it, null where it could not be built (safe mode
   // with nothing precompiled for it), and the interpreter takes over
   factory?: SkeletonFactory | null
-  // the same, compiled with one effect for the whole instance (rowEffects)
-  rowFactory?: SkeletonFactory | null
   // what the factory is handed beside the ops: the exprKey of each op's
   // single expression, built once per plan rather than once per evaluation
   keys?: string[]
@@ -2064,7 +2052,7 @@ const SKELETON_HELPERS = {
 
 const skeletonFactories = new Map<string, SkeletonFactory | null>()
 
-const skeletonBody = (ops: SkeletonOp[], rowEffects: boolean): string => {
+const skeletonBody = (ops: SkeletonOp[]): string => {
   const lines: string[] = []
   // path -> the variable holding that node. Siblings are reached from the
   // nearest earlier sibling already resolved, so a row's cells cost one
@@ -2093,27 +2081,10 @@ const skeletonBody = (ops: SkeletonOp[], rowEffects: boolean): string => {
   }
 
   // a binding is its declarations (`pre`, run once per instance) and the
-  // statement that re-renders it (`run`). With one effect per binding each is
-  // its own block. With rowEffects a run of consecutive guarded bindings
-  // shares one effect, closed where an unguarded one starts: bindings still
-  // first run, and so register their reads, in op order - which the skeleton
-  // differential test holds, and which :value on a <select> depends on. The
-  // benchmark row is one run. Names carry the op's index, so the declarations
-  // can share one scope
-  let grouped: string[] = []
-  const flush = () => {
-    if (grouped.length) lines.push(`fx.effect(() => {\n  ${grouped.join("\n  ")}\n})`)
-    grouped = []
-  }
-  const bind = (pre: string, run: string, guarded: boolean) => {
-    if (rowEffects && guarded) {
-      lines.push(pre)
-      grouped.push(run)
-    } else {
-      flush()
-      lines.push(`{ ${pre}; fx.effect(() => { ${run} }) }`)
-    }
-  }
+  // statement that re-renders it (`run`), each binding in a block with its own
+  // effect. Sharing one effect between a row's bindings was built and measured
+  // slower (RECORD/2026-11-17.closing-the-gap-with-svelte.md, E2)
+  const bind = (pre: string, run: string) => lines.push(`{ ${pre}; fx.effect(() => { ${run} }) }`)
 
   ops.forEach((op, i) => {
     const node = nodeAt(op.path)
@@ -2126,21 +2097,17 @@ const skeletonBody = (ops: SkeletonOp[], rowEffects: boolean): string => {
         bind(
           `const t${i} = ${node}, e${i} = ${o}.parts[0].expr, k${i} = K[${i}]; let last${i} = t${i}.data`,
           `{ const v = h.ev(k${i}, e${i}, s); const x = v == null ? "" : String(v); if (x !== last${i}) t${i}.data = last${i} = x }`,
-          true,
         )
       } else {
         bind(
           `const t${i} = ${node}, p${i} = ${o}.parts; let last${i} = t${i}.data`,
           `{ const x = h.renderText(p${i}, s); if (x !== last${i}) t${i}.data = last${i} = x }`,
-          true,
         )
       }
     } else if (op.kind === "event") {
       lines.push(`h.bindEvent(${node}, ${o}.attr, ${o}.expr, s)`)
     } else if (op.kind === "attr") {
-      // unguarded - applyAttr writes every time - so never grouped: a sibling's
-      // change would rewrite it
-      bind(`const el${i} = ${node}, c${i} = ${o}`, `h.applyAttr(el${i}, c${i}.name, h.ev(K[${i}], c${i}.expr, s))`, false)
+      bind(`const el${i} = ${node}, c${i} = ${o}`, `h.applyAttr(el${i}, c${i}.name, h.ev(K[${i}], c${i}.expr, s))`)
     } else if (op.kind === "class") {
       // bindClass's cachedSetters arm
       bind(
@@ -2149,29 +2116,25 @@ const skeletonBody = (ops: SkeletonOp[], rowEffects: boolean): string => {
         `if (c${i}.classExpr !== undefined) h.collectClassNames(h.ev(k${i}, c${i}.classExpr, s), next); ` +
         `if (c${i}.toggles) for (const [n, e] of c${i}.toggles) if (h.evalExpr(e, s)) h.collectClassNames(n, next); ` +
         `if (!h.sameNames(b${i}, next)) h.bindClassNames(el${i}, b${i}, next, c${i}.staticClasses); b${i} = next }`,
-        true,
       )
     } else if (op.kind === "textContent") {
       bind(
         `const el${i} = ${node}, c${i} = ${o}`,
         `{ const x = String(h.ev(K[${i}], c${i}.expr, s) ?? ""); if (el${i}.textContent !== x) el${i}.textContent = x }`,
-        true,
       )
     } else if (op.kind === "html") {
-      // unguarded, like attr
-      bind(`const el${i} = ${node}, c${i} = ${o}`, `el${i}.innerHTML = h.sanitizeHTML(String(h.ev(K[${i}], c${i}.expr, s) ?? ""))`, false)
+      bind(`const el${i} = ${node}, c${i} = ${o}`, `el${i}.innerHTML = h.sanitizeHTML(String(h.ev(K[${i}], c${i}.expr, s) ?? ""))`)
     } else if (op.kind === "value") {
-      bind(`const el${i} = ${node}, c${i} = ${o}`, `{ const x = String(h.ev(K[${i}], c${i}.expr, s) ?? ""); if (el${i}.value !== x) el${i}.value = x }`, true)
+      bind(`const el${i} = ${node}, c${i} = ${o}`, `{ const x = String(h.ev(K[${i}], c${i}.expr, s) ?? ""); if (el${i}.value !== x) el${i}.value = x }`)
     } else if (op.kind === "checked") {
-      bind(`const el${i} = ${node}, c${i} = ${o}`, `{ const x = !!h.ev(K[${i}], c${i}.expr, s); if (el${i}.checked !== x) el${i}.checked = x }`, true)
+      bind(`const el${i} = ${node}, c${i} = ${o}`, `{ const x = !!h.ev(K[${i}], c${i}.expr, s); if (el${i}.checked !== x) el${i}.checked = x }`)
     } else if (op.kind === "selected") {
-      bind(`const el${i} = ${node}, c${i} = ${o}`, `{ const x = !!h.ev(K[${i}], c${i}.expr, s); if (el${i}.selected !== x) el${i}.selected = x }`, true)
+      bind(`const el${i} = ${node}, c${i} = ${o}`, `{ const x = !!h.ev(K[${i}], c${i}.expr, s); if (el${i}.selected !== x) el${i}.selected = x }`)
     } else {
       const unhandled: never = op
       void unhandled
     }
   })
-  flush()
   return `"use strict"\n${lines.join("\n")}`
 }
 
@@ -2187,8 +2150,8 @@ const skeletonKeys = (ops: SkeletonOp[]): string[] => ops.map(op => {
   return exprKey(op.expr, NO_PARAMS)
 })
 
-const compileSkeleton = (plan: SkeletonPlan, rowEffects: boolean): SkeletonFactory | null => {
-  const body = skeletonBody(plan.ops, rowEffects)
+const compileSkeleton = (plan: SkeletonPlan): SkeletonFactory | null => {
+  const body = skeletonBody(plan.ops)
   let factory = skeletonFactories.get(body)
   if (factory === undefined) {
     try {
@@ -2201,7 +2164,7 @@ const compileSkeleton = (plan: SkeletonPlan, rowEffects: boolean): SkeletonFacto
     }
     skeletonFactories.set(body, factory)
   }
-  plan.keys ??= skeletonKeys(plan.ops)
+  plan.keys = skeletonKeys(plan.ops)
   return factory
 }
 
@@ -2209,13 +2172,9 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
   const root = plan.skeleton.cloneNode(true) as Element
 
   if (debugFlags.compileSkeletons && debugFlags.cachedSetters) {
-    // one function per mode, so flipping rowEffects on a live page takes
-    // effect on the next instance rather than when the plan is next built
-    const factory = debugFlags.rowEffects
-      ? (plan.rowFactory === undefined ? (plan.rowFactory = compileSkeleton(plan, true)) : plan.rowFactory)
-      : (plan.factory === undefined ? (plan.factory = compileSkeleton(plan, false)) : plan.factory)
-    if (factory) {
-      factory(root, scope, fx, plan.ops, plan.keys!, SKELETON_HELPERS)
+    if (plan.factory === undefined) plan.factory = compileSkeleton(plan)
+    if (plan.factory) {
+      plan.factory(root, scope, fx, plan.ops, plan.keys!, SKELETON_HELPERS)
       return root
     }
   }
