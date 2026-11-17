@@ -91,6 +91,9 @@ For the common case of one class gated by one condition, `:class.<name>="expr"` 
 Write it kebab-case (`:class.is-active`) or camelCase (`:class.isActive`) — the two are the same name (see [name casing](#name-casing)). It coexists with `:class` and with other `:class.<name>` on the same element; the sets union.
 
 Only classes the binding added are ever removed: the static list survives every re-run, even when the expression names one of its classes and then drops it (`class="btn" :class="{ btn: cond }"` keeps `btn` when `cond` goes false).
+Classes other code adds (`el.classList.add(...)`) are left alone too.
+
+The binding touches the element only when the classes it names change, and then only for the difference — selecting one row of a thousand rewrites two rows' classes, not a thousand. So a bound class that other code *removes* stays removed until the binding's own value changes; don't share a class name between a `:class` and code that toggles it by hand.
 
 `:class` is the only writer of the `class` attribute: the name is reserved, so `:class` is never a plain attribute binding. On a nested-component tag it is ignored, like `:text`/`:html`.
 

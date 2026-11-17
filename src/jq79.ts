@@ -524,6 +524,36 @@ const renderText = (parts: TextPart[], scope: Record<string, any>): string => {
 }
 
 
+// an interpolated text node's effect, for both render paths. The write is
+// guarded: an effect woken by a sibling's change recomputes the same string it
+// already wrote, and assigning it back is a DOM mutation the browser has to
+// take seriously. With cachedSetters the guard compares against the last
+// string written instead of reading textContent back off the node
+const bindText = (textNode: Text, parts: TextPart[], scope: Record<string, any>, fx: EffectScope) => {
+  if (!debugFlags.cachedSetters) {
+    fx.effect(() => {
+      const text = renderText(parts, scope)
+      if (textNode.textContent !== text) textNode.textContent = text
+    })
+    return
+  }
+  let last = textNode.data
+  fx.effect(() => {
+    const text = renderText(parts, scope)
+    if (text !== last) textNode.data = last = text
+  })
+}
+
+// splitText per distinct text, not per instance: a :each row's "{{ row.label }}"
+// is one string rendered a thousand times, and splitting it is a regex pass.
+// The parts are never mutated, so one array serves every instance
+const textPartsCache = new Map<string, TextPart[]>()
+const textParts = (text: string): TextPart[] => {
+  if (!debugFlags.cachedSetters) return splitText(text)
+  let parts = textPartsCache.get(text)
+  if (!parts) textPartsCache.set(text, (parts = splitText(text)))
+  return parts
+}
 type ConditionalBranch = { expr?: string; node: TemplateNode }
 
 
@@ -1460,6 +1490,63 @@ const classNames = (value: any): string[] => {
   return []
 }
 
+// classNames into `out`, for the one caller that runs per row per wake: the
+// object form - the benchmark's, and the common one - walked with for...in
+// instead of Object.entries + flatMap, and a single name taken whole instead
+// of through the split. Same names, same order as classNames
+const collectClassNames = (value: any, out: string[]) => {
+  if (typeof value === "string") {
+    if (value && !/\s/.test(value)) out.push(value)
+    else if (value) for (const name of value.split(/\s+/)) { if (name) out.push(name) }
+  } else if (Array.isArray(value)) {
+    for (const entry of value) collectClassNames(entry, out)
+  } else if (value !== null && typeof value === "object") {
+    for (const name in value) if (value[name]) collectClassNames(name, out)
+  }
+}
+
+const sameNames = (a: string[], b: string[]): boolean => {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+// the :class effect, for both render paths. Only classes this binding added
+// are ever removed, so the static list survives every re-run, even when the
+// expression names one of its classes and then drops it (class="btn"
+// :class="{ btn: cond }" keeps btn on false).
+//
+// With cachedSetters a re-run that names the same classes as the last one
+// touches no DOM at all - select1k wakes 1,000 of these to change two - and a
+// change adds and removes only the difference. The one thing it gives up: a
+// bound class some other code removed is not put back until the binding's own
+// value changes (RECORD/2026-11-17.closing-the-gap-with-svelte.md, B)
+const bindClass = (
+  el: Element,
+  classExpr: string | undefined,
+  toggles: [string, string][] | null,
+  staticClasses: Set<string>,
+  scope: Record<string, any>,
+  fx: EffectScope,
+) => {
+  let bound: string[] = []
+  fx.effect(() => {
+    const next: string[] = []
+    if (classExpr !== undefined) collectClassNames(evalExpr(classExpr, scope), next)
+    if (toggles) for (const [name, expr] of toggles) if (evalExpr(expr, scope)) collectClassNames(name, next)
+    if (!debugFlags.cachedSetters) {
+      bound.forEach(name => {
+        if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
+      })
+      el.classList.add(...next)
+    } else if (!sameNames(bound, next)) {
+      for (const name of bound) if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
+      for (const name of next) if (!bound.includes(name)) el.classList.add(name)
+    }
+    bound = next
+  })
+}
+
 // what :html.allowed accepts, normalized to an AllowUrl predicate: host
 // patterns (a comma-separated string or an array - see allowedHosts in
 // ./dom) or a function (url: URL, tag, attr) => boolean. Anything else -
@@ -1648,7 +1735,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // rebuild: a page that renders wrong is a bug report either way, but one whose
 // reporter can say "it goes away with cloning off" is a bug report that names
 // the file
-const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true }
+const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true, cachedSetters: true }
 
 // What `Component79.debug()` can switch. One flag today; the shape is an object
 // so the next one does not change the call
@@ -1669,6 +1756,12 @@ export type DebugFlags = {
   // each write runs what it woke before the next line of the handler, as it
   // always did (RECORD/2026-11-17.closing-the-gap-with-svelte.md, A)
   batchHandlers: boolean
+
+  // :class and {{ }} compare against the last value they wrote, and touch the
+  // DOM only for what changed; {{ }} text is split once per distinct string.
+  // Off means every re-run diffs classList and reads textContent back, as
+  // before (RECORD/2026-11-17.closing-the-gap-with-svelte.md, B)
+  cachedSetters: boolean
 }
 
 // the control attributes a skeleton knows how to fill. The rest of
@@ -1878,12 +1971,7 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
     const target = op.path.length === 0 ? root : atPath(root, op.path)
 
     if (op.kind === "text") {
-      const textNode = target as Text
-      const parts = op.parts
-      fx.effect(() => {
-        const text = renderText(parts, scope)
-        if (textNode.textContent !== text) textNode.textContent = text
-      })
+      bindText(target as Text, op.parts, scope, fx)
     } else if (op.kind === "event") {
       bindEvent(target as Element, op.attr, op.expr, scope)
     } else if (op.kind === "attr") {
@@ -1891,20 +1979,7 @@ const renderFromSkeleton = (plan: SkeletonPlan, scope: Record<string, any>, fx: 
       const { name, expr } = op
       fx.effect(() => applyAttr(el, name, evalExpr(expr, scope)))
     } else if (op.kind === "class") {
-      const el = target as Element
-      const { classExpr, toggles, staticClasses } = op
-      let bound: string[] = []
-      fx.effect(() => {
-        const next = classExpr !== undefined ? classNames(evalExpr(classExpr, scope)) : []
-        toggles?.forEach(([name, expr]) => {
-          if (evalExpr(expr, scope)) next.push(...classNames(name))
-        })
-        bound.forEach(name => {
-          if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
-        })
-        el.classList.add(...next)
-        bound = next
-      })
+      bindClass(target as Element, op.classExpr, op.toggles, op.staticClasses, scope, fx)
     } else if (op.kind === "textContent") {
       const el = target as Element
       const { expr } = op
@@ -2117,20 +2192,7 @@ const renderNode = (node: TemplateNode, outerScope: Record<string, any>, fx: Eff
     if (key.startsWith(":class.")) (classToggles ??= []).push([key.slice(":class.".length), node.attrs[key]])
   }
   if (classExpr !== undefined || classToggles) {
-    const staticClasses = new Set(classNames(node.attrs.class ?? ""))
-    let bound: string[] = []
-
-    fx.effect(() => {
-      const next = classExpr !== undefined ? classNames(evalExpr(classExpr, scope)) : []
-      classToggles?.forEach(([name, expr]) => {
-        if (evalExpr(expr, scope)) next.push(...classNames(name))
-      })
-      bound.forEach(name => {
-        if (!next.includes(name) && !staticClasses.has(name)) el.classList.remove(name)
-      })
-      el.classList.add(...next)
-      bound = next
-    })
+    bindClass(el, classExpr, classToggles, new Set(classNames(node.attrs.class ?? "")), scope, fx)
   }
 
   // :text="expr" sets textContent reactively, replacing any children.
@@ -3163,11 +3225,7 @@ const renderNodes = <T extends ParentNode>(
       // same string it already wrote, and assigning it back is a DOM mutation
       // the browser has to take seriously
       if (node.includes("{{")) {
-        const parts = splitText(node)
-        fx.effect(() => {
-          const text = renderText(parts, scope)
-          if (textNode.textContent !== text) textNode.textContent = text
-        })
+        bindText(textNode, textParts(node), scope, fx)
       }
       fragment.appendChild(textNode)
       i++
