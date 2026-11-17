@@ -1,7 +1,7 @@
 
 import { $, $$, $create, sanitizeHTML, allowedHosts } from "./dom"
 import type { AllowUrl, QueryAll, QueryOne } from "./dom"
-import { $reactive, $toRaw, $computed, $batch, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
+import { $reactive, $toRaw, $computed, $batch, $tick, untracked, createEffectScope, ALSO_WAKEN_BY, OWNER } from "./reactive"
 import type { ReactiveDeepData, EffectScope } from "./reactive"
 import { transformSetupScript, transformFactoryScript, parsePropsPattern, parseFactoryProps, preloadSpecifiers, type PropDecl } from "./transform"
 import {
@@ -14,7 +14,7 @@ import {
 
 export { $, $$, $create } from "./dom"
 export type { QueryOne, QueryAll } from "./dom"
-export { $reactive, $toRaw, $computed, $batch } from "./reactive"
+export { $reactive, $toRaw, $computed, $batch, $tick } from "./reactive"
 export type { Computed } from "./reactive"
 
 // the package version, substituted at build time (tsup/vitest `define`, read
@@ -533,6 +533,11 @@ type ConditionalBranch = { expr?: string; node: TemplateNode }
 // that function is then invoked with the event - so both a handler reference
 // and an inline arrow/statement work. Modifiers after dots: .prevent .stop
 // .self (runtime guards) and .once .capture (addEventListener options)
+const runHandler = (el: Element, expr: string, scope: Record<string, any>, event: Event) => {
+  const handler = evalHandler(expr, scope, { $event: event })
+  if (typeof handler === "function") handler.call(el, event)
+}
+
 const bindEvent = (el: Element, attr: string, expr: string, scope: Record<string, any>) => {
   const [name, ...modifiers] = attr.slice(1).split(".")
   const mods = new Set(modifiers)
@@ -542,8 +547,11 @@ const bindEvent = (el: Element, attr: string, expr: string, scope: Record<string
     if (mods.has("prevent")) event.preventDefault()
     if (mods.has("stop")) event.stopPropagation()
 
-    const handler = evalHandler(expr, scope, { $event: event })
-    if (typeof handler === "function") handler.call(el, event)
+    // in a batch: every effect the handler's writes woke runs once, after it
+    // returns, against the state it left - not once per write against the
+    // states in between (RECORD/2026-11-17.closing-the-gap-with-svelte.md, A)
+    if (debugFlags.batchHandlers) $batch(() => runHandler(el, expr, scope, event))
+    else runHandler(el, expr, scope, event)
   }, { once: mods.has("once"), capture: mods.has("capture") })
 }
 
@@ -572,10 +580,12 @@ const wireTagEvent = (instance: Component79, attr: string, expr: string, scope: 
     // deps. Today that is contained - cross-store deps are never notified,
     // and the creation effect's definition guard no-ops a spurious wake - but
     // "what a handler reads is nobody's dependency" shouldn't hinge on either
-    untracked(() => {
+    const run = () => {
       const handler = evalHandler(expr, scope, { $event: event })
       if (typeof handler === "function") handler(event)
-    })
+    }
+    // batched like an element handler (see bindEvent)
+    untracked(debugFlags.batchHandlers ? () => $batch(run) : run)
   }
   instance.on(name, listener)
 }
@@ -1638,7 +1648,7 @@ const applyAttr = (el: Element, name: string, value: any) => {
 // rebuild: a page that renders wrong is a bug report either way, but one whose
 // reporter can say "it goes away with cloning off" is a bug report that names
 // the file
-const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true }
+const debugFlags: DebugFlags = { cloneSkeletons: true, scopedNames: true, batchHandlers: true }
 
 // What `Component79.debug()` can switch. One flag today; the shape is an object
 // so the next one does not change the call
@@ -1653,6 +1663,12 @@ export type DebugFlags = {
   // was, which is what makes the two forms comparable on one build - both in
   // tests/expressions.test.ts and in `npm run benchmark:ab -- --flags`
   scopedNames: boolean
+
+  // run every @event handler - on an element or a component tag - inside
+  // $batch, so its writes wake each effect once, after it returns. Off means
+  // each write runs what it woke before the next line of the handler, as it
+  // always did (RECORD/2026-11-17.closing-the-gap-with-svelte.md, A)
+  batchHandlers: boolean
 }
 
 // the control attributes a skeleton knows how to fill. The rest of
@@ -5552,7 +5568,7 @@ let settleQueued = false
 // declaration) shadows them. Their names, in this order, are also
 // SETUP_HELPER_NAMES (source.ts) - what precompile compiles scripts with, so
 // the two change together
-const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, $batch, Component79, C79: Component79 }
+const SETUP_HELPERS: Record<string, any> = { $, $$, $create, $reactive, $toRaw, $batch, $tick, Component79, C79: Component79 }
 
 // the hot-reload handshake. jq79/dev serves a classic script that sets the flag
 // below; classic scripts run before deferred module ones, so the flag is always

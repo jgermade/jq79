@@ -244,6 +244,24 @@ The attribute value is evaluated on every event with `$event` in scope; if it ev
 
 They also fail the same way: an exception thrown while handling the event reaches the console with its stack, whichever style raised it. The one exception is a name that resolves nowhere (`@click="handleClik"`), which is reported once as a warning instead — see [debugging a script](setup-scripts.md#debugging-a-script).
 
+A handler runs as one [`$batch`](reactive-data.md#several-writes-one-update-batch): its writes land at once, and everything they update — bindings, `$:`, `$effect` — runs **once, after it returns**, against the state it left. A handler that writes twice never renders the state in between:
+
+```js
+const swap = () => { const t = rows[0]; rows[0] = rows[2]; rows[2] = t }   // the list is diffed once
+```
+
+So inside the handler the DOM has not caught up yet. Wait for it with `await $tick()`:
+
+```js
+const edit = async () => {
+  editing = true
+  await $tick()                 // the <input :if="editing"> exists now
+  $self("input").focus()
+}
+```
+
+Reading the store is never stale: the handler sees its own writes, and a [`$computed`](reactive-data.md#derived-values-computed) it reads recomputes first. `Component79.debug({ batchHandlers: false })` runs each write's updates before the next line, as handlers used to.
+
 Modifiers (chainable, e.g. `@click.stop.once`):
 
 | modifier   | effect                                   |
@@ -262,7 +280,7 @@ A component tag renders as comment anchors — there is no element to listen on 
 <Stepper @changed="last = $event.detail" />
 ```
 
-It hears exactly what *that* child emits: not a grandchild's emits (those arrive only as an explicit re-emit), and not native DOM events from the child's inner DOM — a native `submit` bubbles past the tag's anchors to real ancestors, so it's still a wrapping element's to catch (`<div @submit.prevent=…><LoginForm/></div>`, which hears `$emit`s too, since they bubble). Modifiers on this channel: `.prevent` flips the child's `$emit(...)` return to `false` — a "the parent vetoed" signal; `.stop` keeps the emit off the DOM entirely, so wrapping elements never hear it; `.once` unsubscribes after one call; `.self` and `.capture` have no meaning here and are ignored.
+It hears exactly what *that* child emits: not a grandchild's emits (those arrive only as an explicit re-emit), and not native DOM events from the child's inner DOM — a native `submit` bubbles past the tag's anchors to real ancestors, so it's still a wrapping element's to catch (`<div @submit.prevent=…><LoginForm/></div>`, which hears `$emit`s too, since they bubble). Its handler is batched like an element's. Modifiers on this channel: `.prevent` flips the child's `$emit(...)` return to `false` — a "the parent vetoed" signal; `.stop` keeps the emit off the DOM entirely, so wrapping elements never hear it; `.once` unsubscribes after one call; `.self` and `.capture` have no meaning here and are ignored.
 
 ## `:model` — two-way component binding
 

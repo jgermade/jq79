@@ -218,7 +218,7 @@ playback.index = 0      // and again
 returns, against the final state:
 
 ```js
-import { $batch } from "jq79"   // also in scope in every setup script
+import { $batch, $tick } from "jq79"   // also in scope in every setup script
 
 $batch(() => {
   playback.queue = next
@@ -229,7 +229,13 @@ $batch(() => {
 - Writes still land immediately: `fn` reads its own writes, and `$on` /
   `$onAny` listeners hear every one as it happens. Only effects (template
   bindings, `$:`, `$effect`, `$computed`) wait.
-- A `$computed` read *inside* the batch still holds its value from before it.
+- A `$computed` read *inside* the batch is current: if a write in the batch
+  left it pending, it recomputes on that read (and not again at the end).
+- Every `@event` handler already runs as a batch — see
+  [`@event`](template-syntax.md#event--listeners).
+- `await $tick()` resolves once the pending updates have run — after the
+  batch it was called in, or at once outside one. Use it where code needs the
+  DOM the batch is about to produce.
 - Batches nest; the outermost one runs the effects. Whatever those effects
   write is settled before `$batch` returns, so it is still synchronous.
 - It returns what `fn` returns. If `fn` throws, the effects still run (the

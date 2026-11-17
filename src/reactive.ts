@@ -307,6 +307,14 @@ export const $batch = <T>(fn: () => T): T => {
   }
 }
 
+// resolves once every effect pending when it was called has run. A batch -
+// explicit, or the one every event handler runs in - is synchronous: it opens
+// and flushes inside one call stack, so by the time any promise callback runs
+// it has flushed. A resolved promise is therefore already "after the flush",
+// and `await $tick()` is the documented way to say it rather than an
+// accident of `await` (RECORD/2026-11-17.closing-the-gap-with-svelte.md, A)
+export const $tick = (): Promise<void> => Promise.resolve()
+
 // A write outside any $batch runs the effects it woke right away, as it always
 // has - but what *their* writes wake waits until all of them have run, and then
 // runs once, as a $batch would. Without it a write that two $computed derive
@@ -1313,7 +1321,9 @@ export type Computed<T> = ReactiveDeepData<{ readonly value: T }>
 
 export const $computed = <T>(get: () => T): Computed<T> => {
   const box = $reactive({ value: undefined as T })
+  let self: Effect | null = null
   box.$effect(() => {
+    self ??= activeEffect
     let value: T
     try {
       value = get()
@@ -1329,5 +1339,20 @@ export const $computed = <T>(get: () => T): Computed<T> => {
     console.warn(`jq79: a $computed is read-only - the write to ${String(key)} was ignored`)
     return true
   }
-  return new Proxy(box, { set: refuse, deleteProperty: refuse, defineProperty: refuse }) as Computed<T>
+  // read while a batch holds it pending - something it depends on was written
+  // and it has not recomputed yet - it recomputes now, rather than hand back
+  // the value from before the write. Without this, every event handler (which
+  // runs in a batch) that writes and then reads what it derives would read the
+  // old value. Its own run reading itself is left alone, as is a computed
+  // nobody woke: `batched` is null or lacks it, and the read is a Map lookup
+  const read = (target: typeof box, key: string | symbol) => {
+    const owner = key === "value" && self && activeEffect !== self ? batched?.get(self) : undefined
+    if (owner) {
+      batched!.delete(self!)
+      // as the flush would: not if it was disposed while it waited
+      if (owner.has(self!)) self!.run()
+    }
+    return (target as any)[key]
+  }
+  return new Proxy(box, { get: read, set: refuse, deleteProperty: refuse, defineProperty: refuse }) as Computed<T>
 }
