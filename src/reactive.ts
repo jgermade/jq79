@@ -407,8 +407,13 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
   // hands back the node it registered on, which is what lets a removal skip the
   // path entirely (see indexEffect)
   const insertDep = (dep: string, effect: Effect): TrieNode => {
+    // the dots walked in place rather than split: this runs per binding
+    // created, and the array and closure split().forEach built were thrown
+    // away at once. RECORD/2026-11-18.two-small-create-costs.md
     let node = depTrie
-    dep.split(".").forEach(segment => {
+    for (let from = 0; ;) {
+      const dot = dep.indexOf(".", from)
+      const segment = dot === -1 ? dep.slice(from) : dep.slice(from, dot)
       const children = (node.children ??= new Map())
       let child = children.get(segment)
       if (!child) {
@@ -416,7 +421,9 @@ export const $reactive = <T extends Record<string, any>>(data: T): ReactiveDeepD
         children.set(segment, child)
       }
       node = child
-    })
+      if (dot === -1) break
+      from = dot + 1
+    }
     if (effect.deep) addDeep(node, effect)
     else addOwn(node, effect)
     return node

@@ -1846,9 +1846,17 @@ const planOf = (node: TemplateNode): SkeletonPlan | null => {
   return plan
 }
 
+// siblings rather than `childNodes[i]`: the first `childNodes` read on a node
+// allocates a live NodeList for it, and every node of a fresh clone is a first
+// read. buildSkeleton appends a DOM child per TemplateNode child, text
+// included, so a sibling count is the same index.
+// RECORD/2026-11-18.two-small-create-costs.md
 const atPath = (root: Node, path: number[]): Node => {
   let at = root
-  for (let i = 0; i < path.length; i++) at = at.childNodes[path[i]]
+  for (let i = 0; i < path.length; i++) {
+    at = at.firstChild!
+    for (let k = path[i]; k > 0; k--) at = at.nextSibling!
+  }
   return at
 }
 
