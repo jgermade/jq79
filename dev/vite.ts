@@ -366,15 +366,60 @@ const declaredComponents = (source: string): string[] => {
 // content replaced. Attribute values are matched as quoted chunks so a ">"
 // inside one doesn't end the tag early
 const STYLE_BLOCK_RE = /<style((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]*?)<\/style\s*>/gi
-const LANG_ATTR_RE = /\blang\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
-const TYPE_ATTR_RE = /\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i
+// one attribute of a tag's attribute string: its name (lowercased, as the HTML
+// parser reads it), its value (null for a bare `scoped`), and where it sits -
+// `start` at the whitespace before it, so cutting [start, end) removes it cleanly
+type AttrSpan = { name: string; value: string | null; start: number; end: number }
 
-// one attribute's value out of a tag's attribute string, whichever way it was
-// quoted - null when the attribute isn't there at all
-const attrValue = (attrs: string, re: RegExp): string | null => {
-  const found = attrs.match(re)
-  return found ? found[1] ?? found[2] ?? found[3] : null
+// a tag's attribute string read the way the HTML parser reads it: name, then an
+// optional `=` and a double-quoted, single-quoted or bare value. A regex over the
+// whole string can't do this - `\blang\s*=` also matches *inside* a value, and a
+// prop with a default (`:setup="{ lang = 'en' }"`) then reads as the script's
+// language, ahead of the real `lang="ts"`
+const readAttrs = (attrs: string): AttrSpan[] => {
+  const spans: AttrSpan[] = []
+  const space = /[\s/]/
+  let i = 0
+  while (i < attrs.length) {
+    const start = i
+    while (i < attrs.length && space.test(attrs[i])) i++
+    const nameStart = i
+    while (i < attrs.length && !/[\s/=>]/.test(attrs[i])) i++
+    if (i === nameStart) {
+      if (i >= attrs.length) break
+      i++ // a stray `=` or `>`: skip it
+      continue
+    }
+    const name = attrs.slice(nameStart, i).toLowerCase()
+    let j = i
+    while (j < attrs.length && /\s/.test(attrs[j])) j++
+    let value: string | null = null
+    if (attrs[j] === "=") {
+      j++
+      while (j < attrs.length && /\s/.test(attrs[j])) j++
+      const quote = attrs[j]
+      if (quote === '"' || quote === "'") {
+        const close = attrs.indexOf(quote, j + 1)
+        const end = close === -1 ? attrs.length : close
+        value = attrs.slice(j + 1, end)
+        i = close === -1 ? end : end + 1
+      } else {
+        const valueStart = j
+        while (j < attrs.length && !/[\s>]/.test(attrs[j])) j++
+        value = attrs.slice(valueStart, j)
+        i = j
+      }
+    }
+    spans.push({ name, value, start, end: i })
+  }
+  return spans
 }
+
+const findAttr = (attrs: string, name: string): AttrSpan | undefined =>
+  readAttrs(attrs).find(a => a.name === name)
+
+// the attribute string without one attribute (and the whitespace before it)
+const dropAttr = (attrs: string, span: AttrSpan): string => attrs.slice(0, span.start) + attrs.slice(span.end)
 
 // compiles <style lang="scss|less|styl|sass"> blocks to plain CSS with Vite's
 // own preprocessing (the same call @vitejs/plugin-vue makes), so the runtime
@@ -393,11 +438,11 @@ const compileStyleBlocks = async (
   const blocks = [...source.matchAll(STYLE_BLOCK_RE)]
   const compiled = await Promise.all(
     blocks.map(async ([, attrs, content]) => {
-      const extension = attrValue(attrs, LANG_ATTR_RE)
-      if (extension === null) return null
-      const result = await preprocessCSS(content, `${file}.${extension}`, config)
+      const lang = findAttr(attrs, "lang")
+      if (!lang?.value) return null
+      const result = await preprocessCSS(content, `${file}.${lang.value}`, config)
       result.deps?.forEach(addWatchFile)
-      return { attrs: attrs.replace(LANG_ATTR_RE, "").trimEnd(), css: result.code }
+      return { attrs: dropAttr(attrs, lang).trimEnd(), css: result.code }
     })
   )
 
@@ -429,11 +474,11 @@ const TS_TYPE_RE = /^(?:text|application)\/(?:x-)?typescript$/
 // types whichever one carried it. A `lang` answers on its own: `lang="coffee"`
 // is a language this plugin doesn't compile, and reading `type` past it would
 // compile a block the author said was something else
-const typescriptAttr = (attrs: string): RegExp | null => {
-  const lang = attrValue(attrs, LANG_ATTR_RE)
-  if (lang !== null) return TS_LANGS.has(lang.trim().toLowerCase()) ? LANG_ATTR_RE : null
-  const type = attrValue(attrs, TYPE_ATTR_RE)
-  return type !== null && TS_TYPE_RE.test(type.trim().toLowerCase()) ? TYPE_ATTR_RE : null
+const typescriptAttr = (attrs: string): AttrSpan | null => {
+  const lang = findAttr(attrs, "lang")
+  if (lang?.value != null) return TS_LANGS.has(lang.value.trim().toLowerCase()) ? lang : null
+  const type = findAttr(attrs, "type")
+  return type?.value != null && TS_TYPE_RE.test(type.value.trim().toLowerCase()) ? type : null
 }
 
 type ViteTransform = (code: string, id: string, options?: unknown) => Promise<{ code: string }>
@@ -465,9 +510,6 @@ const stripTypes = async (ts: string, file: string): Promise<string> => {
   return code.replace(/^[ \t]*export\s*\{\s*\}\s*;?[ \t]*$/m, "")
 }
 
-// the `:setup` attribute, when it carries a value (a bare `:setup` is the
-// closed signature and can't be typed)
-const SETUP_ATTR_RE = /(:setup\s*=\s*)(?:"([^"]*)"|'([^']*)')/i
 // the arrow body the signature is wrapped in, so the parameter list can be
 // found again in the output without matching brackets
 const SIGNATURE_MARKER = "__jq79_signature__"
@@ -518,13 +560,14 @@ const compileScriptBlocks = async (source: string, file: string): Promise<string
       const marker = typescriptAttr(attrs)
       if (!marker) return null
 
-      let rest = attrs.replace(marker, "").trimEnd()
-      const setup = rest.match(SETUP_ATTR_RE)
-      if (setup) {
-        const signature = await stripSignatureTypes(setup[2] ?? setup[3], `${file}.signature.ts`)
-        // a function replacement, not a string: `$&` and friends are live in a
-        // replacement string and a default value is arbitrary source
-        rest = rest.replace(SETUP_ATTR_RE, () => `${setup[1]}"${quoteAttrValue(signature)}"`)
+      let rest = dropAttr(attrs, marker).trimEnd()
+      // the `:setup` attribute, when it carries a value (a bare `:setup` is the
+      // closed signature and can't be typed)
+      const setup = findAttr(rest, ":setup")
+      if (setup?.value != null) {
+        const signature = await stripSignatureTypes(setup.value, `${file}.signature.ts`)
+        const before = rest.slice(setup.start, setup.end).match(/^\s*/)![0]
+        rest = rest.slice(0, setup.start) + `${before}:setup="${quoteAttrValue(signature)}"` + rest.slice(setup.end)
       }
 
       return { attrs: rest, js: await stripTypes(content, `${file}.ts`) }

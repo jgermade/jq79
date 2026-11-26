@@ -332,6 +332,51 @@ describe("jq79 vite plugin", () => {
       expect(code).toContain(JSON.stringify(source)) // byte-for-byte
     })
 
+    it("reads `lang` from the attributes, not from inside another attribute's value", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "lang-prop.html")
+      // a prop called `lang` with a default: `lang = 'en'` sits inside the
+      // :setup value, before the real lang="ts"
+      await writeFile(
+        file,
+        `<script :setup="{ lang = 'en', type = 'x' }" lang="ts">let n: number = 1</script><p>{{ n }}</p>`
+      )
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain("let n = 1") // compiled
+      expect(code).not.toContain('lang=\\"ts\\"') // the mark is dropped...
+      // ...and only the mark: the signature keeps its own `lang` and `type`
+      expect(code).toContain(':setup=\\"{ lang = &quot;en&quot;, type = &quot;x&quot; }\\"')
+    })
+
+    it("does not take a `lang` inside an attribute value as the mark", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "lang-in-value.html")
+      const source = `<script :setup="{ lang = 'ts' }">let n = 1</script><p>{{ n }}</p>`
+      await writeFile(file, source)
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      // no lang attribute at all: a JS block, left byte-for-byte
+      expect(code).toContain(JSON.stringify(source))
+    })
+
+    it("reads unquoted and single-quoted marks, any case", async () => {
+      const dir = BUNDLE_DIR
+      await mkdir(dir, { recursive: true })
+      const file = join(dir, "lang-spellings.html")
+      await writeFile(
+        file,
+        `<script :setup LANG=ts>let a: number = 1</script><script type='text/typescript'>let b: number = 2</script><p>{{ a }}</p>`
+      )
+      const { code } = await plugin.load.call({}, `${file}?jq79`)
+
+      expect(code).toContain("let a = 1")
+      expect(code).toContain("let b = 2")
+      expect(code).not.toMatch(/LANG=|type=/)
+    })
+
     it("leaves a lang it doesn't compile alone, for the runtime to warn about", async () => {
       const dir = BUNDLE_DIR
       await mkdir(dir, { recursive: true })
