@@ -63,6 +63,13 @@ new Component79(src)
 <input :value="uname" @input="$updateModel('uname', $event.target.value)">
 ```
 
+- `$ctx(key, value)` sets a value every component rendered below this one reads with `$ctx(key)` — no props on the way. One argument reads (the nearest value, this component's own included; `undefined` when nobody set it), two set; arity tells them apart, as with `$updateModel`. Set before the first render: a child reads the context when it is created. Templates get the reading half only. See [context](components.md#context).
+
+```html
+<script :setup>$ctx("lang", "es")</script>          <!-- App.html -->
+<p :lang="$ctx('lang')">…</p>                        <!-- any component below -->
+```
+
 - **The template waits for the script.** The first render happens once every setup script has either returned or called `$mounted()` — whichever comes first. So a value the script awaits is *there* for the first render, and the component paints once, complete, instead of painting empty and filling in:
 
 ```html
@@ -458,7 +465,7 @@ The context is everything the library provides — the `$` is what says so:
   your local binding; read it through `$props` when you need the live value.
 - `$effect(fn)` — re-runs `fn` when anything it reads from `$data` changes;
   disposed with the component.
-- `$emit`, `$updateModel`, `$mounted`, `$destroyed`, `$attached`, `$detached`, `$computed`, `$self`, `$$self`, `$importAll` — same as in setup scripts. `$`,
+- `$emit`, `$updateModel`, `$ctx`, `$mounted`, `$destroyed`, `$attached`, `$detached`, `$computed`, `$self`, `$$self`, `$importAll` — same as in setup scripts. `$`,
   `$$`, `$create`, `$reactive`, `$toRaw`, `$raw`, `$batch`, `$tick`, `Component79` and `C79` are available lexically in the module body.
 - `$slots` — a static map of the slot names the usage site filled, so a wrapper
   can be dropped when nothing filled it (`<footer :if="$slots.footer">`).
