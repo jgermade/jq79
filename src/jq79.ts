@@ -925,6 +925,16 @@ type SlotMap = Record<string, SlotRenderer>
 // nested component is handed
 const SLOTS = Symbol("jq79.slots")
 
+// what $provide()d values a subtree can $context(): a null-prototype map whose
+// prototype is the enclosing provider's map, so a lookup walks providers
+// innermost first and a subtree that provides nothing shares its parent's map
+// (no allocation). It rides on the scope chain like SLOTS, so an :each row, a
+// :with or slot content finds it; slot content is given the map of the place
+// it LANDS (the <slot>'s scope), the way a tree position decides it elsewhere -
+// a <Tab> written by the page inside <Tabs> reads what Tabs provided.
+// See RECORD/2026-11-26.a-context-mechanism.md
+const CONTEXT = Symbol("jq79.context")
+
 // the content of one slot, as written at the usage site
 type SlotContent = { nodes: (TemplateNode | string)[]; binder?: string }
 
@@ -1032,6 +1042,10 @@ const makeSlotRenderer = (content: SlotContent, parentScope: Record<string, any>
     // the parent's scope, plus the names the content declared for the slot's
     // props (rule 1: what the content says is decided where it was written)
     const scope: Record<string, any> = Object.create(parentScope)
+    // context is positional: the content sees the providers around the <slot>
+    // it renders at, not the ones around the tag it was written in
+    const landing = (slotScope as any)[CONTEXT]
+    if (landing !== (parentScope as any)[CONTEXT]) Object.defineProperty(scope, CONTEXT, { value: landing })
     bindSlotProps(scope, content.binder, props)
     // this content reads the parent's store (its own names) and the child's
     // (through the slot props), so every effect created anywhere inside it is
@@ -1347,6 +1361,10 @@ const renderNestedComponent = (key: string, node: TemplateNode, scope: Record<st
     // the content this site wrote inside the tag, before the first render: a
     // <slot> is resolved while rendering, so the map has to be there by then
     if (slots) instance.slots = slots
+    // the providers around this usage site, read once per instance: a provider
+    // re-rendering builds its children again, so they read it again
+    const context = (scope as any)[CONTEXT]
+    if (context) instance.context = context
     // the writeback half of :model - the function the child's $updateModel
     // calls, handed over before the first render. Not an event: nothing about
     // a parent-child assignment wants a CustomEvent bubbling through the page
@@ -4823,6 +4841,10 @@ export class Component79 {
   // (or no tag at all - a root mount), which makes every $updateModel a no-op.
   // Internal: set by the usage site, not part of the public API
   modelWriteback?: (name: string | undefined, value: any) => boolean
+  // the context map of the providers above this instance (see CONTEXT): set by
+  // renderNestedComponent, or by provide() on a root. Outside the render
+  // generation, like slots, so a hot reload keeps it
+  context?: Record<string | symbol, any>
 
   data: ReactiveDeepData<Record<string, any>> | null = null
 
@@ -5096,6 +5118,19 @@ export class Component79 {
   // dispatch - so it hears emits even while the component is detached (where
   // the event has no ancestors to bubble to). Chainable; can be called before
   // render()
+  // provide(key, value): what $context(key) answers for every component this
+  // root renders - app-wide values (a language, a theme) set once where the app
+  // mounts. Call it before render()/mount(); the next render reads it
+  provide(key: string | symbol, value: any): this {
+    if (!this.ownRootContext) {
+      this.ownRootContext = true
+      this.context = Object.create(this.context ?? null)
+    }
+    ;(this.context as any)[key] = value
+    return this
+  }
+  private ownRootContext = false
+
   on(eventName: string, listener: EmitListener): this {
     if (!this.emitListeners.has(eventName)) this.emitListeners.set(eventName, new Set())
     this.emitListeners.get(eventName)!.add(listener)
@@ -5135,6 +5170,9 @@ export class Component79 {
     // (`<footer :if="$slots.footer">`). Filled at the usage site, so it can
     // only change when the tag itself re-renders - which builds a new instance
     if (this.slots) Object.defineProperty(raw, SLOTS, { value: this.slots })
+    // writable: this generation's first $provide() replaces it with a map of
+    // its own, chained to the inherited one
+    if (this.context) Object.defineProperty(raw, CONTEXT, { value: this.context, writable: true, configurable: true })
     // in place before the store wraps it, because the scripts that increment it
     // run against the store and the template reads it back through the same
     // scope chain. Read back out of `raw` where it is needed rather than kept
@@ -5313,10 +5351,43 @@ export class Component79 {
     // instance helpers), and a same-named store key shadows any of them.
     // Null-prototype, for the same reason storeApi is: `key in injected` must
     // not start answering true for toString, constructor and the rest
+    // $provide(key, value) makes value readable by every component rendered
+    // below this one - before they render: a child reads the map when it is
+    // created, so a provide after the first render reaches only children
+    // created later (said once). $context(key, fallback) reads the nearest
+    // provider's value, this component's own included. Values are handed over
+    // as they are: provide a $reactive store for something that changes, and a
+    // store variable holding it is bridged like any other nested store
+    let ownContext = false
+    let warnedLateProvide = false
+    const $provide = (key: string | symbol, value: any): void => {
+      if (marker !== this.startMarker) return
+      if (this.renderDone && !warnedLateProvide) {
+        warnedLateProvide = true
+        console.warn(`jq79: $provide(${String(key)}) after the first render reaches only components created from now on - provide before rendering (above any await $mounted())`)
+      }
+      if (!ownContext) {
+        ownContext = true
+        Object.defineProperty(raw, CONTEXT, { value: Object.create(this.context ?? null), writable: true, configurable: true })
+      }
+      ;(raw as any)[CONTEXT][key] = value
+    }
+    const warnedMissing = new Set<string | symbol>()
+    const $context = (key: string | symbol, ...fallback: [any?]): any => {
+      const map = (raw as any)[CONTEXT]
+      if (map && key in map) return map[key]
+      if (!fallback.length && !warnedMissing.has(key)) {
+        warnedMissing.add(key)
+        console.warn(`jq79: $context(${String(key)}) - no component above provides it; pass a fallback ($context(key, value)) if that is expected`)
+      }
+      return fallback[0]
+    }
     const injected: Record<string, any> = Object.assign(Object.create(null), {
       $emit,
       $updateModel,
       $slots: Object.fromEntries(Object.keys(this.slots ?? {}).map(name => [name, true])),
+      $provide,
+      $context,
     })
 
     // scripts run before the template renders so `$:` values are initialized;
