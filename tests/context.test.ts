@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { $, $$, $reactive, Component79 } from "../src/jq79"
 
-// Context: $provide(key, value) in a component, $context(key) in any component
-// rendered below it - through components that pass nothing on, :each rows and
-// slot content (which sees the providers where it LANDS). A root can provide
-// with .provide(key, value) before it renders. See
+// Context: $ctx(key, value) in a component's script sets a value, $ctx(key) in
+// any component rendered below it reads it - through components that pass
+// nothing on, :each rows and slot content (which sees the values where it
+// LANDS). A root sets values with .ctx(key, value) before it renders. See
 // RECORD/2026-11-26.a-context-mechanism.md
 
-describe("context", () => {
+describe("context ($ctx)", () => {
   let host: HTMLDivElement
 
   beforeEach(() => {
@@ -17,41 +17,44 @@ describe("context", () => {
 
   it("reaches a grandchild through a component that forwards nothing", () => {
     new Component79(`
-      <script :setup>$provide("lang", "es")</script>
+      <script :setup>$ctx("lang", "es")</script>
       <Middle />
       <template name="Middle"><div class="middle"><Leaf /></div></template>
       <template name="Leaf">
-        <script :setup>const lang = $context("lang")</script>
-        <b class="leaf">{{ lang }}</b>
+        <script :setup>const lang = $ctx("lang")</script>
+        <b class="leaf" :lang="lang">{{ lang }}</b>
       </template>
     `).render().mount(host)
 
     expect($(host, ".middle .leaf")?.textContent).toBe("es")
+    expect($(host, ".leaf")?.getAttribute("lang")).toBe("es")
   })
 
-  it("answers in templates too, and the nearest provider wins", () => {
+  it("reads in templates too, and the nearest value wins", () => {
     new Component79(`
-      <script :setup>$provide("theme", "light")</script>
-      <i class="outer">{{ $context("theme") }}</i>
+      <script :setup>$ctx("theme", "light")</script>
+      <i class="outer">{{ $ctx('theme') }}</i>
       <Dark />
       <template name="Dark">
-        <script :setup>$provide("theme", "dark")</script>
+        <script :setup>$ctx("theme", "dark")</script>
         <Leaf />
       </template>
-      <template name="Leaf"><b class="leaf">{{ $context("theme") }}</b></template>
+      <template name="Leaf"><b class="leaf" :data-theme="$ctx('theme')"></b></template>
     `).render().mount(host)
 
     expect($(host, ".outer")?.textContent).toBe("light")
-    expect($(host, ".leaf")?.textContent).toBe("dark")
+    expect($(host, ".leaf")?.getAttribute("data-theme")).toBe("dark")
   })
 
-  it("serves a root's provide() to every component it renders", () => {
-    new Component79(`
+  it("serves a root's ctx() to every component it renders, and reads it back", () => {
+    const app = new Component79(`
       <Leaf />
-      <template name="Leaf"><b class="leaf">{{ $context("lang") }}</b></template>
-    `).provide("lang", "es").render().mount(host)
+      <template name="Leaf"><b class="leaf">{{ $ctx('lang') }}</b></template>
+    `).ctx("lang", "es")
+    app.render().mount(host)
 
     expect($(host, ".leaf")?.textContent).toBe("es")
+    expect(app.ctx("lang")).toBe("es")
   })
 
   it("stays live when the value is a $reactive store", async () => {
@@ -60,10 +63,10 @@ describe("context", () => {
       <Middle />
       <template name="Middle"><Leaf /></template>
       <template name="Leaf">
-        <script :setup>const i18n = $context("i18n")</script>
+        <script :setup>const i18n = $ctx("i18n")</script>
         <b class="leaf">{{ i18n.lang }}</b>
       </template>
-    `).provide("i18n", i18n).render().mount(host)
+    `).ctx("i18n", i18n).render().mount(host)
 
     expect($(host, ".leaf")?.textContent).toBe("en")
     i18n.lang = "es"
@@ -71,19 +74,19 @@ describe("context", () => {
     expect($(host, ".leaf")?.textContent).toBe("es")
   })
 
-  it("gives slot content the providers around the <slot>, not around the tag", () => {
+  it("gives slot content the values around the <slot>, not around the tag", () => {
     new Component79(`
-      <script :setup>$provide("group", "page")</script>
+      <script :setup>$ctx("group", "page")</script>
       <Tabs>
         <Tab />
         <Tab />
       </Tabs>
       <Tab />
       <template name="Tabs">
-        <script :setup>$provide("group", "tabs")</script>
+        <script :setup>$ctx("group", "tabs")</script>
         <nav><slot /></nav>
       </template>
-      <template name="Tab"><b class="tab">{{ $context("group") }}</b></template>
+      <template name="Tab"><b class="tab">{{ $ctx('group') }}</b></template>
     `).render().mount(host)
 
     expect($$(host, "nav .tab").map(el => el.textContent)).toEqual(["tabs", "tabs"])
@@ -93,30 +96,59 @@ describe("context", () => {
   it("reaches components inside :each rows", () => {
     new Component79(`
       <script :setup>
-        $provide("unit", "kg")
+        $ctx("unit", "kg")
         let rows = [1, 2, 3]
       </script>
       <Row :each="n in rows" :n />
       <template name="Row">
         <script :setup="{ n }"></script>
-        <i class="row">{{ n }}{{ $context("unit") }}</i>
+        <i class="row">{{ n }}{{ $ctx('unit') }}</i>
       </template>
     `).render().mount(host)
 
     expect($$(host, ".row").map(el => el.textContent)).toEqual(["1kg", "2kg", "3kg"])
   })
 
-  it("warns once for a key nobody provides, and is silent with a fallback", () => {
+  it("answers undefined for a key nobody set, so ?? gives the default", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
     new Component79(`
-      <b class="a">{{ $context("missing") }}</b>
-      <b class="b">{{ $context("other", "x") }}</b>
+      <b class="a">{{ $ctx('missing') ?? "en" }}</b>
     `).render().mount(host)
 
-    expect($(host, ".b")?.textContent).toBe("x")
-    const missing = warn.mock.calls.filter(([msg]) => String(msg).includes("$context(missing)"))
-    expect(missing).toHaveLength(1)
-    expect(warn.mock.calls.some(([msg]) => String(msg).includes("$context(other)"))).toBe(false)
+    expect($(host, ".a")?.textContent).toBe("en")
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it("only reads in a template: a set there warns and changes nothing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    new Component79(`
+      <script :setup>$ctx("lang", "es")</script>
+      <i class="a">{{ $ctx('lang', 'en') }}</i>
+      <Leaf />
+      <template name="Leaf"><b class="leaf">{{ $ctx('lang') }}</b></template>
+    `).render().mount(host)
+
+    expect($(host, ".a")?.textContent).toBe("es")
+    expect($(host, ".leaf")?.textContent).toBe("es")
+    expect(warn.mock.calls.filter(([msg]) => String(msg).includes("in a template only reads"))).toHaveLength(1)
+    warn.mockRestore()
+  })
+
+  it("warns once when set after the first render", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const app = new Component79(`
+      <script :setup>
+        await $mounted()
+        $ctx("late", 1)
+        $ctx("later", 2)
+      </script>
+      <b>x</b>
+    `)
+    app.render().mount(host)
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(warn.mock.calls.filter(([msg]) => String(msg).includes("after the first render"))).toHaveLength(1)
     warn.mockRestore()
   })
 
@@ -124,11 +156,11 @@ describe("context", () => {
     new Component79(`
       <A /><B />
       <template name="A">
-        <script :setup>$provide("who", "a")</script>
+        <script :setup>$ctx("who", "a")</script>
         <Leaf />
       </template>
       <template name="B"><Leaf /></template>
-      <template name="Leaf"><b class="leaf">{{ $context("who", "none") }}</b></template>
+      <template name="Leaf"><b class="leaf">{{ $ctx('who') ?? "none" }}</b></template>
     `).render().mount(host)
 
     expect($$(host, ".leaf").map(el => el.textContent)).toEqual(["a", "none"])

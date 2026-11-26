@@ -925,7 +925,7 @@ type SlotMap = Record<string, SlotRenderer>
 // nested component is handed
 const SLOTS = Symbol("jq79.slots")
 
-// what $provide()d values a subtree can $context(): a null-prototype map whose
+// what $ctx(key, value) set and $ctx(key) reads: a null-prototype map whose
 // prototype is the enclosing provider's map, so a lookup walks providers
 // innermost first and a subtree that provides nothing shares its parent's map
 // (no allocation). It rides on the scope chain like SLOTS, so an :each row, a
@@ -5114,22 +5114,28 @@ export class Component79 {
     return Promise.all(specifiers.map(spec => importResource(resolveSpecifier(spec, undefined)))) as Promise<ImportedAll<T>>
   }
 
-  // subscribes to this instance's $emit events, on top of the DOM CustomEvent
-  // dispatch - so it hears emits even while the component is detached (where
-  // the event has no ancestors to bubble to). Chainable; can be called before
-  // render()
-  // provide(key, value): what $context(key) answers for every component this
-  // root renders - app-wide values (a language, a theme) set once where the app
-  // mounts. Call it before render()/mount(); the next render reads it
-  provide(key: string | symbol, value: any): this {
+  // ctx(key, value): what $ctx(key) answers for every component this root
+  // renders - app-wide values (a language, a theme) set once where the app
+  // mounts, chainable. Call it before render()/mount(); the next render reads
+  // it. ctx(key) reads it back
+  ctx(key: string | symbol): any
+  ctx(key: string | symbol, value: any): this
+  ctx(...args: [key: string | symbol] | [key: string | symbol, value: any]): any {
+    const [key] = args
+    if (args.length < 2) return (this.context as any)?.[key]
     if (!this.ownRootContext) {
       this.ownRootContext = true
       this.context = Object.create(this.context ?? null)
     }
-    ;(this.context as any)[key] = value
+    ;(this.context as any)[key] = args[1]
     return this
   }
   private ownRootContext = false
+
+  // subscribes to this instance's $emit events, on top of the DOM CustomEvent
+  // dispatch - so it hears emits even while the component is detached (where
+  // the event has no ancestors to bubble to). Chainable; can be called before
+  // render()
 
   on(eventName: string, listener: EmitListener): this {
     if (!this.emitListeners.has(eventName)) this.emitListeners.set(eventName, new Set())
@@ -5349,45 +5355,48 @@ export class Component79 {
     // nothing filled it (<footer :if="$slots.footer">). All reach the
     // template (through templateScope, below) and both script modes (as
     // instance helpers), and a same-named store key shadows any of them.
-    // Null-prototype, for the same reason storeApi is: `key in injected` must
-    // not start answering true for toString, constructor and the rest
-    // $provide(key, value) makes value readable by every component rendered
-    // below this one - before they render: a child reads the map when it is
-    // created, so a provide after the first render reaches only children
-    // created later (said once). $context(key, fallback) reads the nearest
-    // provider's value, this component's own included. Values are handed over
-    // as they are: provide a $reactive store for something that changes, and a
-    // store variable holding it is bridged like any other nested store
+    // $ctx(key, value) makes value readable by every component rendered below
+    // this one - before they render: a child reads the map when it is created,
+    // so a set after the first render reaches only children created later
+    // (said once). $ctx(key) reads the nearest value, this component's own
+    // included; undefined when nobody set it (`$ctx("lang") ?? "en"`). Arity
+    // tells the two apart, as in $updateModel. Values are handed over as they
+    // are: set a $reactive store for something that changes, and a store
+    // variable holding it is bridged like any other nested store.
+    // Templates get the reading half only: a set there would run again on
+    // every re-render of whatever holds it
     let ownContext = false
-    let warnedLateProvide = false
-    const $provide = (key: string | symbol, value: any): void => {
+    let warnedLateSet = false
+    const readCtx = (key: string | symbol): any => (raw as any)[CONTEXT]?.[key]
+    const $ctx = (...args: [key: string | symbol] | [key: string | symbol, value: any]): any => {
+      const [key] = args
+      if (args.length < 2) return readCtx(key)
       if (marker !== this.startMarker) return
-      if (this.renderDone && !warnedLateProvide) {
-        warnedLateProvide = true
-        console.warn(`jq79: $provide(${String(key)}) after the first render reaches only components created from now on - provide before rendering (above any await $mounted())`)
+      if (this.renderDone && !warnedLateSet) {
+        warnedLateSet = true
+        console.warn(`jq79: $ctx(${String(key)}, value) after the first render reaches only components created from now on - set it before rendering (above any await $mounted())`)
       }
       if (!ownContext) {
         ownContext = true
         Object.defineProperty(raw, CONTEXT, { value: Object.create(this.context ?? null), writable: true, configurable: true })
       }
-      ;(raw as any)[CONTEXT][key] = value
+      ;(raw as any)[CONTEXT][key] = args[1]
     }
-    const warnedMissing = new Set<string | symbol>()
-    const $context = (key: string | symbol, ...fallback: [any?]): any => {
-      const map = (raw as any)[CONTEXT]
-      if (map && key in map) return map[key]
-      if (!fallback.length && !warnedMissing.has(key)) {
-        warnedMissing.add(key)
-        console.warn(`jq79: $context(${String(key)}) - no component above provides it; pass a fallback ($context(key, value)) if that is expected`)
+    let warnedTemplateSet = false
+    const $ctxRead = (...args: [key: string | symbol, value?: any]): any => {
+      if (args.length > 1 && !warnedTemplateSet) {
+        warnedTemplateSet = true
+        console.warn(`jq79: $ctx(${String(args[0])}, value) in a template only reads - set it from a setup script`)
       }
-      return fallback[0]
+      return readCtx(args[0])
     }
+    // Null-prototype, for the same reason storeApi is: `key in injected` must
+    // not start answering true for toString, constructor and the rest
     const injected: Record<string, any> = Object.assign(Object.create(null), {
       $emit,
       $updateModel,
       $slots: Object.fromEntries(Object.keys(this.slots ?? {}).map(name => [name, true])),
-      $provide,
-      $context,
+      $ctx: $ctxRead,
     })
 
     // scripts run before the template renders so `$:` values are initialized;
@@ -5427,7 +5436,7 @@ export class Component79 {
       // resolve to nothing at all. In setup mode this composes with `with` -
       // scriptScope's `has` declines any name that is a helper, so the
       // parameter is what the name resolves to
-      const instanceHelpers = { $mounted, $destroyed, $attached, $detached, $computed: $instanceComputed, $self, $$self, ...injected, $importAll, ...siblingScope }
+      const instanceHelpers = { $mounted, $destroyed, $attached, $detached, $computed: $instanceComputed, $self, $$self, ...injected, $ctx, $importAll, ...siblingScope }
       const at: ScriptLocation = { filename: this.filename, index }
       const deferred = ":mounted" in script.attrs
       const factoryCode = factoryCodeOf(script.content)

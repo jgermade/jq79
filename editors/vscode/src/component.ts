@@ -442,13 +442,12 @@ const preamble = (typescript: boolean, jq79: boolean): string => {
   // what's left of $importAll once its literal arrays are rewritten (visit,
   // below): an array the checker can't read entry by entry
   const importAllType = "(specifiers: readonly string[]) => Promise<any[]>"
-  const provideType = "(key: string | symbol, value: any) => void"
-  const contextType = "<T = any>(key: string | symbol, fallback?: T) => T"
+  const ctxType = "{ <T = any>(key: string | symbol): T; (key: string | symbol, value: any): void }"
   const ctx = "{ $data: any; $props: any; $effect: (run: () => void) => void; $mounted: () => Promise<void>; " +
     `$destroyed: (fn: () => void) => () => void; $attached: ${attachedType}; $detached: (fn: () => void) => () => void; $computed: ${computedType}; ` +
     `$self: ${QUERY_ONE}; $$self: ${QUERY_ALL}; ` +
     "$emit: (name: string, payload?: any) => boolean; $updateModel: (...args: [value?: any] | [name: string, value: any]) => boolean; " +
-    `$slots: Record<string, true>; $provide: ${provideType}; $context: ${contextType}; $importAll: ${importAllType}; [sibling: string]: any }`
+    `$slots: Record<string, true>; $ctx: ${ctxType}; $importAll: ${importAllType}; [sibling: string]: any }`
   const types: Record<string, string> = {
     $: `typeof import("jq79").$`,
     $$: `typeof import("jq79").$$`,
@@ -470,8 +469,7 @@ const preamble = (typescript: boolean, jq79: boolean): string => {
     $emit: "(name: string, payload?: any) => boolean",
     $updateModel: "(...args: [value?: any] | [name: string, value: any]) => boolean",
     $slots: "Record<string, true>",
-    $provide: provideType,
-    $context: contextType,
+    $ctx: ctxType,
     $importAll: importAllType,
   }
   const lines = ["// jq79: what a component's scripts are compiled with (src/source.ts, setupParams / factoryParams)"]
