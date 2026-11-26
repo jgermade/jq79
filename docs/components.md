@@ -178,6 +178,58 @@ What matters here is whose the content is:
 - **`$slots`** names what the usage site filled, so a component can drop a wrapper
   nobody filled (`<footer :if="$slots.footer">`) or branch on it in a script.
 
+## Context
+
+Some values almost every component reads and almost none owns: the language, a
+theme, the signed-in user. Passing them as props means every component on the way
+takes them only to pass them on. `$ctx` hands them to a whole subtree instead:
+
+```html
+<!-- App.html: two arguments set -->
+<script :setup>$ctx("lang", "es")</script>
+<Layout />
+
+<!-- any component below it, however deep: one argument reads -->
+<p :lang="$ctx('lang')">…</p>
+<script :setup lang="ts">
+  const i18n = $ctx<I18n>("i18n")
+</script>
+<button>{{ i18n.t("save") }}</button>
+```
+
+Where the app mounts, the root sets values for everything it renders:
+
+```js
+new Component79(src).ctx("i18n", i18n).mount("#app")   // app.ctx("i18n") reads it back
+```
+
+- **Nearest wins, per subtree.** A component that sets a key overrides it for what is
+  below it, and only there: a sibling branch never sees it. A component reads its own
+  value too.
+- **Slot content sees where it lands.** Content written inside `<Tabs>` reads what
+  `Tabs` set, not what the page around the tag set — that is what lets compound
+  components (`Tabs` / `Tab`, `Menu` / `MenuItem`) share state per instance. The
+  content still reads the *names* of the file it was written in; only the context
+  follows the position.
+- **Values are handed over as they are.** Setting is not reactive by itself: set a
+  [`$reactive`](reactive-data.md) store for anything that changes, and every
+  component reading it follows it (`i18n.lang = "en"` re-renders them all).
+- **Set before rendering.** A child reads the context when it is created, so a value
+  set after the first render (below an `await $mounted()`) reaches only children
+  created from then on — that warns once.
+- **Templates only read.** `$ctx(key, value)` in a template expression warns and
+  changes nothing: it would run again on every re-render.
+- **An unset key is `undefined`**, quietly: `$ctx("lang") ?? "en"` is the default.
+- **Keys** are strings or symbols; a symbol exported from a shared module keeps two
+  libraries from colliding on a name.
+
+When to reach for it: for the few values that are everywhere. A value a component
+*owns* stays a prop — a prop is in the signature, the checker types it, and the tag
+shows where it comes from. An app-wide value that never varies by subtree can also be
+a [`$reactive`](reactive-data.md) store imported where it is read; context is what
+keeps such components free of the app's modules, lets a subtree override (a preview
+in another language), and gives each instance of a compound component its own state.
+
 ## Styles
 
 A `<style>` block goes into `document.head` as-is, shared globally. Add `scoped` and its rules only reach the elements this component rendered:

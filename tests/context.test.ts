@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { $, $$, $reactive, Component79 } from "../src/jq79"
+import { $, $$, $reactive, Component79, enableHotReload, hotUpdate } from "../src/jq79"
 
 // Context: $ctx(key, value) in a component's script sets a value, $ctx(key) in
 // any component rendered below it reads it - through components that pass
@@ -164,5 +164,36 @@ describe("context ($ctx)", () => {
     `).render().mount(host)
 
     expect($$(host, ".leaf").map(el => el.textContent)).toEqual(["a", "none"])
+  })
+
+  describe("hot reload", () => {
+    beforeEach(() => { enableHotReload() })
+
+    // the map rides the instance (like slots), not the store a re-render snapshots
+    it("keeps what a provider set when the file is edited", () => {
+      const source = (label: string) => `
+        <script :setup>$ctx("lang", "es")</script>
+        <Middle />
+        <template name="Middle"><Leaf /></template>
+        <template name="Leaf"><b class="leaf">${label}: {{ $ctx('lang') }}</b></template>
+      `
+      new Component79(source("before"), { filename: "/ctx.html" }).render().mount(host)
+      expect($(host, ".leaf")?.textContent).toBe("before: es")
+
+      expect(hotUpdate("/ctx.html", source("after"))).toBeGreaterThan(0)
+      expect($(host, ".leaf")?.textContent).toBe("after: es")
+    })
+
+    it("keeps a root's ctx() through an edit of the root's file", () => {
+      const source = (label: string) => `
+        <Leaf />
+        <template name="Leaf"><b class="leaf">${label}: {{ $ctx('lang') }}</b></template>
+      `
+      new Component79(source("before"), { filename: "/root-ctx.html" }).ctx("lang", "es").render().mount(host)
+      expect($(host, ".leaf")?.textContent).toBe("before: es")
+
+      expect(hotUpdate("/root-ctx.html", source("after"))).toBeGreaterThan(0)
+      expect($(host, ".leaf")?.textContent).toBe("after: es")
+    })
   })
 })

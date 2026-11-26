@@ -508,6 +508,7 @@ A `<slot>`'s attributes are props for the content — which is what makes this c
 - **What isn't projected isn't rendered.** No `<slot>` for it, or one behind a false `:if`, and the content's effects never exist. Remove the `<slot>` later and they are disposed.
 - Every attribute that isn't a directive is a slot prop; `:if`/`:each`/`:with` on a `<slot>` mean what they mean anywhere else. `<slot :each="row in rows" :item="row" />` renders the content once per row.
 - `$slots` is a static map of the names the usage site filled — `<footer :if="$slots.footer">` drops a wrapper nobody filled. Setup and factory scripts get it too.
+- `$ctx('key')` reads what a component above set with `$ctx(key, value)` (or the root with `.ctx(key, value)`) — see [context](components.md#context). Templates only read: setting belongs in a script.
 - A `<slot>` written *inside* slot content forwards the writer's own content, so a wrapper can pass what it was handed straight through.
 - Fallback content (a `<slot>`'s own children) renders in the **child's** scope — it is the child's markup.
 - `<slot>` is reserved: a component named `Slot` no longer resolves from that tag.
